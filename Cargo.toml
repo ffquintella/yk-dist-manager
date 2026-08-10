@@ -1,0 +1,58 @@
+[package]
+name = "yk-dist-manager"
+version = "0.1.0"
+edition = "2024"
+description = "YubiKey distribution and bootstrap manager (egui desktop app)"
+license = "MIT"
+
+[lib]
+name = "yk_dist_manager"
+path = "src/lib.rs"
+
+[[bin]]
+name = "yk-dist-manager"
+path = "src/main.rs"
+
+[dependencies]
+eframe = "0.36"
+egui = "0.36"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+sha2 = "0.10"
+hex = "0.4"
+
+# Single-file database. `bundled` compiles SQLite in, so a workstation needs no
+# system SQLite and the file is the whole deployment.
+rusqlite = { version = "0.40", features = ["bundled"] }
+
+# Native, pure-Rust access to the hardware. Preferred over shelling out to
+# `ykman`; see docs/yubikey-reference.md for what each crate can and cannot do.
+#
+# `pcsc`/`hidapi` link against system libraries (PCSC.framework on macOS,
+# libpcsclite/hidraw on Linux, WinSCard on Windows), so the transports live
+# behind a feature flag while the roadmap's Wave 1 lands them.
+yubikey = { version = "0.8", optional = true }
+ctap-hid-fido2 = { version = "3.5", optional = true }
+hidapi = { version = "2.6", optional = true }
+
+[features]
+default = []
+# Optional password protection of the database file, via SQLCipher
+# (`PRAGMA key`). Off by default because it vendors and builds OpenSSL.
+encrypted-db = ["rusqlite/bundled-sqlcipher-vendored-openssl"]
+# PIV over PC/SC with the `yubikey` crate.
+native-piv = ["dep:yubikey"]
+# FIDO2 / CTAP2 over USB HID.
+native-fido = ["dep:ctap-hid-fido2"]
+# Yubico OTP slot configuration over USB HID.
+native-otp = ["dep:hidapi"]
+# Everything native.
+native-device = ["native-piv", "native-fido", "native-otp"]
+
+[dev-dependencies]
+tempfile = "3"

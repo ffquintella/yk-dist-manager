@@ -1,0 +1,12 @@
+Device type: YubiKey 5C FIPS
+Serial number: 31415926
+Firmware version: 5.7.1
+Form factor: USB-C Keychain
+
+Applications	USB
+Yubico OTP  	Disabled
+FIDO U2F    	Enabled
+FIDO2       	Enabled
+OATH        	Disabled
+PIV         	Enabled
+OpenPGP     	Disabled

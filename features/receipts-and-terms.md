@@ -1,0 +1,118 @@
+# Feature: Receipts and responsibility terms
+
+## Summary
+
+Render the hand-over document from the record — who received which key, when, what was
+applied to it, and what they are agreeing to — then track its signature and store the
+reference.
+
+## Motivation
+
+The distribution record already holds a `receipt_ref` field, which today the operator
+fills in by hand after producing the document somewhere else. That is the wrong way
+round: the record has every fact the document needs, so the document should come from
+the record. It also removes the failure mode where the term says one serial and the
+database says another.
+
+The term matters beyond bureaucracy: it is where the holder acknowledges that the key is
+a credential, that the PIN is theirs alone, and that a loss must be reported
+immediately. Without that acknowledgement, the loss procedure has no basis.
+
+## Current state
+
+**Not started.** `receipt_ref` is a free-text field on the distribution record.
+
+## Design
+
+### What the term contains
+
+Generated from the record, no retyping:
+
+- Holder: name, corporate e-mail, unit, registration (if used).
+- Key: serial, model, firmware, form factor.
+- What was applied: the bootstrap run summary — template id and version plus the steps
+  that succeeded — so the holder knows the key carries a signing certificate in their
+  name.
+- Certificate details, when one was issued: subject, e-mail SAN, issuer, validity.
+- Custody statement: whether the holder set their own PIN, or must change a transport
+  PIN on first use (`features/secrets-custody.md`).
+- Obligations: the key identifies the holder; the PIN is not to be shared; loss or
+  suspected compromise is reported immediately, to whom, and by what channel; the key is
+  returned when the holder leaves or changes role.
+- Hand-over: date, delivery method, the operator who handed it over.
+- Signature blocks for holder and operator.
+
+### Format
+
+Two outputs from one template:
+
+- **PDF** for signature and filing — the archival artefact.
+- **Plain text / Markdown** so the same content can be pasted into a ticket.
+
+Implementation options: a Typst or LaTeX template invoked as a subprocess (best
+typography, external dependency), or a pure-Rust PDF writer (self-contained, plainer
+output). Given the deployment model — a desktop app that should not need a TeX
+installation — the pure-Rust route wins unless the unit already has a document
+pipeline.
+
+The document template must be editable without recompiling, like the bootstrap
+templates, and versioned the same way, because the wording is legal text that someone
+else owns.
+
+### Signature tracking
+
+| State | Meaning |
+|---|---|
+| `NotRequired` | The unit does not use terms |
+| `Pending` | Generated, not yet signed — with an age warning |
+| `Signed` | Reference recorded (document id, scan path, or e-signature id) |
+
+A posted key sits in `Pending` until the signed term comes back, which is exactly the
+gap `features/distribution-records.md` Phase 4 exists to make visible.
+
+The signed document itself is **not** stored in the database: it is personal data with a
+retention rule of its own, and the single-file model is not the right home for scanned
+PDFs. The record holds a reference.
+
+## Phases
+
+| # | Phase | State | Notes |
+|---|---|---|---|
+| 1 | Text/Markdown term generated from the record | Todo | proves the content before investing in layout |
+| 2 | PDF output | Todo | pure-Rust writer preferred |
+| 3 | Editable, versioned document template | Todo | wording is owned outside the code |
+| 4 | Signature state machine with an age warning | Todo | with distribution Phase 4 |
+| 5 | Reference storage (document id / scan path / e-signature id) | Todo | never the document itself |
+| 6 | Return receipt (the mirror document) | Todo | closes the custody loop |
+| 7 | Batch generation for a bulk hand-over | Todo | `features/bulk-enrollment.md` |
+
+## Audit events
+
+| Event | Detail |
+|---|---|
+| `receipt.generated` | `serial=… holder=… format=pdf template=v2` |
+| `receipt.signed` | `serial=… reference=…` |
+| `receipt.pending_overdue` | Phase 4: an unsigned term passed its threshold |
+
+## Tests
+
+- Unit: the rendered term contains the serial, the holder's e-mail, the template version
+  and the run summary; a run with no certificate produces a term without certificate
+  claims (never a blank "Certificate: " line).
+- Unit: a holder name with a comma or an accent renders correctly in both outputs.
+- Behaviour: generate → mark signed → the distribution record carries the reference and
+  the audit chain verifies.
+
+## Open questions and gates
+
+- **The wording is not ours.** The responsibility term is institutional text; it needs
+  the owner's approval (and probably the DPO's, since it is where the holder is informed
+  about the personal data involved).
+- Retention of signed terms — DPO/ESI.
+- Whether an e-signature flow is available, which would remove the scan-and-file step
+  entirely.
+
+## References
+
+- `src/domain/distribution.rs` (`receipt_ref`), `features/distribution-records.md`
+- `docs/operations.md`

@@ -1,0 +1,163 @@
+# yk-dist-manager — Roadmap
+
+Single entry point for planning. One row per tracked feature; the detail lives in
+the linked spec under [`features/`](features/).
+
+**What this tool is.** A desktop application (Rust + egui) that does two things
+for a unit handing out YubiKeys:
+
+1. **Tracks distribution** — which key (serial, model, firmware) went to which
+   person, on what date, handed over by whom, against which receipt, and exactly
+   what was applied to it during bootstrap.
+2. **Bootstraps keys from a template** — a versioned, declarative procedure that
+   sets a PIN for FIDO2 and an access code for OTP, registers the initial FIDO2
+   credential resident *on the key*, and puts a PIV signing certificate carrying
+   the holder's e-mail on the key so it is signing-ready on hand-over.
+
+**How it talks to hardware.** Native Rust first: [`yubikey`](https://crates.io/crates/yubikey)
+for PIV over PC/SC, [`ctap-hid-fido2`](https://crates.io/crates/ctap-hid-fido2)
+for FIDO2/CTAP2 over HID, [`hidapi`](https://crates.io/crates/hidapi) for the
+Yubico OTP slots. `ykman` remains a labelled fallback for what no crate covers.
+
+**Where data lives.** One SQLite file, optionally password-protected
+(SQLCipher), able to sit on a network share. Copying that file copies the whole
+deployment.
+
+---
+
+## At a glance
+
+| State | Count |
+|---|---|
+| Done | 5 |
+| In progress | 9 |
+| Todo | 20 |
+| **Total tracked items** | **34** (across 31 specs — two items share a spec) |
+
+Current wave: **Wave 1 — native execution.** Wave 0 (foundation) is in place:
+the app builds, reads a real key natively, records inventory, holders,
+distributions and dry-run bootstraps into a single-file database with a
+hash-chained, trigger-protected audit trail. 119 tests pass (plus 2 read-only
+hardware tests), with 89.70% line coverage of the headless core.
+
+## How to read this
+
+- **Status** is a checkbox plus a word: `[x]` Done, `[/]` In progress, `[ ]` Todo.
+- A feature is Done only when every phase in its spec is done. Mixed ⇒ `[/]`.
+- Waves are ordered. Work the current wave; if something must jump the queue,
+  edit this file in the same commit and say why (see [AGENTS.md](AGENTS.md)).
+- Every feature file carries its own phase table, audit events and test list.
+
+---
+
+## Wave 0 — Foundation
+
+Everything needed before a single byte is written to a key.
+
+| Status | Feature | Notes |
+|---|---|---|
+| `[/]` | Native device transport | [spec](features/native-device-transport.md) — `yubikey` over PC/SC reads serial + firmware from a real key today (verified against 5 NFC / fw 5.4.3, agrees with `ykman`). FIDO2 and OTP transports are Wave 1. |
+| `[x]` | `ykman` fallback + parsers | [spec](features/ykman-fallback.md) — argv-only subprocess, typed errors, parsers unit-tested against recorded output of ykman 5.9.2. |
+| `[/]` | Device detection | [spec](features/device-detection.md) — read-on-demand works; hot-plug polling and multi-key selection pending. |
+| `[/]` | Single-file SQLite storage | [spec](features/storage-sqlite-single-file.md) — schema v1, `user_version` migrations, WAL locally / rollback journal on a share, `VACUUM INTO` backup, `integrity_check`. |
+| `[ ]` | Optional database password | [spec](features/db-password-and-encryption.md) — `encrypted-db` feature wires `PRAGMA key`; unlock screen exists. KDF parameters, password change and re-key are Todo. |
+| `[x]` | Logging | [spec](features/logging.md) — one entry point, three levels, G-002 line format, no hand-built log lines. |
+| `[/]` | Audit trail | [spec](features/audit-trail.md) — SHA-256 chain, `UPDATE`/`DELETE` refused by trigger, chain verification in the GUI. Segregated storage still open (see gates). |
+| `[x]` | Key inventory | [spec](features/key-inventory.md) — serial, model, firmware, form factor, FIPS flag, applications, lifecycle with guarded transitions. |
+| `[x]` | Holder registry | [spec](features/holder-registry.md) — minimal personal data, validated e-mail, RFC 4514 subject derivation. |
+| `[x]` | Distribution records | [spec](features/distribution-records.md) — hand-over, operator, delivery method, receipt reference, linked bootstrap run, return without rewriting history. |
+| `[/]` | Bootstrap templates | [spec](features/bootstrap-templates.md) — versioned templates, `{{variable}}` rendering, two built-ins, validation. A GUI editor and template signing are pending. |
+| `[/]` | Bootstrap planner | [spec](features/bootstrap-engine.md) — plan with per-step transport (native / ykman / manual) and secret placeholders; dry runs recorded. **The executor is Wave 1.** |
+| `[/]` | GUI shell | [spec](features/gui-shell.md) — six screens, unlock screen, status bar, egui 0.36 `App::ui`. |
+| `[/]` | Bootstrap wizard | [spec](features/gui-bootstrap-wizard.md) — selection, per-step opt-out, plan review, dry run. Execution progress view pending. |
+| `[/]` | Testing strategy | [spec](features/testing-strategy.md) — 119 tests across unit + behaviour suites, mock backend, recorded fixtures, ignored hardware tests; 89.70% core line coverage. The gate is not yet enforced in CI. |
+
+## Wave 1 — Execute the bootstrap, natively
+
+The point of the tool: apply the template to a key, safely, with evidence.
+
+| Status | Feature | Notes |
+|---|---|---|
+| `[ ]` | Bootstrap executor | [spec](features/bootstrap-engine.md) — run the plan step by step with per-step results, abort-on-required-failure, idempotency, resume, and no secret in any record. |
+| `[ ]` | Step: FIDO2 PIN | [spec](features/step-fido2-pin.md) — set/change the PIN over CTAP2, minimum length policy (fw 5.7+), retry accounting, forced change on first use. |
+| `[ ]` | Step: initial FIDO2 credential | [spec](features/step-fido2-credentials.md) — `authenticatorMakeCredential` with `rk=true` so the credential is resident on the key. `ykman` cannot do this at all. |
+| `[ ]` | Step: OTP slot access code | [spec](features/step-otp-access-code.md) — the 6-byte code that write-protects a slot, plus optional slot programming. Needs the HID config frame (no crate covers it). |
+| `[ ]` | Step: PIV PIN / PUK / management key | [spec](features/step-piv-pin-puk-management-key.md) — leave no factory default; prefer a PIN-protected random management key so nothing needs custody. |
+| `[ ]` | Step: PIV signing certificate | [spec](features/step-piv-signing-certificate.md) — on-device key in slot 9c, CSR **with `rfc822Name` SAN**, issued certificate imported, attestation stored. The SAN is why this step goes native. |
+| `[ ]` | CA integration | [spec](features/ca-integration.md) — internal CA for pilots, BastionVault PKI, and an enterprise CA profile; SAN and EKU requirements per option. |
+| `[ ]` | Secrets custody | [spec](features/secrets-custody.md) — generate, show once, hand over, record *where* custody went; never store the value. |
+
+## Wave 2 — Operations at scale
+
+| Status | Feature | Notes |
+|---|---|---|
+| `[ ]` | Key lifecycle & revocation | [spec](features/key-lifecycle-and-revocation.md) — lost/stolen handling, certificate revocation, applet reset, re-issue to a new holder. |
+| `[ ]` | Receipts & responsibility terms | [spec](features/receipts-and-terms.md) — render the hand-over term from the record, track signature, store the reference. |
+| `[ ]` | Reports & export | [spec](features/reports-and-export.md) — inventory and distribution reports, CSV/JSON export, audit export for the ESI. |
+| `[ ]` | Bulk enrolment | [spec](features/bulk-enrollment.md) — queue of keys for one template, batch progress, per-key evidence. |
+| `[ ]` | Operator authentication & roles | [spec](features/operator-auth-and-roles.md) — operator identity is currently `$USER`, which is not authentication. Roles (admin / distributor / auditor), AD integration, MFA with a YubiKey on sensitive operations. |
+| `[ ]` | Multi-operator concurrency | [spec](features/storage-sqlite-single-file.md) — optimistic concurrency and busy-retry policy for a shared file on a share. |
+
+## Wave 3 — Alternatives and delivery
+
+| Status | Feature | Notes |
+|---|---|---|
+| `[ ]` | OpenPGP signing subkey | [spec](features/step-openpgp-signing-subkey.md) — the alternative reading of "signing key": an OpenPGP signature subkey on the OpenPGP applet with the holder's e-mail in the UID. See *Open questions*. |
+| `[ ]` | SSH authentication via PIV | [spec](features/ssh-authentication.md) — slot 9a plus PKCS#11 for SSH, for units that want it. |
+| `[ ]` | Packaging & release | [spec](features/packaging-and-release.md) — macOS / Windows / Linux builds, signing and notarisation, tagged releases, semver. |
+| `[ ]` | FGV compliance artefacts | [spec](features/fgv-compliance.md) — classification proposal, system registration, data documentation, change/homologation records. |
+| `[ ]` | CI & coverage gate | [spec](features/testing-strategy.md) — fmt + clippy + tests + `cargo llvm-cov` with an 80% floor, enforced on every push. |
+
+---
+
+## Engineering rules that apply to every wave
+
+Full text in [AGENTS.md](AGENTS.md). The short version:
+
+- **Semantic versioning** and a tag for every installed build. Schema changes bump
+  `SCHEMA_VERSION` and ship a migration.
+- **`CHANGELOG.md` in the same commit** as the change, Keep-a-Changelog format.
+- **Coverage ≥ 80%** line coverage of the headless core (`make coverage-core`).
+- **Unit *and* behaviour tests** for every feature; bug fixes start with a failing test.
+- **Full audit coverage**: no state change without an audit entry; audit failure is loud.
+- **No secret** in a log, an audit entry, a database column, an error or the UI.
+- Native Rust for hardware; `ykman` only where nothing else exists, and labelled
+  as a fallback in the plan the operator sees.
+
+---
+
+## Open questions
+
+Decisions that change what gets built, and are not the implementer's to make.
+
+1. **"Adjust the SSK signing certificate" — which mechanism?** The roadmap
+   assumes **PIV slot 9c** with an X.509 certificate carrying `rfc822Name` =
+   holder's e-mail (S/MIME-style, works with Outlook, Apple Mail, Adobe, and
+   document signing). The alternative reading is an **OpenPGP signature subkey**
+   (`features/step-openpgp-signing-subkey.md`), which is what a GnuPG-centric
+   workflow needs. Both are specified; only the PIV path is scheduled for Wave 1.
+   *Answer needed before Wave 1 starts.*
+2. **Which CA issues the signing certificate?** Internal CA, BastionVault PKI, or
+   an enterprise CA. This decides whether we build the CSR ourselves (needed for
+   the SAN) or rely on a CA profile to inject it.
+3. **Where does the audit trail live?** The norm wants audit storage segregated
+   from operational data; the requirement here is a *single file*. Current design:
+   audit in the same file, immutable by trigger, plus an optional append-only
+   mirror elsewhere. This needs ESI sign-off.
+4. **Custody model for PINs.** Holder-chosen at hand-over (nothing to escrow) or
+   operator-generated with escrow (recoverable, but creates a secret store). This
+   changes `features/secrets-custody.md` substantially.
+5. **Retention** of audit entries and logs — not fixed by the norm; ESI decides.
+6. **Classification level** of the system. Proposed: level 3 (see
+   `docs/security-and-compliance.md`). ESI validates.
+
+## Decision log
+
+| Date | Decision | Rationale |
+|---|---|---|
+| 2026-08-10 | Native Rust crates are the primary hardware transport; `ykman` is a fallback | Typed errors, no PATH dependency, no PIN on a command line, and the only way to create a FIDO2 credential or put a SAN in a CSR |
+| 2026-08-10 | One SQLite file, `bundled`, optional SQLCipher password | A shared file on a unit share is the deployment model; nothing to install, one file to back up |
+| 2026-08-10 | Rollback journal (not WAL) when the file is on a share | WAL needs shared memory and does not work over SMB/NFS |
+| 2026-08-10 | Audit immutability by database trigger, not by application code | The norm requires the guarantee to come from the database |
+| 2026-08-10 | egui/eframe directly, not `ironroot-gui` | `ironroot-gui` is unpublished; the port is a later, contained change |
+| 2026-08-10 | Bootstrap is dry-run only until the executor lands | Nothing should touch a key before the plan, custody and audit paths are proven |
