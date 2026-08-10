@@ -14,9 +14,12 @@ decisions that need a human owner.
 templated bootstrap procedure to each key: a PIN for FIDO2, an access code for
 the OTP slots, the initial FIDO2 credential resident on the key, and a PIV
 signing certificate carrying the holder's e-mail so the key is signing-ready at
-hand-over. Hardware is driven by native Rust crates (`yubikey`,
-`ctap-hid-fido2`, `hidapi`) with `ykman` as a labelled fallback. All data lives
-in one SQLite file that can sit on a network share and can optionally be
+hand-over. It also generates the consignment term in the holder's language and
+files the signed scan back against the hand-over. Serials come from the hardware,
+from a barcode (USB scanner or camera), or typed — and the record says which.
+Hardware is driven by native Rust crates (`yubikey`, `ctap-hid-fido2`, `hidapi`)
+with `ykman` as a labelled fallback. All data lives in one SQLite file that the
+operator chooses or creates, which can sit on a network share and can optionally be
 password-protected.
 
 ## Key files

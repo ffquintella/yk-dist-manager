@@ -8,14 +8,16 @@
 pub mod bootstrap;
 pub mod custody;
 pub mod distribution;
+pub mod document;
 pub mod holder;
 pub mod key;
 
 pub use bootstrap::{BootstrapRun, RunStatus, StepKind, StepOutcome, StepStatus};
 pub use custody::{ChangeEnforcement, CustodyModel};
 pub use distribution::{DeliveryMethod, DistributionRecord};
+pub use document::{AttachedDocument, DocumentError, DocumentKind};
 pub use holder::Holder;
-pub use key::{KeyStatus, YubiKeyRecord};
+pub use key::{KeyStatus, SerialSource, YubiKeyRecord};
 
 /// Maximum accepted length for any free-text field arriving from the UI.
 ///
@@ -41,6 +43,18 @@ pub fn require_text(field: &'static str, value: &str) -> Result<String, Validati
     if trimmed.is_empty() {
         return Err(ValidationError::Missing(field));
     }
+    if trimmed.chars().count() > MAX_TEXT {
+        return Err(ValidationError::TooLong {
+            field,
+            max: MAX_TEXT,
+        });
+    }
+    Ok(trimmed.to_owned())
+}
+
+/// Trim and enforce [`MAX_TEXT`]; empty is allowed.
+pub fn optional_text(field: &'static str, value: &str) -> Result<String, ValidationError> {
+    let trimmed = value.trim();
     if trimmed.chars().count() > MAX_TEXT {
         return Err(ValidationError::TooLong {
             field,

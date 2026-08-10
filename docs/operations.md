@@ -24,6 +24,29 @@ cargo run                                  # or the packaged application
 Set the operator name and organisation in **Settings**. Check that the status bar shows the
 database path and whether it is local or on a share.
 
+## Choosing, creating and switching databases
+
+The database screen appears whenever nothing is open. From it you can:
+
+- **open a recent database** — the list marks each entry *available* or *not reachable*,
+  so an unmounted share is obvious;
+- **type or paste a path** — the way to reach a UNC path (`\\server\ti\keys.sqlite3`)
+  or a share the dialog will not browse;
+- **Open** an existing file, or **Create** a new one. These are separate on purpose:
+  opening a path that does not exist is an error, and creating over an existing file is
+  refused. A mistyped share path can no longer produce an empty database that looks like
+  every record having vanished;
+- **Choose file… / New file…** for the native dialog (needs the `file-dialog` feature,
+  on by default).
+
+Once open, **Settings → Switch database…** closes the current one and brings the chooser
+back. The last database used is reopened at the next start, unless `$YKDM_DB` says
+otherwise.
+
+The recent list and the operator identity live in `settings.json` in the per-user data
+directory (`$YKDM_SETTINGS` overrides it). **It never holds the database password** — it
+sits next to the database, so storing one there would defeat encrypting it.
+
 ## Choosing where the database lives
 
 ```bash
@@ -52,6 +75,27 @@ access control.
 
 ---
 
+## Runbook: receive a shipment
+
+For getting serials in without unboxing every key:
+
+1. **Inventory → Add by serial / scan…**
+2. With a **USB barcode scanner** (recommended): click into the field, scan the box
+   label, and the scanner types the serial and presses Enter. Repeat. Nothing else to
+   configure.
+3. With the **camera** (needs a build with `--features camera`): *Start camera*, hold the
+   label about 20cm away filling the frame width, and confirm the decoded serial. A laptop
+   camera is fixed-focus and will struggle closer than that.
+4. Or just type the serial.
+
+Keys recorded this way are marked **not verified**: no model, no firmware, no application
+list, because nobody has plugged them in. Reading the key later — during bootstrap —
+upgrades the record and fills in the hardware detail. A serial that was verified is never
+downgraded by a later scan.
+
+If the tool refuses a scan: two different serials in shot are rejected rather than guessed
+(scan one label at a time), and a barcode that is not a serial says so.
+
 ## Runbook: distribute a key
 
 1. **Inventory → Read attached key.** Confirm the serial matches the engraving.
@@ -67,6 +111,27 @@ access control.
 
 If the key status refuses to advance ("illegal status transition"), the key was never marked
 bootstrapped — that is the guard working, not a bug.
+
+## Runbook: the consignment term
+
+1. **Distribution** → the row → **term**.
+2. Pick the language. pt-BR and en ship; a unit can add others. If the requested language
+   has no template, the panel says which one it used instead.
+3. Review the rendered term. It is built from the record: the holder's name and
+   identification number, the key's serial, what the bootstrap applied, the custody
+   statement, the delivery method and the operator. Optional fields the holder did not
+   give (phone, address) take their whole line with them rather than printing an empty
+   label.
+4. **Save as text…**, print it, and have it signed.
+5. When the signed copy comes back: **Upload signed term…** (or *upload* on the row).
+   PDF, PNG, JPEG or TIFF, up to 8 MiB. It is stored **in the database** with a SHA-256,
+   so copying the database copies the evidence.
+6. The row's badge turns from `none filed` (amber) to `n filed` (green). *export* writes a
+   filed document back out, verifying the digest first and refusing on a mismatch.
+
+The built-in term wording is a **draft**: it needs review by whoever owns the term at your
+institution, and the data-protection paragraph needs the DPO. Templates are data, so that
+review is an edit rather than a code change.
 
 ## Runbook: record a return
 
@@ -114,6 +179,8 @@ Restore is a file copy. Afterwards, open the copy and run **Audit → Verify cha
 | "schema version N is newer than this build supports" | Someone upgraded first | Upgrade this workstation; do **not** try to force it open |
 | "database is locked" / busy | Another operator is writing | Wait; if it persists, check for a stale lock or a crashed session |
 | `integrity_check` reports anything but `ok` | Real corruption | Restore the most recent backup, then verify the audit chain |
+| "no database file at …" | The path does not exist (typo, or an unmounted share) | Fix the path or mount the share; use **Create** only if you really want a new, empty database |
+| "a file already exists at …" | **Create** was used on an existing file | Use **Open** instead |
 
 ## Runbook: no key detected
 
@@ -129,6 +196,8 @@ Restore is a file copy. Afterwards, open the copy and run **Audit → Verify cha
 
 - **Audit → Verify chain.** It should report every entry verified. Anything else is
   investigated immediately, not next week.
+- Hand-overs with **no signed term filed** — the badge on the distribution table.
+- Keys still marked **not verified** — recorded from a label and never read.
 - **Settings → Integrity check** → `ok`.
 - Open distributions with no attached bootstrap run: keys handed out without recorded
   evidence.

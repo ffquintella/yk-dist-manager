@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::domain::{ValidationError, require_text, validate_email};
+use crate::domain::{ValidationError, optional_note, optional_text, require_text, validate_email};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Holder {
@@ -21,11 +21,21 @@ pub struct Holder {
     pub unit: String,
     /// Optional registration id, when the unit needs it for asset control.
     pub registration: String,
+    /// Optional national identification number (CPF in Brazil, or the local
+    /// equivalent). Called an *identification number* rather than CPF because the
+    /// field is not limited to one country's document — and it appears on the
+    /// consignment term, which is why it is here at all.
+    pub identification_number: String,
+    /// Optional contact number.
+    pub phone: String,
+    /// Optional address, for a key sent by post.
+    pub address: String,
     pub active: bool,
     pub created_at: DateTime<Utc>,
 }
 
 impl Holder {
+    /// The required fields. Optional ones are added with [`Holder::with_optional`].
     pub fn new(
         full_name: &str,
         email: &str,
@@ -38,9 +48,33 @@ impl Holder {
             email: validate_email(email)?,
             unit: require_text("unit", unit)?,
             registration: registration.trim().to_owned(),
+            identification_number: String::new(),
+            phone: String::new(),
+            address: String::new(),
             active: true,
             created_at: Utc::now(),
         })
+    }
+
+    /// Attach the optional fields. Each is length-bounded like every other input,
+    /// and an empty value means "not provided" — which is what makes the
+    /// corresponding line disappear from a rendered term.
+    pub fn with_optional(
+        mut self,
+        identification_number: &str,
+        phone: &str,
+        address: &str,
+    ) -> Result<Self, ValidationError> {
+        self.identification_number = optional_text("identification_number", identification_number)?;
+        self.phone = optional_text("phone", phone)?;
+        self.address = optional_note("address", address)?;
+        Ok(self)
+    }
+
+    /// True when the holder record carries everything a consignment term needs
+    /// beyond the mandatory fields.
+    pub fn has_identification(&self) -> bool {
+        !self.identification_number.trim().is_empty()
     }
 
     /// `Ana Silva <ana.silva@fgv.br>`, for tables and receipts.

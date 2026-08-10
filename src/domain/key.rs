@@ -6,6 +6,43 @@ use uuid::Uuid;
 
 use crate::device::DeviceInfo;
 
+/// How this tool learned the serial number.
+///
+/// A serial read from the device is *verified*; one read from a box label or typed
+/// by hand is a *claim* about a key nobody has plugged in. The distinction
+/// matters for the certificate: a mis-scanned digit would bind a credential to the
+/// wrong physical key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SerialSource {
+    /// Read from the hardware over PC/SC or `ykman`.
+    Device,
+    /// Decoded from a barcode on the packaging.
+    ScannedLabel,
+    /// Typed by an operator.
+    ManualEntry,
+}
+
+impl SerialSource {
+    pub const ALL: [SerialSource; 3] = [
+        SerialSource::Device,
+        SerialSource::ScannedLabel,
+        SerialSource::ManualEntry,
+    ];
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            SerialSource::Device => "read from the key",
+            SerialSource::ScannedLabel => "scanned from the label",
+            SerialSource::ManualEntry => "typed",
+        }
+    }
+
+    /// Only a device read confirms that this key exists and is reachable.
+    pub fn is_verified(&self) -> bool {
+        matches!(self, SerialSource::Device)
+    }
+}
+
 /// Where a key is in its lifecycle. See `features/key-lifecycle-and-revocation.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KeyStatus {
@@ -71,6 +108,8 @@ pub struct YubiKeyRecord {
     /// Purchase batch / invoice reference, for asset reconciliation.
     pub batch: String,
     pub notes: String,
+    /// How the serial was learned. Never downgraded by the store.
+    pub serial_source: SerialSource,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -90,18 +129,53 @@ impl YubiKeyRecord {
             status: KeyStatus::InStock,
             batch: String::new(),
             notes: String::new(),
+            serial_source: SerialSource::Device,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// Record a key from a serial alone — a scanned label or a typed number.
+    ///
+    /// Everything the hardware would have told us (model, firmware, form factor,
+    /// enabled applications) is unknown, and stays empty rather than guessed. The
+    /// record is completed the first time the key is actually read.
+    pub fn from_serial(serial: u32, source: SerialSource) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Uuid::new_v4(),
+            serial,
+            model: String::new(),
+            firmware: String::new(),
+            form_factor: String::new(),
+            fips: false,
+            applications: Vec::new(),
+            status: KeyStatus::InStock,
+            batch: String::new(),
+            notes: String::new(),
+            serial_source: source,
             created_at: now,
             updated_at: now,
         }
     }
 
     /// Refresh the device-derived fields without touching lifecycle or notes.
+    ///
+    /// Reading the key also *verifies* the serial, so the provenance is upgraded —
+    /// which is how a scanned label becomes a confirmed record.
     pub fn refresh_from_device(&mut self, info: &DeviceInfo) {
         self.model = info.model.clone();
         self.firmware = info.firmware.clone();
         self.form_factor = info.form_factor.clone();
         self.applications = info.usb_applications.clone();
+        self.fips = info.model.to_ascii_uppercase().contains("FIPS");
+        self.serial_source = SerialSource::Device;
         self.updated_at = Utc::now();
+    }
+
+    /// True when the key has been read from the hardware at least once.
+    pub fn is_verified(&self) -> bool {
+        self.serial_source.is_verified()
     }
 
     /// Parsed firmware as `(major, minor, patch)`; used for the feature gates in

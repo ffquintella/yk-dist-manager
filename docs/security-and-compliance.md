@@ -99,7 +99,23 @@ is not a fix.
 | Corporate e-mail | Certificate `rfc822Name` SAN; identifies the holder | `holders`, `distributions` |
 | Unit | Certificate `OU`; who to contact about a key | `holders` |
 | Registration | Asset control, where the unit uses it | `holders` (optional) |
+| **Identification number** | Named on the consignment term (CPF or the local equivalent) | `holders` (optional) |
+| **Phone**, **address** | Contacting a holder; posting a key | `holders` (optional) |
 | Operator name | Accountability for a hand-over and every audit entry | `distributions`, `bootstrap_runs`, `audit` |
+| **Signed term (document)** | The evidence that a key was signed for | `documents.content` |
+
+Two additions in v0.2.1 raise what a copy of this database is worth, and both are
+stated rather than glossed over:
+
+1. An **identification number** is a step up in sensitivity from a name and a work
+   e-mail. It is optional, and exists because the consignment term names it.
+2. A **signed term** is a scanned document carrying a name, an identification number
+   and a handwritten signature, stored inside the database (the reasoning is in
+   `../features/signed-term-documents.md`).
+
+Both are direct arguments for turning the database password on
+(`../features/db-password-and-encryption.md`). A unit filing signed terms in an
+unencrypted database on an open share should understand what it has built.
 
 No phone, address, ID document, photo, or any special-category data. The full inventory is
 in [data-model.md](data-model.md) §Personal data summary, which is also the input to the
@@ -108,6 +124,9 @@ FGV data documentation artefact.
 ### Rules
 
 - Adding a field means adding a purpose and updating that inventory in the same commit.
+- Documents are validated before storage: non-empty, at most 8 MiB, scanner formats
+  only, and an uploaded filename is treated as data — any directory component is
+  stripped, so a name like `../../etc/passwd.pdf` cannot escape.
 - A **new category** of personal data needs the DPO's assessment. That is not the
   implementer's call.
 - Every input is length-bounded (`domain::MAX_TEXT`, `MAX_NOTE`) per NRM §5.3.5.

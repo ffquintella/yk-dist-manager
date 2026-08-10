@@ -77,11 +77,13 @@ real FIPS flag instead.
 | # | Phase | State | Notes |
 |---|---|---|---|
 | 1 | Record, upsert on serial, hardware-derived fields | Done | |
+| 1b | Serial provenance (`SerialSource`), never downgraded | Done | schema v2; see `features/serial-scanning.md` |
 | 2 | Guarded lifecycle transitions | Done | refusals surfaced, not swallowed |
 | 3 | Firmware capability gates | Done | 5.7 floor for min-PIN-length |
 | 4 | Batch / invoice / procurement fields in the UI | Todo | column exists in the schema |
 | 5 | Search and filter (serial, holder, status, firmware) | Todo | the table will not scale past ~50 rows |
 | 6 | "Already configured" detection before re-bootstrap | Todo | occupied 9c slot, FIDO PIN already set |
+| 6b | "Unverified keys" view: scanned or typed, never read | Todo | the natural companion to provenance |
 | 7 | Reconciliation report: expected vs present vs unaccounted | Todo | `features/reports-and-export.md` |
 | 8 | Bulk import of an existing spreadsheet | Todo | CSV with a dry-run preview |
 

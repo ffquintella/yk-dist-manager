@@ -4,7 +4,7 @@
 //! **open**. Once open, every screen reads from the cached vectors refreshed by
 //! [`YkDistApp::refresh`] — the GUI never queries SQLite inside a paint pass.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::audit::AuditEntry;
 use crate::device::{DeviceInfo, YkmanBackend, YubiKeyBackend};
@@ -12,8 +12,81 @@ use crate::domain::{
     BootstrapRun, DeliveryMethod, DistributionRecord, Holder, KeyStatus, StepOutcome, StepStatus,
     YubiKeyRecord,
 };
+use crate::domain::{DocumentKind, SerialSource};
+use crate::settings::AppSettings;
 use crate::store::{Location, Store, StoreConfig};
 use crate::template::{BootstrapTemplate, PlannedCommand, RenderContext};
+
+/// A database action requested by a click, performed after the paint pass.
+///
+/// Native file dialogs are modal and blocking, so they must not run inside a
+/// paint closure — same reason table mutations are deferred.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DbRequest {
+    /// Open a native dialog to choose an existing file.
+    PickExisting,
+    /// Open a native save dialog to name a new file.
+    PickNew,
+    /// Open this path; it must exist.
+    Open(PathBuf),
+    /// Create this path; it must not exist.
+    Create(PathBuf),
+    /// Close the current database and show the chooser.
+    Close,
+    /// Drop a path from the recent list.
+    Forget(PathBuf),
+}
+
+/// The database chooser's form state.
+#[derive(Default)]
+pub struct DatabaseForm {
+    pub path: String,
+    pub password: String,
+    pub error: Option<String>,
+}
+
+/// Consignment-term panel state (distribution screen).
+pub struct TermPanel {
+    pub open: bool,
+    /// Which hand-over the term is for.
+    pub distribution: Option<uuid::Uuid>,
+    /// Language the operator asked for.
+    pub language: String,
+    /// The rendered term, awaiting review before it is saved or printed.
+    pub rendered: Option<String>,
+    /// Language actually used, when it differs from the request.
+    pub language_used: Option<String>,
+    pub error: Option<String>,
+}
+
+impl Default for TermPanel {
+    fn default() -> Self {
+        Self {
+            open: false,
+            distribution: None,
+            language: crate::term::DEFAULT_LANGUAGE.to_owned(),
+            rendered: None,
+            language_used: None,
+            error: None,
+        }
+    }
+}
+
+/// Serial-scanning panel state (inventory screen).
+#[derive(Default)]
+pub struct ScanPanel {
+    pub open: bool,
+    /// Serial decoded from a barcode, awaiting the operator's confirmation.
+    pub candidate: Option<u32>,
+    /// Typed serial, for a USB barcode wedge or manual entry.
+    pub typed: String,
+    pub error: Option<String>,
+    /// Texture handle for the camera preview, recreated as frames arrive.
+    #[cfg(feature = "camera")]
+    pub preview: Option<egui::TextureHandle>,
+    #[cfg(feature = "camera")]
+    pub scanner: Option<crate::scan::camera::CameraScanner>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -54,6 +127,10 @@ pub struct HolderForm {
     pub email: String,
     pub unit: String,
     pub registration: String,
+    /// CPF or the local equivalent; optional.
+    pub identification_number: String,
+    pub phone: String,
+    pub address: String,
     pub error: Option<String>,
 }
 
@@ -97,7 +174,10 @@ pub struct Wizard {
 pub struct YkDistApp {
     pub config: StoreConfig,
     pub store: Option<Store>,
-    pub password_input: String,
+    pub settings: AppSettings,
+    pub db_form: DatabaseForm,
+    pub db_request: Option<DbRequest>,
+    pub scan: ScanPanel,
     pub open_error: Option<String>,
     pub tab: Tab,
     /// Operator credential recorded on every distribution and audit entry.
@@ -117,19 +197,45 @@ pub struct YkDistApp {
     pub holder_form: HolderForm,
     pub dist_form: DistForm,
     pub wizard: Wizard,
+    pub term_panel: TermPanel,
+    /// Term templates, refreshed with everything else.
+    pub term_templates: Vec<crate::term::TermTemplate>,
+    /// How many documents each distribution has.
+    pub document_counts: std::collections::BTreeMap<uuid::Uuid, usize>,
 }
 
 impl YkDistApp {
-    pub fn new(path: PathBuf) -> Self {
+    /// `explicit` comes from `$YKDM_DB` and wins over the remembered database.
+    pub fn new(explicit: Option<PathBuf>) -> Self {
+        let settings = AppSettings::load();
+
+        // Precedence: an explicit path, then the database last used, then the
+        // per-user default.
+        let (path, must_exist) = match (&explicit, &settings.last_database) {
+            (Some(path), _) => (path.clone(), false),
+            (None, Some(remembered)) => (remembered.clone(), true),
+            (None, None) => (Store::default_path(), false),
+        };
+
+        let operator = settings.operator.clone();
+        let org = if settings.org.trim().is_empty() {
+            "FGV".to_owned()
+        } else {
+            settings.org.clone()
+        };
+
         let config = StoreConfig::new(path);
         let mut app = Self {
             config,
             store: None,
-            password_input: String::new(),
+            settings,
+            db_form: DatabaseForm::default(),
+            db_request: None,
+            scan: ScanPanel::default(),
             open_error: None,
             tab: Tab::Inventory,
-            operator: default_operator(),
-            org: "FGV".into(),
+            operator,
+            org,
             backend: Box::new(YkmanBackend::default()),
             detected: Vec::new(),
             status: String::new(),
@@ -142,35 +248,340 @@ impl YkDistApp {
             holder_form: HolderForm::default(),
             dist_form: DistForm::default(),
             wizard: Wizard::default(),
+            term_panel: TermPanel::default(),
+            term_templates: Vec::new(),
+            document_counts: std::collections::BTreeMap::new(),
         };
+
+        app.db_form.path = app.config.path.display().to_string();
+
+        // A remembered database that has gone (an unmounted share) must not be
+        // re-created as an empty file — show the chooser instead.
+        if must_exist && !app.config.path.is_file() {
+            app.open_error = Some(format!(
+                "{} is not reachable — is the share mounted?",
+                app.config.path.display()
+            ));
+            return app;
+        }
+
         // Try without a password first: an unencrypted file opens straight away,
-        // an encrypted one falls through to the unlock screen.
+        // an encrypted one falls through to the chooser.
         app.try_open(None);
         app
     }
 
-    /// Attempt to open the configured database.
+    /// Perform a deferred database action. Called once per frame, outside any
+    /// paint closure, because native dialogs are modal and blocking.
+    pub fn handle_db_request(&mut self) {
+        let Some(request) = self.db_request.take() else {
+            return;
+        };
+        match request {
+            DbRequest::PickExisting => self.pick_existing_database(),
+            DbRequest::PickNew => self.pick_new_database(),
+            DbRequest::Open(path) => {
+                let password = self.take_password();
+                self.open_database(&path, password);
+            }
+            DbRequest::Create(path) => {
+                let password = self.take_password();
+                self.create_database(&path, password);
+            }
+            DbRequest::Close => self.close_database(),
+            DbRequest::Forget(path) => {
+                self.settings.forget(&path);
+                self.settings.save_quietly();
+            }
+        }
+    }
+
+    /// Read and clear the typed password. Never kept beyond the open call.
+    fn take_password(&mut self) -> Option<String> {
+        let password = self.db_form.password.clone();
+        self.db_form.password.clear();
+        if password.is_empty() {
+            None
+        } else {
+            Some(password)
+        }
+    }
+
+    /// Open an existing database, remembering it on success.
+    pub fn open_database(&mut self, path: &Path, password: Option<String>) {
+        let config = StoreConfig::new(path).with_password(password);
+        match Store::open_existing(&config) {
+            Ok(store) => {
+                self.adopt(store, config);
+                self.record(
+                    "app.opened",
+                    "database",
+                    &self.config.path.display().to_string(),
+                );
+                self.refresh();
+            }
+            Err(e) => {
+                tracing::error!(event = "db.open.failed", path = %path.display(), reason = %e);
+                self.db_form.error = Some(e.to_string());
+                self.open_error = Some(e.to_string());
+            }
+        }
+    }
+
+    /// Create a new database, refusing to overwrite an existing file.
+    pub fn create_database(&mut self, path: &Path, password: Option<String>) {
+        let config = StoreConfig::new(path).with_password(password);
+        match Store::create_new(&config) {
+            Ok(store) => {
+                let display = store.path().display().to_string();
+                self.adopt(store, config);
+                self.record("db.created", "database", &display);
+                self.status = format!("created {display}");
+                self.refresh();
+            }
+            Err(e) => {
+                tracing::error!(event = "db.create.failed", path = %path.display(), reason = %e);
+                self.db_form.error = Some(e.to_string());
+            }
+        }
+    }
+
+    /// Close the current database and return to the chooser.
+    pub fn close_database(&mut self) {
+        if self.store.is_some() {
+            self.record("db.closed", "database", "");
+        }
+        self.store = None;
+        self.keys.clear();
+        self.holders.clear();
+        self.distributions.clear();
+        self.runs.clear();
+        self.audit_view.clear();
+        self.open_error = None;
+        self.db_form.error = None;
+        self.db_form.path = self.config.path.display().to_string();
+        self.status = "no database open".into();
+    }
+
+    /// Adopt a freshly opened store as the current one.
+    fn adopt(&mut self, store: Store, config: StoreConfig) {
+        match store.seed_builtin_templates() {
+            Ok(n) if n > 0 => tracing::info!(event = "template.seeded", count = n as i64),
+            Ok(_) => {}
+            Err(e) => tracing::error!(event = "template.seed.failed", reason = %e),
+        }
+        match store.seed_builtin_terms() {
+            Ok(n) if n > 0 => tracing::info!(event = "term.seeded", count = n as i64),
+            Ok(_) => {}
+            Err(e) => tracing::error!(event = "term.seed.failed", reason = %e),
+        }
+        self.settings.remember(&config.path);
+        self.settings.operator = self.operator.clone();
+        self.settings.org = self.org.clone();
+        self.settings.save_quietly();
+
+        self.db_form.path = config.path.display().to_string();
+        self.db_form.error = None;
+        self.open_error = None;
+        self.status = store.describe();
+        self.config = config;
+        self.store = Some(store);
+    }
+
+    /// Persist the operator identity and organisation.
+    pub fn persist_settings(&mut self) {
+        self.settings.operator = self.operator.clone();
+        self.settings.org = self.org.clone();
+        self.settings.save_quietly();
+    }
+
+    #[cfg(feature = "file-dialog")]
+    fn pick_existing_database(&mut self) {
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("Open a distribution database")
+            .add_filter("SQLite database", &crate::paths::DATABASE_EXTENSIONS);
+        if let Some(parent) = self.config.path.parent() {
+            dialog = dialog.set_directory(parent);
+        }
+        if let Some(path) = dialog.pick_file() {
+            let password = self.take_password();
+            self.open_database(&path, password);
+        }
+    }
+
+    #[cfg(not(feature = "file-dialog"))]
+    fn pick_existing_database(&mut self) {
+        self.db_form.error = Some(
+            "this build has no file dialog (`--features file-dialog`) — type the path instead"
+                .into(),
+        );
+    }
+
+    #[cfg(feature = "file-dialog")]
+    fn pick_new_database(&mut self) {
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("Create a distribution database")
+            .set_file_name(crate::paths::DEFAULT_DATABASE_NAME)
+            .add_filter("SQLite database", &crate::paths::DATABASE_EXTENSIONS);
+        if let Some(parent) = self.config.path.parent() {
+            dialog = dialog.set_directory(parent);
+        }
+        if let Some(path) = dialog.save_file() {
+            let password = self.take_password();
+            self.create_database(&path, password);
+        }
+    }
+
+    #[cfg(not(feature = "file-dialog"))]
+    fn pick_new_database(&mut self) {
+        self.db_form.error = Some(
+            "this build has no file dialog (`--features file-dialog`) — type the path instead"
+                .into(),
+        );
+    }
+
+    /// Record a key from a serial alone: a scanned label, or a typed number.
+    ///
+    /// The record is deliberately incomplete — no model, no firmware — and marked
+    /// with its provenance, so nothing pretends this key has been seen.
+    pub fn add_serial(&mut self, serial: u32, source: SerialSource) {
+        let Some(store) = &self.store else { return };
+
+        match store.key_by_serial(serial) {
+            Ok(Some(existing)) => {
+                self.status = format!(
+                    "serial {serial} is already in the inventory ({})",
+                    existing.serial_source.label()
+                );
+                return;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                self.status = format!("could not check the inventory: {e}");
+                return;
+            }
+        }
+
+        let record = YubiKeyRecord::from_serial(serial, source);
+        if let Err(e) = store.upsert_key(&record) {
+            self.status = format!("could not save the key: {e}");
+            return;
+        }
+        self.record(
+            "key.added",
+            &format!("serial:{serial}"),
+            &format!("source={} verified=false", source_str(source)),
+        );
+        self.status = format!(
+            "serial {serial} recorded ({}) — plug the key in to verify it",
+            source.label()
+        );
+        self.refresh();
+    }
+
+    /// Accept the typed serial from the scan panel (USB wedge or manual entry).
+    pub fn accept_typed_serial(&mut self) {
+        let typed = self.scan.typed.trim().to_owned();
+        self.scan.error = None;
+        match crate::scan::parse_serial(&typed) {
+            Ok(serial) => {
+                self.scan.typed.clear();
+                self.add_serial(serial, SerialSource::ManualEntry);
+            }
+            Err(e) => self.scan.error = Some(e.to_string()),
+        }
+    }
+
+    /// Accept the serial the camera decoded.
+    pub fn accept_scanned_serial(&mut self) {
+        if let Some(serial) = self.scan.candidate.take() {
+            self.add_serial(serial, SerialSource::ScannedLabel);
+            #[cfg(feature = "camera")]
+            if let Some(scanner) = &self.scan.scanner {
+                scanner.clear_serial();
+            }
+        }
+    }
+
+    #[cfg(feature = "camera")]
+    pub fn start_camera(&mut self) {
+        use crate::scan::camera::CameraScanner;
+
+        self.scan.error = None;
+        let decoder = Box::new(crate::scan::RxingDecoder::new());
+        match CameraScanner::start(0, decoder) {
+            Ok(scanner) => {
+                self.status = format!("camera: {}", scanner.describe());
+                tracing::info!(event = "camera.started", device = scanner.describe());
+                self.scan.scanner = Some(scanner);
+            }
+            Err(e) => {
+                self.scan.error = Some(e.to_string());
+                tracing::warn!(event = "camera.start.failed", reason = %e);
+            }
+        }
+    }
+
+    #[cfg(feature = "camera")]
+    pub fn stop_camera(&mut self) {
+        if self.scan.scanner.take().is_some() {
+            tracing::info!(event = "camera.stopped");
+        }
+        self.scan.preview = None;
+    }
+
+    /// Pull the latest frame and any decoded serial from the capture thread.
+    #[cfg(feature = "camera")]
+    pub fn poll_camera(&mut self, ctx: &egui::Context) {
+        let Some(scanner) = &self.scan.scanner else {
+            return;
+        };
+        let snapshot = scanner.snapshot();
+
+        if let Some((width, height, rgb)) = snapshot.preview {
+            let expected = width as usize * height as usize * 3;
+            if rgb.len() >= expected {
+                let image = egui::ColorImage::from_rgb([width as usize, height as usize], &rgb);
+                match &mut self.scan.preview {
+                    Some(texture) => texture.set(image, egui::TextureOptions::LINEAR),
+                    None => {
+                        self.scan.preview = Some(ctx.load_texture(
+                            "camera-preview",
+                            image,
+                            egui::TextureOptions::LINEAR,
+                        ));
+                    }
+                }
+            }
+        }
+
+        if let Some(serial) = snapshot.serial {
+            self.scan.candidate = Some(serial);
+        }
+        if let Some(error) = snapshot.last_error {
+            self.scan.error = Some(error);
+        }
+        // Keep frames flowing while the panel is open.
+        ctx.request_repaint_after(std::time::Duration::from_millis(60));
+    }
+
+    /// Open the configured database, creating it if the file is not there.
+    ///
+    /// Used for the default path at first launch. An operator-chosen path goes
+    /// through [`Self::open_database`] or [`Self::create_database`], which refuse
+    /// to create-by-accident or open-by-accident.
     pub fn try_open(&mut self, password: Option<String>) {
         let config = self.config.clone().with_password(password);
         match Store::open(&config) {
             Ok(store) => {
-                self.config = config;
-                match store.seed_builtin_templates() {
-                    Ok(n) if n > 0 => {
-                        tracing::info!(event = "template.seeded", count = n as i64);
-                    }
-                    Ok(_) => {}
-                    Err(e) => tracing::error!(event = "template.seed.failed", reason = %e),
-                }
-                self.status = store.describe();
-                self.store = Some(store);
-                self.open_error = None;
+                self.adopt(store, config);
                 self.record("app.opened", "database", "");
                 self.refresh();
             }
             Err(e) => {
                 tracing::error!(event = "db.open.failed", reason = %e);
                 self.open_error = Some(e.to_string());
+                self.db_form.error = Some(e.to_string());
                 self.store = None;
             }
         }
@@ -202,6 +613,277 @@ impl YkDistApp {
         }
         if self.templates.is_empty() {
             self.templates = BootstrapTemplate::builtin();
+        }
+
+        match store.term_templates() {
+            Ok(terms) if !terms.is_empty() => self.term_templates = terms,
+            Ok(_) => self.term_templates = crate::term::TermTemplate::builtin(),
+            Err(e) => {
+                tracing::error!(event = "term.read.failed", reason = %e);
+                self.term_templates = crate::term::TermTemplate::builtin();
+            }
+        }
+        match store.document_counts() {
+            Ok(counts) => self.document_counts = counts,
+            Err(e) => tracing::error!(event = "document.count.failed", reason = %e),
+        }
+    }
+
+    // ------------------------------------------------------ consignment terms
+
+    /// Render the consignment term for a hand-over, in the requested language.
+    pub fn generate_term(&mut self, distribution_id: uuid::Uuid) {
+        use crate::term::{TermContext, choose_template, render_term};
+
+        self.term_panel.open = true;
+        self.term_panel.distribution = Some(distribution_id);
+        self.term_panel.rendered = None;
+        self.term_panel.language_used = None;
+        self.term_panel.error = None;
+
+        let Some(record) = self
+            .distributions
+            .iter()
+            .find(|d| d.id == distribution_id)
+            .cloned()
+        else {
+            self.term_panel.error = Some("hand-over not found".into());
+            return;
+        };
+        let Some(holder) = self
+            .holders
+            .iter()
+            .find(|h| h.id == record.holder_id)
+            .cloned()
+        else {
+            self.term_panel.error =
+                Some("the holder of this hand-over is no longer in the register".into());
+            return;
+        };
+        let key = self
+            .keys
+            .iter()
+            .find(|k| k.serial == record.key_serial)
+            .cloned()
+            .unwrap_or_else(|| {
+                YubiKeyRecord::from_serial(record.key_serial, SerialSource::ManualEntry)
+            });
+
+        let run = record
+            .bootstrap_run_id
+            .and_then(|id| self.runs.iter().find(|r| r.id == id));
+        let applied = run
+            .map(|r| r.summary())
+            .unwrap_or_else(|| "nothing recorded".to_owned());
+        let custody = run
+            .and_then(|r| crate::domain::CustodyModel::parse(&r.custody))
+            .unwrap_or(crate::domain::CustodyModel::DEFAULT)
+            .label()
+            .to_owned();
+
+        let ctx = TermContext::from_records(
+            &holder,
+            &key,
+            Some(&record),
+            &applied,
+            &custody,
+            &self.operator,
+            &self.org,
+        );
+
+        let language = self.term_panel.language.clone();
+        let Some(template) = choose_template(&self.term_templates, "consignment", &language) else {
+            self.term_panel.error = Some(format!("no consignment term template for `{language}`"));
+            return;
+        };
+
+        if !template.language.eq_ignore_ascii_case(&language) {
+            self.term_panel.language_used = Some(template.language.clone());
+        }
+
+        match render_term(template, &ctx) {
+            Ok(text) => {
+                let details = format!(
+                    "holder={} language={} template={}@{}",
+                    holder.email, template.language, template.id, template.version
+                );
+                self.term_panel.rendered = Some(text);
+                self.record(
+                    "term.generated",
+                    &format!("serial:{}", record.key_serial),
+                    &details,
+                );
+            }
+            Err(e) => self.term_panel.error = Some(e.to_string()),
+        }
+    }
+
+    /// Write the rendered term to a file the operator chooses.
+    pub fn save_term(&mut self) {
+        let Some(text) = self.term_panel.rendered.clone() else {
+            return;
+        };
+        let serial = self
+            .term_panel
+            .distribution
+            .and_then(|id| self.distributions.iter().find(|d| d.id == id))
+            .map(|d| d.key_serial)
+            .unwrap_or_default();
+        let suggested = format!("termo-{serial}.txt");
+
+        if let Some(path) = self.save_bytes(&suggested, text.as_bytes()) {
+            let display = path.display().to_string();
+            self.record("term.saved", &format!("serial:{serial}"), &display);
+            self.status = format!("term written to {display}");
+        }
+    }
+
+    /// Attach a signed term (or any accepted document) to a hand-over.
+    pub fn attach_document(&mut self, distribution_id: uuid::Uuid, kind: DocumentKind) {
+        let Some((filename, content)) = self.read_chosen_file() else {
+            return;
+        };
+
+        let document = match crate::domain::AttachedDocument::new(
+            distribution_id,
+            kind,
+            &filename,
+            content,
+            &self.operator,
+        ) {
+            Ok(document) => document,
+            Err(e) => {
+                self.term_panel.error = Some(e.to_string());
+                self.status = format!("upload refused: {e}");
+                return;
+            }
+        };
+
+        let Some(store) = &self.store else { return };
+        if let Err(e) = store.insert_document(&document) {
+            self.status = format!("could not file the document: {e}");
+            return;
+        }
+
+        let serial = self
+            .distributions
+            .iter()
+            .find(|d| d.id == distribution_id)
+            .map(|d| d.key_serial)
+            .unwrap_or_default();
+        let details = format!(
+            "kind={} file={} bytes={} sha256={}",
+            crate::store::document_kind_str(document.kind),
+            document.filename,
+            document.size_bytes,
+            document.sha256
+        );
+        self.record(
+            "term.signed_uploaded",
+            &format!("serial:{serial}"),
+            &details,
+        );
+        self.status = format!(
+            "{} filed ({}, {})",
+            document.kind.label(),
+            document.size_label(),
+            document.short_digest()
+        );
+        self.refresh();
+    }
+
+    /// Write a filed document back out to disk.
+    pub fn export_document(&mut self, id: uuid::Uuid) {
+        let Some(store) = &self.store else { return };
+        let document = match store.document_content(id) {
+            Ok(document) => document,
+            Err(e) => {
+                self.status = format!("could not read the document: {e}");
+                return;
+            }
+        };
+        if document.verify() == Some(false) {
+            self.status = format!(
+                "REFUSED: {} does not match the digest recorded when it was filed",
+                document.filename
+            );
+            tracing::error!(event = "document.digest.mismatch", document = %id);
+            return;
+        }
+        let Some(content) = document.content.clone() else {
+            return;
+        };
+        let filename = document.filename.clone();
+        let digest = document.sha256.clone();
+        if let Some(path) = self.save_bytes(&filename, &content) {
+            let display = path.display().to_string();
+            self.record("document.exported", &digest, &display);
+            self.status = format!("written to {display}");
+        }
+    }
+
+    // ------------------------------------------------------------ file access
+
+    #[cfg(feature = "file-dialog")]
+    fn read_chosen_file(&mut self) -> Option<(String, Vec<u8>)> {
+        let path = rfd::FileDialog::new()
+            .set_title("Choose the signed term")
+            .add_filter(
+                "Scanned document",
+                &["pdf", "png", "jpg", "jpeg", "tif", "tiff"],
+            )
+            .pick_file()?;
+        match std::fs::read(&path) {
+            Ok(content) => Some((
+                path.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "document".into()),
+                content,
+            )),
+            Err(e) => {
+                self.status = format!("could not read {}: {e}", path.display());
+                None
+            }
+        }
+    }
+
+    #[cfg(not(feature = "file-dialog"))]
+    fn read_chosen_file(&mut self) -> Option<(String, Vec<u8>)> {
+        self.status = "uploading a document needs a build with `--features file-dialog`".into();
+        None
+    }
+
+    #[cfg(feature = "file-dialog")]
+    fn save_bytes(&mut self, suggested: &str, content: &[u8]) -> Option<PathBuf> {
+        let path = rfd::FileDialog::new()
+            .set_title("Save")
+            .set_file_name(suggested)
+            .save_file()?;
+        match std::fs::write(&path, content) {
+            Ok(()) => Some(path),
+            Err(e) => {
+                self.status = format!("could not write {}: {e}", path.display());
+                None
+            }
+        }
+    }
+
+    #[cfg(not(feature = "file-dialog"))]
+    fn save_bytes(&mut self, suggested: &str, content: &[u8]) -> Option<PathBuf> {
+        // Without a dialog, fall back to writing next to the database — a location
+        // the operator already knows.
+        let path = self
+            .config
+            .path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(suggested);
+        match std::fs::write(&path, content) {
+            Ok(()) => Some(path),
+            Err(e) => {
+                self.status = format!("could not write {}: {e}", path.display());
+                None
+            }
         }
     }
 
@@ -368,7 +1050,9 @@ impl YkDistApp {
     pub fn submit_holder(&mut self) {
         self.holder_form.error = None;
         let form = &self.holder_form;
-        match Holder::new(&form.full_name, &form.email, &form.unit, &form.registration) {
+        match Holder::new(&form.full_name, &form.email, &form.unit, &form.registration).and_then(
+            |holder| holder.with_optional(&form.identification_number, &form.phone, &form.address),
+        ) {
             Ok(holder) => {
                 let Some(store) = &self.store else { return };
                 if let Err(e) = store.insert_holder(&holder) {
@@ -486,16 +1170,28 @@ fn existing_is_new(store: &Store, serial: u32) -> bool {
     !matches!(store.key_by_serial(serial), Ok(Some(_)))
 }
 
-fn default_operator() -> String {
-    std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
-        .unwrap_or_else(|_| "unknown".into())
+/// Audit-friendly rendering of a serial's provenance.
+fn source_str(source: SerialSource) -> &'static str {
+    match source {
+        SerialSource::Device => "device",
+        SerialSource::ScannedLabel => "scanned-label",
+        SerialSource::ManualEntry => "manual-entry",
+    }
 }
 
 impl eframe::App for YkDistApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // Deferred work first: dialogs are modal, and camera frames must not be
+        // fetched from inside a paint closure.
+        self.handle_db_request();
+        #[cfg(feature = "camera")]
+        if self.scan.open {
+            let ctx = ui.ctx().clone();
+            self.poll_camera(&ctx);
+        }
+
         if self.store.is_none() {
-            crate::ui::unlock::show(self, ui);
+            crate::ui::database::show(self, ui);
             return;
         }
 

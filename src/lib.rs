@@ -11,7 +11,10 @@
 //! | [`domain`] | Records: keys, holders, distribution events, bootstrap runs |
 //! | [`device`] | YubiKey discovery / inspection behind a mockable trait |
 //! | [`template`] | Bootstrap templates, variable rendering, command planning |
-//! | [`store`] | Persistence of every record (JSON today, SQLite planned) |
+//! | [`store`] | Persistence: one SQLite file, optionally password-protected |
+//! | [`settings`] | Which database to open, and the recent ones |
+//! | [`scan`] | Reading a serial from a barcode (label or camera) |
+//! | [`term`] | Consignment terms: multilingual templates and rendering |
 //! | [`audit`] | Append-only, hash-chained audit trail |
 //! | [`logging`] | The single logging entry point for the whole app |
 //! | [`app`] / [`ui`] | egui shell and screens |
@@ -24,8 +27,12 @@ pub mod audit;
 pub mod device;
 pub mod domain;
 pub mod logging;
+pub mod paths;
+pub mod scan;
+pub mod settings;
 pub mod store;
 pub mod template;
+pub mod term;
 pub mod ui;
 
 pub use app::YkDistApp;

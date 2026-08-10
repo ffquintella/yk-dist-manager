@@ -29,16 +29,18 @@ deployment.
 
 | State | Count |
 |---|---|
-| Done | 5 |
+| Done | 9 |
 | In progress | 9 |
 | Todo | 20 |
-| **Total tracked items** | **34** (across 31 specs — two items share a spec) |
+| **Total tracked items** | **38** (across 35 specs — two items share a spec) |
 
-Current wave: **Wave 1 — native execution.** Wave 0 (foundation) is in place:
-the app builds, reads a real key natively, records inventory, holders,
-distributions and dry-run bootstraps into a single-file database with a
-hash-chained, trigger-protected audit trail. 129 tests pass (plus 2 read-only
-hardware tests), with 90.26% line coverage of the headless core.
+Released: **v0.2.1**. Current wave: **Wave 1 — native execution.**
+
+Wave 0 (foundation) is in place, and v0.2.1 adds the paperwork and intake half of
+the job: choosing or creating the database file, recording serials from a barcode,
+generating the consignment term in the holder's language, and filing the signed
+copy against the hand-over. 193 tests pass (plus 2 read-only hardware tests), with
+86.92% line coverage of the headless core.
 
 ## How to read this
 
@@ -59,18 +61,28 @@ Everything needed before a single byte is written to a key.
 | `[/]` | Native device transport | [spec](features/native-device-transport.md) — `yubikey` over PC/SC reads serial + firmware from a real key today (verified against 5 NFC / fw 5.4.3, agrees with `ykman`). FIDO2 and OTP transports are Wave 1. |
 | `[x]` | `ykman` fallback + parsers | [spec](features/ykman-fallback.md) — argv-only subprocess, typed errors, parsers unit-tested against recorded output of ykman 5.9.2. |
 | `[/]` | Device detection | [spec](features/device-detection.md) — read-on-demand works; hot-plug polling and multi-key selection pending. |
-| `[/]` | Single-file SQLite storage | [spec](features/storage-sqlite-single-file.md) — schema v1, `user_version` migrations, WAL locally / rollback journal on a share, `VACUUM INTO` backup, `integrity_check`. |
+| `[/]` | Single-file SQLite storage | [spec](features/storage-sqlite-single-file.md) — schema **v3**, `user_version` migrations (v1→v3 tested), WAL locally / rollback journal on a share, `VACUUM INTO` backup, `integrity_check`. |
+| `[x]` | Choosing / creating the database file | [spec](features/database-selection.md) — strict `open_existing` vs `create_new` (a typo can no longer create an empty database), recent-database list, native dialogs, switch from Settings. |
 | `[ ]` | Optional database password | [spec](features/db-password-and-encryption.md) — `encrypted-db` feature wires `PRAGMA key`; unlock screen exists. KDF parameters, password change and re-key are Todo. |
 | `[x]` | Logging | [spec](features/logging.md) — one entry point, three levels, G-002 line format, no hand-built log lines. |
 | `[/]` | Audit trail | [spec](features/audit-trail.md) — SHA-256 chain, `UPDATE`/`DELETE` refused by trigger, chain verification in the GUI. Segregated storage still open (see gates). |
-| `[x]` | Key inventory | [spec](features/key-inventory.md) — serial, model, firmware, form factor, FIPS flag, applications, lifecycle with guarded transitions. |
-| `[x]` | Holder registry | [spec](features/holder-registry.md) — minimal personal data, validated e-mail, RFC 4514 subject derivation. |
+| `[x]` | Key inventory | [spec](features/key-inventory.md) — serial, model, firmware, form factor, FIPS flag, applications, lifecycle with guarded transitions, and serial provenance (verified / scanned / typed). |
+| `[x]` | Serial from a barcode | [spec](features/serial-scanning.md) — camera decoding via `rxing` + `nokhwa`, a USB-wedge/typed path that needs no features, and provenance that only ever improves. |
+| `[x]` | Holder registry | [spec](features/holder-registry.md) — minimal personal data, validated e-mail, RFC 4514 subject derivation, plus optional identification number, phone and address. |
 | `[x]` | Distribution records | [spec](features/distribution-records.md) — hand-over, operator, delivery method, receipt reference, linked bootstrap run, return without rewriting history. |
 | `[/]` | Bootstrap templates | [spec](features/bootstrap-templates.md) — versioned templates, `{{variable}}` rendering, two built-ins, validation. A GUI editor and template signing are pending. |
 | `[/]` | Bootstrap planner | [spec](features/bootstrap-engine.md) — plan with per-step transport (native / ykman / manual) and secret placeholders; dry runs recorded. **The executor is Wave 1.** |
 | `[/]` | GUI shell | [spec](features/gui-shell.md) — six screens, unlock screen, status bar, egui 0.36 `App::ui`. |
 | `[/]` | Bootstrap wizard | [spec](features/gui-bootstrap-wizard.md) — selection, per-step opt-out, plan review, dry run. Execution progress view pending. |
 | `[/]` | Testing strategy | [spec](features/testing-strategy.md) — 129 tests across unit + behaviour suites, mock backend, recorded fixtures, ignored hardware tests; 90.26% core line coverage. The gate is not yet enforced in CI. |
+
+### Paperwork
+
+| Status | Feature | Notes |
+|---|---|---|
+| `[x]` | Consignment terms | [spec](features/consignment-terms.md) — multilingual templates keyed `(id, language, version)`, pt-BR + en built in, optional fields that omit their own line, generated from the record. The **wording needs its owner's review**. |
+| `[x]` | Signed-term upload | [spec](features/signed-term-documents.md) — the scan is filed in the database with a SHA-256, verified on export, with a per-hand-over "none filed" badge. |
+| `[ ]` | Receipts & terms (PDF, signature tracking) | [spec](features/receipts-and-terms.md) — the broader spec: PDF output, a signature state machine, return receipts, batch generation. |
 
 ## Wave 1 — Execute the bootstrap, natively
 
@@ -92,7 +104,6 @@ The point of the tool: apply the template to a key, safely, with evidence.
 | Status | Feature | Notes |
 |---|---|---|
 | `[ ]` | Key lifecycle & revocation | [spec](features/key-lifecycle-and-revocation.md) — lost/stolen handling, certificate revocation, applet reset, re-issue to a new holder. |
-| `[ ]` | Receipts & responsibility terms | [spec](features/receipts-and-terms.md) — render the hand-over term from the record, track signature, store the reference. |
 | `[ ]` | Reports & export | [spec](features/reports-and-export.md) — inventory and distribution reports, CSV/JSON export, audit export for the ESI. |
 | `[ ]` | Bulk enrolment | [spec](features/bulk-enrollment.md) — queue of keys for one template, batch progress, per-key evidence. |
 | `[ ]` | Operator authentication & roles | [spec](features/operator-auth-and-roles.md) — operator identity is currently `$USER`, which is not authentication. Roles (admin / distributor / auditor), AD integration, MFA with a YubiKey on sensitive operations. |
@@ -141,12 +152,17 @@ Decisions that change what gets built, and are not the implementer's to make.
 3. **Retention** of audit entries and logs — not fixed by the norm; ESI decides.
 4. **Classification level** of the system. Proposed: level 3 (see
    `docs/security-and-compliance.md`). ESI validates.
-5. **The PUK under model B.** The transport PIN is handed over and changed by the
+5. **The term's wording.** The built-in pt-BR and en consignment terms are a
+   complete, plausible draft — including the undertaking and an LGPD paragraph — but
+   institutional text is not the implementer's to write. It needs review by whoever
+   owns the term, and the data-protection paragraph needs the DPO. Templates are data
+   precisely so that review is an edit, not a code change.
+6. **The PUK under model B.** The transport PIN is handed over and changed by the
    holder; the PUK has no force-change mechanism. Default taken: hand the PUK to
    the holder in the same sealed envelope and retain nothing, which means a
    blocked PIN with a lost PUK costs an applet reset (and a new certificate).
    Retaining the PUK instead would be escrow, with a store to protect. Confirm.
-6. **The OTP access code under model B.** The holder never needs it, so the
+7. **The OTP access code under model B.** The holder never needs it, so the
    default taken is generate-and-discard: the slot is deliberately frozen, and
    reprogramming it later requires an OTP applet reset. Confirm, or switch the
    template to put the code in the envelope.
@@ -175,3 +191,9 @@ Decisions that change what gets built, and are not the implementer's to make.
 | 2026-08-10 | Bootstrap is dry-run only until the executor lands | Nothing should touch a key before the plan, custody and audit paths are proven |
 | 2026-08-10 | The signing credential is a PIV 9c X.509 certificate with the e-mail in `rfc822Name`, not an OpenPGP subkey | Works with the mail clients and document signers in use, needs nothing installed on the workstation, and the OS surfaces slot 9c for signing |
 | 2026-08-10 | Custody model **B**: transport secret + forced change; nothing retained | Works for posted keys as well as desk hand-overs, and avoids creating a per-device credential store. FIDO2 enforces it in firmware from 5.7; below that, and for PIV always, the change is instructed on the hand-over term and the run records which applied |
+| 2026-08-10 | `open` and `create` are separate operations, and neither guesses | `Store::open` created a missing file, so a typo'd share path produced an empty database that looked like total data loss |
+| 2026-08-10 | A serial's **provenance** is recorded, and only ever improves | A serial from a box label is a claim about a key nobody has touched; treating it as equal to a device read would let a mis-scan bind a certificate to the wrong key |
+| 2026-08-10 | The USB barcode wedge is the recommended intake path, with the camera as the alternative | A wedge needs no camera, no permission and no decoding; a laptop camera is fixed-focus and awkward at label distance |
+| 2026-08-10 | Term templates are data, keyed `(id, language, version)`, with **line omission** instead of a conditional syntax | The wording is institutional text somebody else owns, and one documented rule ("a line whose variable is empty disappears") is far harder to get wrong in a legal document than `{{#if}}` |
+| 2026-08-10 | The signed term is stored **in** the database, not as a path | The database is the unit of deployment: a path reference breaks the moment the file moves to a share, which is exactly when the evidence is needed. The cost — personal data in the file — is an argument for the password, and is documented as such |
+| 2026-08-10 | The identification field is called an **identification number**, not CPF | It holds a CPF in Brazil and the local equivalent elsewhere; naming it `cpf` would have made the first non-Brazilian holder a migration |

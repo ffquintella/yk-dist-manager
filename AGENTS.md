@@ -131,9 +131,9 @@ make coverage          # whole crate, including untested paint code
 make coverage-html     # browsable report
 ```
 
-Current: **90.26%** core line coverage (86.29% region), 129 tests.
-Whole-crate line coverage is 59.00%, the difference being ~1000 lines of egui
-paint code.
+Current (v0.2.1): **86.92%** core line coverage (83.75% region), 193 tests.
+Whole-crate line coverage is lower, the difference being the egui paint code the
+gate excludes.
 
 - `src/ui/`, `src/app.rs` and `src/main.rs` are excluded from the gate because
   painting is not unit tested. That exclusion is a *contract*, not an amnesty:

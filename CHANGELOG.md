@@ -17,6 +17,8 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-10
+
 ### Added
 
 - Project foundation: `yk-dist-manager` replaces the IronRoot desktop template.
@@ -66,6 +68,48 @@ Maintenance instructions (see AGENTS.md §5):
 - **`Makefile`** with the checks that must pass before a release
   (`make release-check`).
 
+### Added (choosing the database, intake, and paperwork)
+
+- **Choose or create the database file** from inside the application
+  ([spec](features/database-selection.md)): a chooser screen with the recently used
+  databases (each marked reachable or not), a typed path for UNC and share paths,
+  native *Choose file… / New file…* dialogs behind the default `file-dialog`
+  feature, and *Switch database…* in Settings.
+- **`Store::open_existing` and `Store::create_new`** replace guessing: opening a
+  path that does not exist is an error, and creating over an existing file is
+  refused. Previously a mistyped share path silently created an empty database,
+  which looked exactly like every record having vanished.
+- **`settings.json`** in the per-user data directory remembers the last database, up
+  to 8 recent ones, and the operator identity. It is written atomically, tolerates
+  corruption by falling back to defaults, and **never contains a password**.
+- **Read a serial from a barcode** ([spec](features/serial-scanning.md)): a typed
+  field that a USB barcode scanner types into (no features needed, and the
+  recommended path), plus camera capture via `nokhwa` and decoding via `rxing`
+  behind the `camera` / `barcode` features. Ambiguity is refused rather than
+  guessed — two different serials in one frame is an error.
+- **Serial provenance** (`SerialSource`: device / scanned-label / manual-entry) on
+  every inventory record, so a serial from a box label is never mistaken for one
+  read from the hardware. Provenance only ever improves: a device read upgrades a
+  scanned record and a later scan never downgrades a verified one.
+- **Consignment terms** ([spec](features/consignment-terms.md)): multilingual
+  templates keyed `(id, language, version)` with **pt-BR** and **en** built in,
+  rendered from the records — holder name, identification number, key serial, what
+  the bootstrap applied, the custody statement. A line whose placeholder resolves to
+  empty is omitted, so optional fields need no conditional syntax and no term prints
+  a stray `Phone:`. Language selection falls back (exact → base language → default)
+  and reports what it used.
+- **Optional holder fields**: identification number (CPF or the local equivalent —
+  named for what it is, not for one country's document), phone and address. A
+  re-registration fills them in and never blanks them.
+- **Upload the signed term** ([spec](features/signed-term-documents.md)): the scan is
+  filed in the database with a SHA-256, validated first (non-empty, ≤ 8 MiB, scanner
+  formats only, filename stripped of any path), listed without its bytes, and
+  verified before every export. A per-hand-over badge shows `none filed` or
+  `n filed`.
+- **Schema v2 and v3** with migrations: `keys.serial_source`; the optional holder
+  fields, `term_templates` and `documents`. A test builds a v1 database by hand and
+  asserts the chain carries it forward without touching the rows.
+
 ### Changed
 
 - **Custody model decided: B — transport secret plus forced change.** Every PIN
@@ -100,6 +144,13 @@ Maintenance instructions (see AGENTS.md §5):
 - Personal data is limited to name, corporate e-mail, unit and an optional
   registration id, with every field length-bounded on entry.
 - Nothing in this release writes to a YubiKey. The bootstrap screen is dry-run
-  only until the executor and the custody model land (Wave 1).
+  only until the executor lands (Wave 1).
+- A signed term and an identification number are personal data now held **inside**
+  the database. That is a deliberate trade for keeping the evidence with the record,
+  and it is a direct argument for enabling `encrypted-db`; the consequence is stated
+  in `docs/security-and-compliance.md` rather than left implicit.
+- Uploaded filenames are treated as data: any directory component is stripped, so a
+  name like `../../etc/passwd.pdf` cannot escape.
 
-[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/cdea137...HEAD
+[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/ffquintella/yk-dist-manager/compare/cdea137...v0.2.1

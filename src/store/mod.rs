@@ -25,13 +25,16 @@ use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
 
 use crate::audit::{AuditEntry, GENESIS};
+use crate::domain::{AttachedDocument, DocumentKind};
 use crate::domain::{
-    BootstrapRun, DeliveryMethod, DistributionRecord, Holder, KeyStatus, StepOutcome, YubiKeyRecord,
+    BootstrapRun, DeliveryMethod, DistributionRecord, Holder, KeyStatus, SerialSource, StepOutcome,
+    YubiKeyRecord,
 };
 use crate::template::BootstrapTemplate;
+use crate::term::TermTemplate;
 
 /// Current schema version, tracked in `PRAGMA user_version`.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 3;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -52,6 +55,10 @@ pub enum StoreError {
     Transition { from: String, to: String },
     #[error("record not found: {0}")]
     NotFound(String),
+    #[error("no database file at {0} — choose an existing one, or create a new one")]
+    Missing(PathBuf),
+    #[error("a file already exists at {0} — open it instead of creating it")]
+    AlreadyExists(PathBuf),
     #[error("serialisation error: {0}")]
     Json(#[from] serde_json::Error),
 }
@@ -135,28 +142,42 @@ impl Store {
         {
             return PathBuf::from(explicit);
         }
-        let home = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .unwrap_or_else(|_| ".".into());
-        let mut path = PathBuf::from(home);
-        if cfg!(target_os = "macos") {
-            path.push("Library/Application Support/yk-dist-manager");
-        } else if cfg!(target_os = "windows") {
-            path.push("AppData/Roaming/yk-dist-manager");
-        } else {
-            path.push(".local/share/yk-dist-manager");
-        }
-        path.push("yk-dist-manager.sqlite3");
-        path
+        crate::paths::data_dir().join(crate::paths::DEFAULT_DATABASE_NAME)
     }
 
-    /// Open (creating if needed), apply pragmas, migrate.
+    /// Open an existing database, or create one if the file is not there.
+    ///
+    /// Used for the default path on first launch, and by tests. An operator
+    /// choosing a path should use [`Store::open_existing`] or
+    /// [`Store::create_new`] instead, so a typo cannot silently produce a second,
+    /// empty database that looks like data loss.
     pub fn open(config: &StoreConfig) -> Result<Self> {
         if let Some(parent) = config.path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
         let conn = Connection::open(&config.path)?;
         Self::finish_open(conn, config.path.clone(), config)
+    }
+
+    /// Open a database that must already exist.
+    pub fn open_existing(config: &StoreConfig) -> Result<Self> {
+        if !config.path.is_file() {
+            return Err(StoreError::Missing(config.path.clone()));
+        }
+        Self::open(config)
+    }
+
+    /// Create a database, refusing to touch an existing file.
+    ///
+    /// The refusal matters: "create" must never open somebody else's dataset,
+    /// and must never be a way to append to a file the operator believed was new.
+    pub fn create_new(config: &StoreConfig) -> Result<Self> {
+        if config.path.exists() {
+            return Err(StoreError::AlreadyExists(config.path.clone()));
+        }
+        let store = Self::open(config)?;
+        store.seed_builtin_templates()?;
+        Ok(store)
     }
 
     /// In-memory database, for tests.
@@ -279,6 +300,12 @@ impl Store {
         if version < 1 {
             self.conn.execute_batch(SCHEMA_V1)?;
         }
+        if version < 2 {
+            self.conn.execute_batch(MIGRATE_V2)?;
+        }
+        if version < 3 {
+            self.conn.execute_batch(MIGRATE_V3)?;
+        }
 
         self.conn
             .pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -307,8 +334,8 @@ impl Store {
     pub fn upsert_key(&self, record: &YubiKeyRecord) -> Result<()> {
         self.conn.execute(
             "INSERT INTO keys (id, serial, model, firmware, form_factor, fips, applications,
-                               status, batch, notes, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                               status, batch, notes, serial_source, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(serial) DO UPDATE SET
                  model = excluded.model,
                  firmware = excluded.firmware,
@@ -317,6 +344,13 @@ impl Store {
                  applications = excluded.applications,
                  batch = excluded.batch,
                  notes = excluded.notes,
+                 -- Provenance only ever improves: a device read upgrades a
+                 -- scanned or typed serial, and a later scan never downgrades a
+                 -- serial we have verified against the hardware.
+                 serial_source = CASE
+                     WHEN excluded.serial_source = 'device' THEN 'device'
+                     ELSE keys.serial_source
+                 END,
                  updated_at = excluded.updated_at",
             params![
                 record.id.to_string(),
@@ -329,6 +363,7 @@ impl Store {
                 key_status_str(record.status),
                 record.batch,
                 record.notes,
+                serial_source_str(record.serial_source),
                 record.created_at.to_rfc3339(),
                 record.updated_at.to_rfc3339(),
             ],
@@ -339,7 +374,7 @@ impl Store {
     pub fn keys(&self) -> Result<Vec<YubiKeyRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, serial, model, firmware, form_factor, fips, applications, status,
-                    batch, notes, created_at, updated_at
+                    batch, notes, created_at, updated_at, serial_source
              FROM keys ORDER BY serial",
         )?;
         let rows = stmt.query_map([], row_to_key)?;
@@ -353,7 +388,7 @@ impl Store {
             .conn
             .query_row(
                 "SELECT id, serial, model, firmware, form_factor, fips, applications, status,
-                        batch, notes, created_at, updated_at
+                        batch, notes, created_at, updated_at, serial_source
                  FROM keys WHERE serial = ?1",
                 params![serial],
                 row_to_key,
@@ -388,12 +423,25 @@ impl Store {
 
     pub fn insert_holder(&self, holder: &Holder) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO holders (id, full_name, email, unit, registration, active, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "INSERT INTO holders (id, full_name, email, unit, registration, identification_number,
+                                  phone, address, active, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(email) DO UPDATE SET
                  full_name = excluded.full_name,
                  unit = excluded.unit,
                  registration = excluded.registration,
+                 -- An optional field is only ever filled in, never blanked by a
+                 -- re-registration that omitted it.
+                 identification_number = CASE
+                     WHEN excluded.identification_number <> '' THEN excluded.identification_number
+                     ELSE holders.identification_number
+                 END,
+                 phone = CASE
+                     WHEN excluded.phone <> '' THEN excluded.phone ELSE holders.phone
+                 END,
+                 address = CASE
+                     WHEN excluded.address <> '' THEN excluded.address ELSE holders.address
+                 END,
                  active = excluded.active",
             params![
                 holder.id.to_string(),
@@ -401,6 +449,9 @@ impl Store {
                 holder.email,
                 holder.unit,
                 holder.registration,
+                holder.identification_number,
+                holder.phone,
+                holder.address,
                 holder.active as i64,
                 holder.created_at.to_rfc3339(),
             ],
@@ -410,7 +461,8 @@ impl Store {
 
     pub fn holders(&self) -> Result<Vec<Holder>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, full_name, email, unit, registration, active, created_at
+            "SELECT id, full_name, email, unit, registration, active, created_at,
+                    identification_number, phone, address
              FROM holders ORDER BY full_name",
         )?;
         let rows = stmt.query_map([], row_to_holder)?;
@@ -565,6 +617,150 @@ impl Store {
         Ok(inserted)
     }
 
+    // --------------------------------------------------------- term templates
+
+    pub fn upsert_term_template(&self, template: &TermTemplate) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO term_templates (id, language, version, title, body, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id, language, version) DO UPDATE SET
+                 title = excluded.title,
+                 body = excluded.body,
+                 updated_at = excluded.updated_at",
+            params![
+                template.id,
+                template.language,
+                template.version,
+                template.title,
+                template.body,
+                Utc::now().to_rfc3339(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn term_templates(&self) -> Result<Vec<TermTemplate>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, language, version, title, body FROM term_templates
+             ORDER BY id, language, version",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(TermTemplate {
+                id: row.get(0)?,
+                language: row.get(1)?,
+                version: row.get(2)?,
+                title: row.get(3)?,
+                body: row.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Insert the built-in terms, leaving an edited template of the same id,
+    /// language and version alone.
+    pub fn seed_builtin_terms(&self) -> Result<usize> {
+        let mut inserted = 0;
+        for template in TermTemplate::builtin() {
+            let exists: i64 = self.conn.query_row(
+                "SELECT count(*) FROM term_templates
+                 WHERE id = ?1 AND language = ?2 AND version = ?3",
+                params![template.id, template.language, template.version],
+                |row| row.get(0),
+            )?;
+            if exists == 0 {
+                self.upsert_term_template(&template)?;
+                inserted += 1;
+            }
+        }
+        Ok(inserted)
+    }
+
+    // ------------------------------------------------------------- documents
+
+    /// File a document (typically the signed term) against a distribution.
+    pub fn insert_document(&self, document: &AttachedDocument) -> Result<()> {
+        let content = document.content.as_ref().ok_or(StoreError::Decode {
+            column: "documents.content",
+            value: "no content to store".into(),
+        })?;
+
+        self.conn.execute(
+            "INSERT INTO documents (id, distribution_id, kind, filename, media_type, size_bytes,
+                                    sha256, uploaded_at, uploaded_by, content)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                document.id.to_string(),
+                document.distribution_id.to_string(),
+                document_kind_str(document.kind),
+                document.filename,
+                document.media_type,
+                document.size_bytes as i64,
+                document.sha256,
+                document.uploaded_at.to_rfc3339(),
+                document.uploaded_by,
+                content,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Documents filed against a distribution, **without** their content.
+    pub fn documents_for(&self, distribution_id: Uuid) -> Result<Vec<AttachedDocument>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, distribution_id, kind, filename, media_type, size_bytes, sha256,
+                    uploaded_at, uploaded_by
+             FROM documents WHERE distribution_id = ?1 ORDER BY uploaded_at DESC",
+        )?;
+        let rows = stmt.query_map(params![distribution_id.to_string()], row_to_document)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .collect::<Result<Vec<_>>>()
+    }
+
+    /// How many documents each distribution has, for the table badge.
+    pub fn document_counts(&self) -> Result<std::collections::BTreeMap<Uuid, usize>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT distribution_id, count(*) FROM documents GROUP BY distribution_id")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        let mut out = std::collections::BTreeMap::new();
+        for row in rows {
+            let (id, count) = row?;
+            if let Ok(id) = Uuid::parse_str(&id) {
+                out.insert(id, count as usize);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Load one document with its content, for export.
+    pub fn document_content(&self, id: Uuid) -> Result<AttachedDocument> {
+        let found = self
+            .conn
+            .query_row(
+                "SELECT id, distribution_id, kind, filename, media_type, size_bytes, sha256,
+                        uploaded_at, uploaded_by, content
+                 FROM documents WHERE id = ?1",
+                params![id.to_string()],
+                |row| {
+                    let document = row_to_document(row)?;
+                    let content: Vec<u8> = row.get(9)?;
+                    Ok(document.map(|mut d| {
+                        d.content = Some(content);
+                        d
+                    }))
+                },
+            )
+            .optional()?;
+
+        match found {
+            Some(document) => document,
+            None => Err(StoreError::NotFound(format!("document {id}"))),
+        }
+    }
+
     // ----------------------------------------------------------------- audit
 
     /// Append one hash-chained audit entry.
@@ -715,6 +911,52 @@ pub fn key_status_from(raw: &str) -> Result<KeyStatus> {
     })
 }
 
+pub fn serial_source_str(source: SerialSource) -> &'static str {
+    match source {
+        SerialSource::Device => "device",
+        SerialSource::ScannedLabel => "scanned-label",
+        SerialSource::ManualEntry => "manual-entry",
+    }
+}
+
+pub fn serial_source_from(raw: &str) -> Result<SerialSource> {
+    Ok(match raw {
+        "device" => SerialSource::Device,
+        "scanned-label" => SerialSource::ScannedLabel,
+        "manual-entry" => SerialSource::ManualEntry,
+        other => {
+            return Err(StoreError::Decode {
+                column: "keys.serial_source",
+                value: other.to_owned(),
+            });
+        }
+    })
+}
+
+pub fn document_kind_str(kind: DocumentKind) -> &'static str {
+    match kind {
+        DocumentKind::SignedTerm => "signed-term",
+        DocumentKind::GeneratedTerm => "generated-term",
+        DocumentKind::ReturnReceipt => "return-receipt",
+        DocumentKind::Other => "other",
+    }
+}
+
+pub fn document_kind_from(raw: &str) -> Result<DocumentKind> {
+    Ok(match raw {
+        "signed-term" => DocumentKind::SignedTerm,
+        "generated-term" => DocumentKind::GeneratedTerm,
+        "return-receipt" => DocumentKind::ReturnReceipt,
+        "other" => DocumentKind::Other,
+        other => {
+            return Err(StoreError::Decode {
+                column: "documents.kind",
+                value: other.to_owned(),
+            });
+        }
+    })
+}
+
 pub fn delivery_str(method: DeliveryMethod) -> &'static str {
     match method {
         DeliveryMethod::InPerson => "in_person",
@@ -743,6 +985,7 @@ fn row_to_key(row: &rusqlite::Row<'_>) -> RowResult<YubiKeyRecord> {
     let status: String = row.get(7)?;
     let created_at: String = row.get(10)?;
     let updated_at: String = row.get(11)?;
+    let serial_source: String = row.get(12)?;
 
     Ok((|| {
         Ok(YubiKeyRecord {
@@ -756,6 +999,7 @@ fn row_to_key(row: &rusqlite::Row<'_>) -> RowResult<YubiKeyRecord> {
             status: key_status_from(&status)?,
             batch: row_string(row, 8),
             notes: row_string(row, 9),
+            serial_source: serial_source_from(&serial_source)?,
             created_at: parse_time("keys.created_at", &created_at)?,
             updated_at: parse_time("keys.updated_at", &updated_at)?,
         })
@@ -774,6 +1018,9 @@ fn row_to_holder(row: &rusqlite::Row<'_>) -> RowResult<Holder> {
             registration: row_string(row, 4),
             active: row_bool(row, 5),
             created_at: parse_time("holders.created_at", &created_at)?,
+            identification_number: row_string(row, 7),
+            phone: row_string(row, 8),
+            address: row_string(row, 9),
         })
     })())
 }
@@ -840,6 +1087,28 @@ fn row_to_run(row: &rusqlite::Row<'_>) -> RowResult<BootstrapRun> {
             status: serde_json::from_str(&status)?,
             steps,
             custody: row_string(row, 10),
+        })
+    })())
+}
+
+fn row_to_document(row: &rusqlite::Row<'_>) -> RowResult<AttachedDocument> {
+    let id: String = row.get(0)?;
+    let distribution_id: String = row.get(1)?;
+    let kind: String = row.get(2)?;
+    let uploaded_at: String = row.get(7)?;
+
+    Ok((|| {
+        Ok(AttachedDocument {
+            id: parse_uuid("documents.id", &id)?,
+            distribution_id: parse_uuid("documents.distribution_id", &distribution_id)?,
+            kind: document_kind_from(&kind)?,
+            filename: row_string(row, 3),
+            media_type: row_string(row, 4),
+            size_bytes: row.get::<_, i64>(5).unwrap_or_default() as usize,
+            sha256: row_string(row, 6),
+            uploaded_at: parse_time("documents.uploaded_at", &uploaded_at)?,
+            uploaded_by: row_string(row, 8),
+            content: None,
         })
     })())
 }
@@ -965,4 +1234,58 @@ BEFORE DELETE ON audit
 BEGIN
     SELECT RAISE(ABORT, 'audit trail is append-only');
 END;
+"#;
+
+/// Schema v2 — records **how** a serial was learned.
+///
+/// A serial read from the device is verified; one read from a box label, or
+/// typed by hand, is a claim about a key nobody has touched yet. Reports and the
+/// inventory badge have to tell those apart, so the provenance is a column
+/// rather than a convention. Every row that existed before this migration came
+/// from a device read, which is why `device` is the default.
+const MIGRATE_V2: &str = r#"
+ALTER TABLE keys ADD COLUMN serial_source TEXT NOT NULL DEFAULT 'device';
+CREATE INDEX IF NOT EXISTS idx_keys_serial_source ON keys(serial_source);
+"#;
+
+/// Schema v3 — the consignment term.
+///
+/// Three additions, all driven by the term: the optional holder fields it prints
+/// (identification number, phone, address), the multilingual term templates, and
+/// the signed document itself.
+///
+/// The signed term is stored **in** the database rather than as a path, because
+/// the database is the unit of deployment: a path reference breaks the moment the
+/// file moves to a share, and the signed term is the evidence that makes a
+/// distribution record worth keeping. It is also personal data, which is one more
+/// reason to turn the password on.
+const MIGRATE_V3: &str = r#"
+ALTER TABLE holders ADD COLUMN identification_number TEXT NOT NULL DEFAULT '';
+ALTER TABLE holders ADD COLUMN phone TEXT NOT NULL DEFAULT '';
+ALTER TABLE holders ADD COLUMN address TEXT NOT NULL DEFAULT '';
+
+CREATE TABLE IF NOT EXISTS term_templates (
+    id          TEXT NOT NULL,
+    language    TEXT NOT NULL,
+    version     TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    body        TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY (id, language, version)
+);
+
+CREATE TABLE IF NOT EXISTS documents (
+    id              TEXT PRIMARY KEY,
+    distribution_id TEXT NOT NULL REFERENCES distributions(id),
+    kind            TEXT NOT NULL,
+    filename        TEXT NOT NULL,
+    media_type      TEXT NOT NULL,
+    size_bytes      INTEGER NOT NULL,
+    sha256          TEXT NOT NULL,
+    uploaded_at     TEXT NOT NULL,
+    uploaded_by     TEXT NOT NULL,
+    content         BLOB NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_documents_distribution ON documents(distribution_id);
 "#;

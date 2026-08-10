@@ -18,15 +18,20 @@ whole even though every part passes.
 
 **Suites in place; CI and the coverage gate are not.**
 
-- **129 tests** pass (`cargo test`), plus 2 hardware tests ignored by default.
-- Core line coverage **90.26%** (region 86.29%), above the 80% floor; 59.00%
-  whole-crate, the difference being ~1000 lines of egui paint code.
-- Unit suites: `unit_domain.rs` (11), `unit_template.rs` (21), `unit_audit.rs` (6),
-  `unit_ykman_parse.rs` (8), `unit_store.rs` (16), `unit_device_backends.rs` (9),
-  `unit_records.rs` (16), `unit_logging_format.rs` (6), plus 8 in-module tests
-  (`logging`, `domain`, `custody`).
+- **193 tests** pass (`cargo test --all-features`; 189 without), plus 2 hardware
+  tests ignored by default.
+- Core line coverage **86.92%** (region 83.75%), above the 80% floor.
+- Unit suites: `unit_domain.rs`, `unit_template.rs`, `unit_audit.rs`,
+  `unit_ykman_parse.rs`, `unit_store.rs` (21), `unit_device_backends.rs`,
+  `unit_records.rs`, `unit_logging_format.rs`, `unit_term.rs` (18),
+  `unit_settings.rs` (3), plus in-module tests for `logging`, `domain`, `custody`,
+  `document` (7), `scan` (13) and `rxing_decoder` (5).
 - Behaviour suites: `behaviour_distribution.rs` (7 scenarios),
-  `behaviour_bootstrap.rs` (10), `behaviour_storage.rs` (11).
+  `behaviour_bootstrap.rs` (10), `behaviour_storage.rs` (11),
+  `behaviour_terms_and_documents.rs` (10).
+- The barcode decoder is tested against **rendered Code 128 barcodes** produced by
+  rxing's own encoder, so the real decode path runs with no camera and no fixtures to
+  go stale.
 - `device::MockBackend` serves canned devices, can simulate hot-plug via
   `set_devices`, and can be made to fail on demand.
 - Fixtures are real recorded `ykman` 5.9.2 output.

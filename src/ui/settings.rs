@@ -1,6 +1,6 @@
 //! Settings: operator identity, organisation, database location and health.
 
-use crate::app::YkDistApp;
+use crate::app::{DbRequest, YkDistApp};
 use crate::store::Location;
 
 pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
@@ -10,24 +10,37 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
         "Operator identity and the database file. Nothing here is a secret store.",
     );
 
+    // Deferred: the identity is persisted after the grid closure, not per keypress.
+    let mut identity_changed = false;
+
     egui::Grid::new("settings")
         .num_columns(2)
         .spacing([12.0, 6.0])
         .show(ui, |ui| {
             ui.label("Operator");
-            ui.add(
-                egui::TextEdit::singleline(&mut app.operator)
-                    .char_limit(crate::domain::MAX_TEXT)
-                    .desired_width(280.0),
-            );
+            if ui
+                .add(
+                    egui::TextEdit::singleline(&mut app.operator)
+                        .char_limit(crate::domain::MAX_TEXT)
+                        .desired_width(280.0),
+                )
+                .lost_focus()
+            {
+                identity_changed = true;
+            }
             ui.end_row();
 
             ui.label("Organisation");
-            ui.add(
-                egui::TextEdit::singleline(&mut app.org)
-                    .char_limit(crate::domain::MAX_TEXT)
-                    .desired_width(280.0),
-            );
+            if ui
+                .add(
+                    egui::TextEdit::singleline(&mut app.org)
+                        .char_limit(crate::domain::MAX_TEXT)
+                        .desired_width(280.0),
+                )
+                .lost_focus()
+            {
+                identity_changed = true;
+            }
             ui.end_row();
 
             ui.label("Database file");
@@ -62,7 +75,50 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
             ui.end_row();
         });
 
+    if identity_changed {
+        app.persist_settings();
+    }
+
     ui.add_space(12.0);
+    ui.label(egui::RichText::new("Database").strong());
+    ui.add_space(4.0);
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .button("Switch database…")
+            .on_hover_text("close this one and choose another")
+            .clicked()
+        {
+            app.db_request = Some(DbRequest::Close);
+        }
+        if ui.button("Open another…").clicked() {
+            app.db_request = Some(DbRequest::PickExisting);
+        }
+        if ui.button("Create new…").clicked() {
+            app.db_request = Some(DbRequest::PickNew);
+        }
+    });
+
+    let recent = app.settings.recent_with_availability();
+    if recent.len() > 1 {
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new("Recent:").small().weak());
+        for (path, available) in recent {
+            ui.label(
+                egui::RichText::new(format!(
+                    "  {}{}",
+                    path.display(),
+                    if available { "" } else { "  (not reachable)" }
+                ))
+                .small()
+                .weak()
+                .monospace(),
+            );
+        }
+    }
+
+    ui.add_space(12.0);
+    ui.label(egui::RichText::new("Maintenance").strong());
+    ui.add_space(4.0);
     ui.horizontal_wrapped(|ui| {
         if ui.button("Integrity check").clicked()
             && let Some(store) = &app.store

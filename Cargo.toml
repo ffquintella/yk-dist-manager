@@ -1,6 +1,6 @@
 [package]
 name = "yk-dist-manager"
-version = "0.1.0"
+version = "0.2.1"
 edition = "2024"
 description = "YubiKey distribution and bootstrap manager (egui desktop app)"
 license = "MIT"
@@ -40,8 +40,28 @@ yubikey = { version = "0.8", optional = true }
 ctap-hid-fido2 = { version = "3.5", optional = true }
 hidapi = { version = "2.6", optional = true }
 
+# Native open/save dialogs for choosing or creating the database file. On Linux
+# this goes through the XDG portal rather than linking GTK.
+rfd = { version = "0.17", optional = true }
+
+# Reading a serial from a barcode: `rxing` decodes, `image` loads a photo from
+# disk, `nokhwa` captures from a camera.
+rxing = { version = "0.9", optional = true }
+image = { version = "0.25", optional = true, default-features = false, features = [
+    "jpeg",
+    "png",
+] }
+nokhwa = { version = "0.10", optional = true, features = ["input-native"] }
+
 [features]
-default = []
+default = ["file-dialog"]
+# Choose or create the database file through a native dialog. Without it the
+# path is still typeable, so the feature is convenience, not capability.
+file-dialog = ["dep:rfd"]
+# Decode a serial from a barcode in an image (a photo of the box label).
+barcode = ["dep:rxing", "dep:image"]
+# Live camera capture feeding the decoder.
+camera = ["barcode", "dep:nokhwa"]
 # Optional password protection of the database file, via SQLCipher
 # (`PRAGMA key`). Off by default because it vendors and builds OpenSSL.
 encrypted-db = ["rusqlite/bundled-sqlcipher-vendored-openssl"]

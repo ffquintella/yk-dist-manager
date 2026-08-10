@@ -20,7 +20,16 @@ immediately. Without that acknowledgement, the loss procedure has no basis.
 
 ## Current state
 
-**Not started.** `receipt_ref` is a free-text field on the distribution record.
+**Partly shipped, in two narrower features.**
+
+- Generating the term from the record, in multiple languages, with optional fields:
+  [`consignment-terms.md`](consignment-terms.md) — **done**.
+- Filing the signed scan against the hand-over:
+  [`signed-term-documents.md`](signed-term-documents.md) — **done**.
+
+What is left in *this* spec: PDF output, the signature state machine with an age
+warning, the return receipt, and batch generation. `receipt_ref` remains a free-text
+field for a unit's own document reference, alongside the stored copy.
 
 ## Design
 
@@ -73,20 +82,24 @@ else owns.
 A posted key sits in `Pending` until the signed term comes back, which is exactly the
 gap `features/distribution-records.md` Phase 4 exists to make visible.
 
-The signed document itself is **not** stored in the database: it is personal data with a
-retention rule of its own, and the single-file model is not the right home for scanned
-PDFs. The record holds a reference.
+> **Superseded.** This spec originally said the signed document would *not* be stored
+> in the database, only referenced. That was reversed on 2026-08-10: the database is
+> the unit of deployment, so a path reference breaks the moment the file moves to a
+> share — exactly when the evidence is needed. The bytes are stored, hashed, and
+> size-capped; the personal-data consequence is documented in
+> `docs/security-and-compliance.md`. See
+> [`signed-term-documents.md`](signed-term-documents.md).
 
 ## Phases
 
 | # | Phase | State | Notes |
 |---|---|---|---|
 | 0 | Sealed-envelope slip for the transport secrets | Todo | **required by custody model B** for any hand-over that is not face to face; shares this feature's rendering |
-| 1 | Text/Markdown term generated from the record | Todo | proves the content before investing in layout |
-| 2 | PDF output | Todo | pure-Rust writer preferred |
-| 3 | Editable, versioned document template | Todo | wording is owned outside the code |
+| 1 | Text term generated from the record | **Done** | [consignment-terms.md](consignment-terms.md) |
+| 2 | PDF output | Todo | pure-Rust writer preferred; the content was got right first |
+| 3 | Editable, versioned, multilingual template | **Done** | keyed `(id, language, version)` |
 | 4 | Signature state machine with an age warning | Todo | with distribution Phase 4 |
-| 5 | Reference storage (document id / scan path / e-signature id) | Todo | never the document itself |
+| 5 | Store the signed document | **Done** | [signed-term-documents.md](signed-term-documents.md) — stored **in** the database, reversing the original plan; the reasoning is in that spec |
 | 6 | Return receipt (the mirror document) | Todo | closes the custody loop |
 | 7 | Batch generation for a bulk hand-over | Todo | `features/bulk-enrollment.md` |
 

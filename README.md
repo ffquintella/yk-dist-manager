@@ -3,7 +3,7 @@
 Desktop tool (Rust + [egui](https://github.com/emilk/egui)) for handing out
 YubiKeys and keeping an honest record of it.
 
-It answers two questions that a spreadsheet answers badly:
+It answers three questions that a spreadsheet answers badly:
 
 1. **Where are our keys?** Which serial went to which person, on what date,
    handed over by whom, against which signed receipt — and what was actually
@@ -11,6 +11,9 @@ It answers two questions that a spreadsheet answers badly:
 2. **Was it set up the same way as the others?** A versioned bootstrap template
    is applied to every key, so "we always set a PIN and a signing certificate"
    becomes a procedure with evidence instead of a habit.
+3. **Did they sign for it?** The consignment term is generated from the record — in the
+   holder's language — and the signed scan is filed back against the hand-over, so the
+   paperwork lives with the data instead of in a folder on somebody's laptop.
 
 ## What the bootstrap does
 
@@ -61,12 +64,36 @@ which transport each step will use. See
 matrix — including the two places where `ykman` simply cannot do the job:
 creating a FIDO2 credential, and putting an e-mail SAN in a CSR.
 
+## Getting keys in, and paperwork out
+
+**Intake.** A serial can come from the hardware (verified), a **barcode** — a USB
+scanner types it, or the camera decodes the box label — or an operator typing it. The
+record says which, and a serial that was read from a key is never downgraded by a later
+scan. Receiving a shipment therefore takes minutes, and each key gets verified when it is
+bootstrapped. See [`features/serial-scanning.md`](features/serial-scanning.md).
+
+**The term.** *Termo de consignação* / consignment term, generated from the record: the
+holder's name and identification number, the key, what was applied, the custody statement,
+signatures. Templates are data, keyed by `(id, language, version)` — **pt-BR** and
+**en** ship, and a unit can add any language. An optional field the holder did not give
+takes its whole line with it, so no term ever prints a stray `Phone:`. The signed scan
+uploads back into the database with a SHA-256 that is verified on export. See
+[`features/consignment-terms.md`](features/consignment-terms.md) and
+[`features/signed-term-documents.md`](features/signed-term-documents.md).
+
+> The built-in term wording is a complete draft, not approved institutional text. It needs
+> review by whoever owns the term where you work — which is why templates are data.
+
 ## Where the data lives
 
 One SQLite file. That is the whole deployment.
 
-- **Single file** — inventory, holders, distributions, bootstrap runs, templates
-  and the audit trail. Copy the file and you have copied everything.
+- **Single file** — inventory, holders, distributions, bootstrap runs, templates, term
+  templates, the **signed terms themselves**, and the audit trail. Copy the file and you
+  have copied everything, evidence included.
+- **Chosen, not assumed** — open a recent database, browse for one, or create a new one,
+  from inside the app. *Open* and *Create* are separate, so a mistyped share path is an
+  error rather than a silently empty database.
 - **Network share friendly** — a file under `/Volumes/…`, `/mnt/…` or a Windows
   UNC path is detected and opened in rollback-journal mode with
   `synchronous=FULL` and a 20-second busy timeout, because WAL does not work over
@@ -88,11 +115,19 @@ make run          # or: cargo run
 make              # list every task
 ```
 
-With native hardware access and an encrypted database:
+With everything on — native hardware access, an encrypted database, and camera scanning:
 
 ```bash
-cargo run --features native-device,encrypted-db
+cargo run --features native-device,encrypted-db,camera
 ```
+
+| Feature | Default | Gives |
+|---|---|---|
+| `file-dialog` | **on** | Native open/save dialogs (`rfd`) |
+| `native-piv` / `native-fido` / `native-otp` / `native-device` | off | Talking to the key from Rust |
+| `encrypted-db` | off | SQLCipher password on the database (vendors OpenSSL) |
+| `barcode` | off | Decoding a barcode from an image (`rxing`) |
+| `camera` | off | Live camera capture (`nokhwa`), implies `barcode` |
 
 Pick the database file with `YKDM_DB`; otherwise the per-user data directory is
 used:
@@ -124,7 +159,7 @@ cargo test --features native-device --test hardware_native -- --ignored --nocapt
 | [`roadmap.md`](roadmap.md) | Waves, feature status, open questions, decision log |
 | [`features/`](features/) | One spec per feature: phases, audit events, tests |
 | [`docs/architecture.md`](docs/architecture.md) | Module boundaries and data flow |
-| [`docs/data-model.md`](docs/data-model.md) | Schema, field by field |
+| [`docs/data-model.md`](docs/data-model.md) | Schema (v3), field by field |
 | [`docs/bootstrap-procedure.md`](docs/bootstrap-procedure.md) | The procedure, step by step, with the real commands |
 | [`docs/yubikey-reference.md`](docs/yubikey-reference.md) | Native vs `ykman` capability matrix, firmware gates, gotchas |
 | [`docs/security-and-compliance.md`](docs/security-and-compliance.md) | Secrets, personal data, audit, FGV norm mapping |

@@ -41,16 +41,25 @@ work.
 
 | Field | Purpose | Required |
 |---|---|---|
-| `full_name` | Certificate `CN`; the name on the receipt | yes |
+| `full_name` | Certificate `CN`; the name on the term | yes |
 | `email` | Certificate `rfc822Name` SAN; identifies the person | yes |
 | `unit` | Certificate `OU`; who to ask when a key goes missing | yes |
 | `registration` | Asset control where the unit requires it | no |
+| `identification_number` | Named on the consignment term (CPF in Brazil, the local equivalent elsewhere) | no |
+| `phone` | Contacting the holder about their key | no |
+| `address` | Where a key was posted | no |
 | `active` | A person who left; keeps history without suggesting they hold keys | yes (default true) |
 | `created_at` | Record keeping | yes |
 
-No phone, no address, no ID document, no photo. Adding a field means adding a
-purpose, updating the data documentation, and (for a new category) the DPO's
-assessment.
+Still no photo, no date of birth, no bank details. The three optional fields were
+added for one stated purpose — the consignment term names the holder and their
+identification number — and each is empty unless the operator fills it in, which is
+what makes the corresponding line disappear from a rendered term.
+
+Adding a field still means adding a purpose, updating the data documentation, and
+(for a new category) the DPO's assessment. An identification number is a step up in
+sensitivity from a name and a work e-mail: it is optional precisely so a unit that
+does not need it on the term never collects it.
 
 ### The e-mail is not in the DN
 
@@ -75,6 +84,7 @@ a later phase rather than a startup dependency.
 |---|---|---|---|
 | 1 | Record with validation, unique e-mail, RFC 4514 subject | Done | |
 | 2 | Holders screen with the count of keys currently held | Done | |
+| 2b | Optional identification number, phone and address | Done | schema v3, for the consignment term; a re-registration fills in and never blanks them |
 | 3 | AD / LDAP lookup to fill the record | Todo | needs the ESI-approved integration |
 | 4 | Deactivate a holder (and refuse new distributions to them) | Todo | `active` exists but is not enforced |
 | 5 | Search and filter | Todo | |

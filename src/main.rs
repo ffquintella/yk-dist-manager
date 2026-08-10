@@ -1,12 +1,30 @@
-//! Binary entry point: initialise logging, open the data store, run the GUI.
+//! Binary entry point: initialise logging, then hand over to the GUI.
+//!
+//! Which database opens is decided by [`YkDistApp::new`]: `$YKDM_DB` if set, then
+//! the database last used, then the per-user default. Anything else is the
+//! operator's choice on the database screen.
 
-use yk_dist_manager::{YkDistApp, logging, store::Store};
+use std::path::PathBuf;
+
+use yk_dist_manager::{YkDistApp, logging};
 
 fn main() -> eframe::Result {
     logging::init();
 
-    let data_path = Store::default_path();
-    tracing::info!(event = "app.start", path = %data_path.display(), version = yk_dist_manager::VERSION);
+    let explicit = std::env::var("YKDM_DB")
+        .ok()
+        .map(|raw| raw.trim().to_owned())
+        .filter(|raw| !raw.is_empty())
+        .map(PathBuf::from);
+
+    tracing::info!(
+        event = "app.start",
+        version = yk_dist_manager::VERSION,
+        database = explicit
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "(remembered or default)".into())
+    );
 
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
@@ -19,6 +37,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "yk-dist-manager",
         options,
-        Box::new(move |_cc| Ok(Box::new(YkDistApp::new(data_path)))),
+        Box::new(move |_cc| Ok(Box::new(YkDistApp::new(explicit)))),
     )
 }

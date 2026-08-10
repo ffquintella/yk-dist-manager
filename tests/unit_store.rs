@@ -250,3 +250,143 @@ fn audit_entries_are_capped_by_the_requested_limit() {
 fn rusqlite_open(path: &std::path::Path) -> rusqlite::Connection {
     rusqlite::Connection::open(path).expect("open for inspection")
 }
+
+#[test]
+fn opening_a_path_that_does_not_exist_is_refused_rather_than_created() {
+    // The failure that matters: a typo'd share path must not silently produce a
+    // second, empty database that looks like data loss.
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("not-there.sqlite3");
+    let config = StoreConfig::new(&missing);
+
+    match Store::open_existing(&config) {
+        Err(StoreError::Missing(path)) => assert_eq!(path, missing),
+        Err(other) => panic!("wrong error: {other}"),
+        Ok(_) => panic!("must not open a file that is not there"),
+    }
+    assert!(!missing.exists(), "and nothing was created");
+}
+
+#[test]
+fn creating_over_an_existing_file_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("keys.sqlite3");
+    let config = StoreConfig::new(&path);
+
+    let store = Store::create_new(&config).unwrap();
+    store.upsert_key(&key(20_423_633)).unwrap();
+    drop(store);
+
+    match Store::create_new(&config) {
+        Err(StoreError::AlreadyExists(at)) => assert_eq!(at, path),
+        Err(other) => panic!("wrong error: {other}"),
+        Ok(_) => panic!("create must never open somebody else's dataset"),
+    }
+    // The existing data is untouched.
+    assert_eq!(
+        Store::open_existing(&config).unwrap().keys().unwrap().len(),
+        1
+    );
+}
+
+#[test]
+fn a_new_database_arrives_with_its_templates() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::create_new(&StoreConfig::new(dir.path().join("fresh.sqlite3"))).unwrap();
+    assert!(
+        !store.templates().unwrap().is_empty(),
+        "a fresh database must be usable immediately"
+    );
+}
+
+#[test]
+fn provenance_is_upgraded_by_a_device_read_but_never_downgraded() {
+    use yk_dist_manager::domain::SerialSource;
+
+    let store = Store::open_in_memory().unwrap();
+
+    // A scanned label first.
+    let scanned = YubiKeyRecord::from_serial(20_423_633, SerialSource::ScannedLabel);
+    store.upsert_key(&scanned).unwrap();
+    assert_eq!(
+        store
+            .key_by_serial(20_423_633)
+            .unwrap()
+            .unwrap()
+            .serial_source,
+        SerialSource::ScannedLabel
+    );
+
+    // Then the key is actually read: provenance improves.
+    let verified = key(20_423_633);
+    store.upsert_key(&verified).unwrap();
+    let stored = store.key_by_serial(20_423_633).unwrap().unwrap();
+    assert_eq!(stored.serial_source, SerialSource::Device);
+    assert!(stored.is_verified());
+
+    // A later scan of the same label must not undo that.
+    store
+        .upsert_key(&YubiKeyRecord::from_serial(
+            20_423_633,
+            SerialSource::ScannedLabel,
+        ))
+        .unwrap();
+    assert_eq!(
+        store
+            .key_by_serial(20_423_633)
+            .unwrap()
+            .unwrap()
+            .serial_source,
+        SerialSource::Device
+    );
+}
+
+#[test]
+fn a_v1_database_migrates_forward_keeping_its_rows() {
+    // Simulate a database created by the first released schema, then open it with
+    // this build: the migration chain must carry it to the current version
+    // without touching the data.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("legacy.sqlite3");
+
+    {
+        let conn = rusqlite_open(&path);
+        conn.execute_batch(
+            "CREATE TABLE keys (
+                 id TEXT PRIMARY KEY, serial INTEGER NOT NULL UNIQUE, model TEXT NOT NULL,
+                 firmware TEXT NOT NULL, form_factor TEXT NOT NULL DEFAULT '',
+                 fips INTEGER NOT NULL DEFAULT 0, applications TEXT NOT NULL DEFAULT '[]',
+                 status TEXT NOT NULL, batch TEXT NOT NULL DEFAULT '',
+                 notes TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+                 updated_at TEXT NOT NULL);
+             CREATE TABLE holders (
+                 id TEXT PRIMARY KEY, full_name TEXT NOT NULL, email TEXT NOT NULL UNIQUE,
+                 unit TEXT NOT NULL DEFAULT '', registration TEXT NOT NULL DEFAULT '',
+                 active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
+             INSERT INTO keys VALUES ('11111111-1111-1111-1111-111111111111', 20423633,
+                 'YubiKey 5 NFC', '5.4.3', 'Keychain (USB-A)', 0, '[\"FIDO2\"]', 'in_stock',
+                 '', '', '2026-08-01T10:00:00+00:00', '2026-08-01T10:00:00+00:00');
+             INSERT INTO holders VALUES ('22222222-2222-2222-2222-222222222222', 'Ana Silva',
+                 'ana@fgv.br', 'ESI', '', 1, '2026-08-01T10:00:00+00:00');",
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+    }
+
+    let store = Store::open_existing(&StoreConfig::new(&path)).unwrap();
+
+    let keys = store.keys().unwrap();
+    assert_eq!(keys.len(), 1);
+    assert_eq!(
+        keys[0].serial_source,
+        yk_dist_manager::domain::SerialSource::Device,
+        "rows that predate the column came from a device read"
+    );
+
+    let holders = store.holders().unwrap();
+    assert_eq!(holders.len(), 1);
+    assert_eq!(holders[0].identification_number, "", "new optional field");
+
+    // The new tables exist and are usable.
+    assert_eq!(store.seed_builtin_terms().unwrap(), 2);
+}

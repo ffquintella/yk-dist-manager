@@ -14,12 +14,29 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
         if ui.button("Read attached key").clicked() {
             app.detect_keys();
         }
+        let scan_label = if app.scan.open {
+            "Hide serial scanner"
+        } else {
+            "Add by serial / scan…"
+        };
+        if ui.button(scan_label).clicked() {
+            app.scan.open = !app.scan.open;
+            #[cfg(feature = "camera")]
+            if !app.scan.open {
+                app.stop_camera();
+            }
+        }
         ui.label(
             egui::RichText::new(format!("transport: {}", app.backend.describe()))
                 .weak()
                 .small(),
         );
     });
+
+    if app.scan.open {
+        ui.add_space(8.0);
+        scanner(app, ui);
+    }
 
     if !app.detected.is_empty() {
         ui.add_space(6.0);
@@ -111,4 +128,113 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
             Err(e) => app.status = format!("refused: {e}"),
         }
     }
+}
+
+/// Panel for recording keys by serial: a typed number, a USB barcode wedge, or
+/// the camera.
+fn scanner(app: &mut YkDistApp, ui: &mut egui::Ui) {
+    egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.label(egui::RichText::new("Record a key by serial").strong());
+        ui.label(
+            egui::RichText::new(
+                "For receiving a shipment: the serial goes in now and the key is verified \
+                 later, when it is plugged in. A USB barcode scanner types straight into \
+                 the field.",
+            )
+            .small()
+            .weak(),
+        );
+        ui.add_space(6.0);
+
+        ui.horizontal(|ui| {
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut app.scan.typed)
+                    .hint_text("serial, or scan a barcode")
+                    .char_limit(24)
+                    .desired_width(200.0),
+            );
+            let submitted = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if ui.button("Add").clicked() || submitted {
+                app.accept_typed_serial();
+            }
+        });
+
+        camera_controls(app, ui);
+
+        if let Some(serial) = app.scan.candidate {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("scanned: {serial}"))
+                        .strong()
+                        .color(egui::Color32::from_rgb(60, 140, 70)),
+                );
+                if ui.button("Add to inventory").clicked() {
+                    app.accept_scanned_serial();
+                }
+                if ui.button("Discard").clicked() {
+                    app.scan.candidate = None;
+                    #[cfg(feature = "camera")]
+                    if let Some(scanner) = &app.scan.scanner {
+                        scanner.clear_serial();
+                    }
+                }
+            });
+        }
+
+        if let Some(error) = app.scan.error.clone() {
+            ui.add_space(4.0);
+            super::error_label(ui, &error);
+        }
+    });
+}
+
+#[cfg(feature = "camera")]
+fn camera_controls(app: &mut YkDistApp, ui: &mut egui::Ui) {
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        if app.scan.scanner.is_none() {
+            if ui.button("Start camera").clicked() {
+                app.start_camera();
+            }
+        } else if ui.button("Stop camera").clicked() {
+            app.stop_camera();
+        }
+        if let Some(scanner) = &app.scan.scanner {
+            ui.label(
+                egui::RichText::new(format!("camera: {}", scanner.describe()))
+                    .small()
+                    .weak(),
+            );
+        }
+    });
+
+    if let Some(texture) = &app.scan.preview {
+        ui.add_space(6.0);
+        // Keep the preview modest: it is an aiming aid, not a viewfinder.
+        let size = texture.size_vec2();
+        let scale = (360.0 / size.x).min(1.0);
+        ui.add(egui::Image::new(texture).fit_to_exact_size(size * scale));
+        ui.label(
+            egui::RichText::new(
+                "Fill the frame width with the barcode, ~20cm away. A laptop camera is \
+                 fixed-focus and struggles closer than that.",
+            )
+            .small()
+            .weak(),
+        );
+    }
+}
+
+#[cfg(not(feature = "camera"))]
+fn camera_controls(_app: &mut YkDistApp, ui: &mut egui::Ui) {
+    ui.add_space(4.0);
+    ui.label(
+        egui::RichText::new(
+            "Camera scanning needs a build with `--features camera`. A USB barcode scanner \
+             works in any build — it types into the field above.",
+        )
+        .small()
+        .weak(),
+    );
 }

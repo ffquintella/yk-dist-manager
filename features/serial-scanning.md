@@ -1,0 +1,132 @@
+# Feature: Reading a serial from a barcode
+
+## Summary
+
+Get a serial into the inventory without plugging the key in: decode the barcode on
+the packaging with a camera, or let a USB barcode scanner type it. Either way the
+record is marked as **not yet verified**, and a device read upgrades it.
+
+## Motivation
+
+Receiving a shipment means getting dozens of serials into the inventory. Plugging in
+each key is accurate and slow, and it happens at the wrong time — the keys are not
+being bootstrapped yet, they are being *received*. The packaging carries the serial
+as a barcode, so scanning the labels records the shipment in minutes.
+
+The thing that makes this safe rather than sloppy is refusing to pretend: a serial
+from a label is a *claim* about a key nobody has touched. Recording provenance keeps
+the two apart, so nothing downstream treats a scanned serial as a confirmed key.
+
+## Current state
+
+**Shipped, with the camera behind a feature flag.**
+
+- `SerialSource` (`Device` / `ScannedLabel` / `ManualEntry`) on every inventory
+  record, stored in `keys.serial_source` (schema v2). Provenance only ever improves:
+  a device read upgrades a scanned record, and a later scan never downgrades a
+  verified one — enforced in SQL, not by the caller.
+- `scan::parse_serial` — pulls a serial out of decoded text, tolerating prefixes
+  (`S/N: 20423633`), refusing a payload with two different candidates, and refusing
+  to truncate a long id into a serial.
+- `scan::BarcodeDecoder` over `scan::LumaFrame` (grayscale, no image crate), so the
+  reduction logic is testable with a stub.
+- `scan::RxingDecoder` (`barcode` feature) — `rxing`, the Rust ZXing port: 1D and 2D
+  formats, pure Rust, no system library. Also decodes a photo from disk
+  (`decode_image_file`), which is a phone-photo path that needs no camera.
+- `scan::camera::CameraScanner` (`camera` feature) — `nokhwa` capture on its own
+  thread, publishing the latest frame and any decoded serial through a mutex. The
+  camera is opened *on* that thread because `nokhwa::Camera` is not `Send`, and the
+  open result comes back over a channel with a 10s bound, so a wedged backend or a
+  denied permission cannot hang the GUI.
+- Inventory screen: a scan panel with a typed field (which is what a USB wedge types
+  into), camera controls, a preview, and confirm/discard for the decoded serial.
+
+## Design
+
+### The keyboard wedge is the recommended option
+
+A USB barcode scanner presents itself as a keyboard: it types the serial and presses
+Enter. That needs no camera, no permissions and no decoding, and it is what a busy
+receiving desk actually wants. The typed field is therefore not a fallback — it is
+the primary path, and the camera exists for the operator who has a laptop and no
+scanner. The docs say so rather than selling the camera.
+
+### Ambiguity is refused, never guessed
+
+Two labels in shot showing different serials, or one payload containing two
+plausible numbers, is an error. Choosing one would attribute a credential to
+whichever key was closer to the lens.
+
+### Provenance, and what it protects
+
+| Source | Means | Consequence |
+|---|---|---|
+| `Device` | Read over PC/SC or `ykman` | Verified: the key exists and is reachable |
+| `ScannedLabel` | Decoded from packaging | A claim; model/firmware unknown |
+| `ManualEntry` | Typed | A claim, with a typo risk |
+
+A scanned record is deliberately incomplete: no model, no firmware, no application
+list — empty rather than guessed. The bootstrap wizard's firmware gates therefore
+cannot run against a scanned key, which is correct: it has to be read first.
+
+### Camera realities
+
+Documented in `src/scan/camera.rs` because they will generate support questions: a
+laptop camera is fixed-focus and struggles closer than ~20cm; macOS needs
+`NSCameraUsageDescription` in a bundled app's `Info.plist`; Linux needs the `video`
+group or a udev rule.
+
+## Phases
+
+| # | Phase | State | Notes |
+|---|---|---|---|
+| 1 | Serial parsing and ambiguity rules | Done | 12 unit tests |
+| 2 | `SerialSource` + schema v2, provenance never downgraded | Done | enforced in the upsert |
+| 3 | `rxing` decoder over a luminance frame | Done | tested against a rendered Code 128 |
+| 4 | Camera capture on a thread, with preview | Done | `camera` feature |
+| 5 | Typed / wedge entry in the inventory panel | Done | Enter submits |
+| 6 | Decode a photo from disk in the GUI | Todo | `decode_image_file` exists; no button yet |
+| 7 | Camera selection when several are attached | Todo | `available_cameras()` exists |
+| 8 | Batch scanning: keep the camera open and queue serials | Todo | with `features/bulk-enrollment.md` |
+| 9 | "Unverified keys" report | Todo | scanned records never followed by a device read |
+
+## Audit events
+
+| Event | Detail |
+|---|---|
+| `key.added` | `source=scanned-label\|manual-entry\|device verified=false\|true` |
+| `key.refreshed` | A device read; provenance upgraded |
+| `camera.started` / `camera.stopped` | With the device name |
+| `camera.start.failed` | Reason (permission, in use, no camera) |
+
+## Tests
+
+- `src/scan/mod.rs` — 13 unit tests: bare, prefixed and decorated serials; repeated
+  vs conflicting candidates; no digits vs implausible digits; frame validation; RGB
+  to luma; a stub decoder end to end.
+- `src/scan/rxing_decoder.rs` — 5 tests against **rendered Code 128 barcodes**
+  produced by rxing's own encoder, so the real decoder is exercised: a bare serial, a
+  prefixed serial, a blank frame, and a barcode that decodes but is not a serial.
+- `tests/unit_store.rs` — `provenance_is_upgraded_by_a_device_read_but_never_downgraded`.
+- The camera path has no automated test (it needs a camera); the capture thread's
+  contract — never block the GUI, bounded open — is enforced by construction.
+
+## Open questions and gates
+
+- Do the unit's actual YubiKey boxes carry a barcode with the serial? Yubico's retail
+  packaging and bulk labels generally do, but a batch could arrive with a
+  purchase-order barcode instead. Worth confirming with one real box before relying
+  on the camera path; the wedge and typed paths are unaffected.
+- macOS packaging must add the camera usage description, or the feature silently
+  fails in a bundled app (`features/packaging-and-release.md`).
+- **Dependency flag:** with `camera` enabled, `nokhwa`'s macOS bindings pull `block`
+  0.1.6, which cargo reports as *future-incompatible* (it will be rejected by a later
+  rustc). The NRM forbids shipping discontinued or unsupported components, so this has
+  to be resolved before the camera feature is enabled in a released build: either
+  `nokhwa` updates its bindings, or the macOS capture path is written directly against
+  AVFoundation. It does not affect the default build, which has no camera.
+
+## References
+
+- `src/scan/`, `src/domain/key.rs`, `src/ui/inventory.rs`
+- `features/key-inventory.md`, `features/device-detection.md`

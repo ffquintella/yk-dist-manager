@@ -3,11 +3,11 @@
 
 pub mod audit;
 pub mod bootstrap;
+pub mod database;
 pub mod distribution;
 pub mod holders;
 pub mod inventory;
 pub mod settings;
-pub mod unlock;
 
 /// Heading plus explanatory line, used at the top of every screen.
 pub fn screen_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {

@@ -1,7 +1,7 @@
 # GUI
 
-egui/eframe 0.36. Six screens plus an unlock screen. The audience is an operator at a desk
-with a key in hand, often mid-conversation with the person receiving it.
+egui/eframe 0.36. Six screens plus the database chooser. The audience is an operator at a
+desk with a key in hand, often mid-conversation with the person receiving it.
 
 ## egui 0.36 notes
 
@@ -30,13 +30,23 @@ The API differs from older tutorials in two ways that matter:
 
 ## Screens
 
-### Unlock
+### Database chooser
 
-Shown whenever the store is not open — which covers both "needs a password" and "the file is
-unusable", because to the operator those are the same situation: they cannot work yet.
+Shown whenever no database is open — first run, a locked file, an unreachable share, or
+the operator closing one to switch. It carries:
 
-Shows the path, the actual error, a password field (cleared immediately after use), and a note
-that password support requires the `encrypted-db` build. Enter submits.
+- the **recent databases**, each marked *available* or *not reachable* (an unmounted
+  share stays listed — that is a network problem, not a decision), with *open*,
+  *use path* and *forget*;
+- a typed path (which is also how a UNC path or a pasted share path gets in) and a
+  password field, cleared immediately after use;
+- **Open** and **Create** as separate buttons, plus native *Choose file…* /
+  *New file…* dialogs;
+- a note when the build lacks `file-dialog` or `encrypted-db`, so a refused password
+  is explained rather than mysterious.
+
+Open and Create never guess: opening a path that does not exist is an error, and
+creating over an existing file is refused.
 
 ### Inventory
 
@@ -45,16 +55,34 @@ refreshes its row. Columns: serial, model, firmware, form factor, status, applic
 actions. Per-row actions advance the lifecycle, and a refused transition is shown verbatim in
 the status bar.
 
+**Add by serial / scan…** opens the intake panel: a text field (which is what a USB
+barcode scanner types into — Enter submits), camera controls with a preview when the
+build has the `camera` feature, and confirm/discard for a decoded serial. A key
+recorded this way is marked as not verified until it is read from the hardware.
+
 ### Holders
 
-Registration form (name, corporate e-mail, unit, optional registration) plus the list with a
-count of keys currently held. Validation errors appear under the form, in red, selectable.
+Registration form — name, corporate e-mail, unit, and the optional registration,
+identification number, phone and address — plus the list with a count of keys currently
+held. The screen says that optional fields appear on the consignment term when filled in
+and omit their line when not. Validation errors appear under the form, in red,
+selectable.
 
 ### Distribution
 
 The hand-over form (key, holder, delivery method, receipt reference, notes, and whether to
 attach the latest bootstrap run) above the history table. The table shows what was applied —
 the run summary — and offers "record return" on open records only.
+
+Each row also carries the **term** column: *term* opens the consignment-term panel,
+*upload* files a signed scan, and a badge says `none filed` (amber) or `n filed`
+(green) so an unsigned hand-over is visible at a glance.
+
+The **term panel** picks a language (falling back with a visible notice when the
+requested one has no template), renders the term from the record, and offers *Save as
+text…* and *Upload signed term…*. Below it, the filed documents are listed with their
+size, short SHA-256 and an *export* action — which verifies the digest and refuses on a
+mismatch.
 
 ### Bootstrap
 
@@ -78,14 +106,18 @@ no other screen will tell you about.
 
 ### Settings
 
-Operator and organisation; the database path, locking mode and whether it is
-password-protected; the device transport; and three actions — integrity check, backup, reload.
-Also the version string, so a screenshot identifies the build.
+Operator and organisation (persisted between sessions); the database path, locking mode and
+whether it is password-protected; the device transport; the recent databases; and the
+actions — *Switch database…*, *Open another…*, *Create new…*, integrity check, backup,
+reload. Also the version string, so a screenshot identifies the build.
 
 ## Rules
 
 1. **No I/O in a paint closure.** Screens read `app`'s cached vectors; mutations happen in
-   `app` methods called from a click and end with `refresh()`.
+   `app` methods called from a click and end with `refresh()`. Native file dialogs and
+   camera frames follow the same rule: a click records a `DbRequest` (or sets a flag) and
+   the work happens at the top of the next `ui` call, because a modal dialog inside a paint
+   closure blocks rendering.
 2. **Deferred mutation in tables.** A row's button records an intent into a local variable;
    the mutation runs after the grid closure. This keeps writes out of the paint pass and
    avoids borrowing `app` mutably while painting it.

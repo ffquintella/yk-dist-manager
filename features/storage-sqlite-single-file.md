@@ -56,18 +56,23 @@ Detection heuristic (overridable): `\\` UNC, `//`, `/Volumes/`, `/mnt/`,
 `/net/`, `/media/`. It is a heuristic on purpose — the operator can override it in
 Settings, because no prefix list is right everywhere.
 
-### Schema v1
+### Schema
 
-See `docs/data-model.md` for the field-by-field reference. Shape:
+See `docs/data-model.md` for the field-by-field reference. Shape at v3:
 
 ```
-keys(serial UNIQUE) ──┐
-                      ├── distributions(key_id, holder_id, bootstrap_run_id)
-holders(email UNIQUE)─┘            │
-bootstrap_runs(id) ◄───────────────┘
-templates(id, version)  PRIMARY KEY (id, version)
+keys(serial UNIQUE, serial_source) ──┐
+                                     ├── distributions(key_id, holder_id, bootstrap_run_id)
+holders(email UNIQUE, +optional) ────┘            │        │
+bootstrap_runs(id) ◄──────────────────────────────┘        │
+templates(id, version)       PRIMARY KEY (id, version)     │
+term_templates(id, language, version)                      │
+documents(distribution_id, sha256, content BLOB) ◄─────────┘
 audit(seq)  + BEFORE UPDATE/DELETE triggers → RAISE(ABORT)
 ```
+
+`documents` holds the signed terms as blobs, which is why the file can grow: budget
+roughly 100–500 KB per signed scan (`features/signed-term-documents.md`).
 
 Natural keys carry `UNIQUE` constraints (`keys.serial`, `holders.email`) so
 re-reading a key or re-registering a person updates rather than duplicates.
@@ -89,6 +94,8 @@ Two operators on the same share will collide eventually. Planned policy:
 | # | Phase | State | Notes |
 |---|---|---|---|
 | 1 | Schema v1 + `user_version` migrations | Done | refuses a newer schema |
+| 1b | Strict `open_existing` / `create_new` | Done | [spec](database-selection.md) — a typo can no longer create an empty database |
+| 1c | Schema v2 (serial provenance) and v3 (optional holder fields, term templates, documents) | Done | the v1→v3 chain is covered by a test that builds a v1 file by hand |
 | 2 | Location-aware pragmas | Done | WAL vs rollback journal, tested |
 | 3 | Backup (`VACUUM INTO`) + `integrity_check` | Done | Settings screen |
 | 4 | Multi-operator concurrency policy | Todo | busy retry + optimistic `updated_at` |
