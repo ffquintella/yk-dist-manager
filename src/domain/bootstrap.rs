@@ -17,6 +17,9 @@ pub enum StepKind {
     Fido2Pin,
     /// Raise the minimum FIDO2 PIN length (firmware 5.7+).
     Fido2MinPinLength,
+    /// Mark the FIDO2 PIN so the holder must change it before first use
+    /// (CTAP 2.1, firmware 5.7+). The custody model depends on this step.
+    Fido2ForcePinChange,
     /// Register the initial discoverable credential(s), resident on the key.
     Fido2Credential,
     /// Write the 6-byte access code that write-protects the OTP slots.
@@ -42,6 +45,7 @@ impl StepKind {
         match self {
             StepKind::Fido2Pin => "FIDO2 PIN",
             StepKind::Fido2MinPinLength => "FIDO2 minimum PIN length",
+            StepKind::Fido2ForcePinChange => "FIDO2 forced PIN change",
             StepKind::Fido2Credential => "FIDO2 resident credential",
             StepKind::OtpAccessCode => "OTP slot access code",
             StepKind::OtpSlotConfig => "OTP slot configuration",

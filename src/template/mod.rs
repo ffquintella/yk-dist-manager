@@ -206,8 +206,9 @@ impl BootstrapTemplate {
             id: "fgv-standard".into(),
             name: "FGV standard bootstrap".into(),
             version: "1".into(),
-            description: "FIDO2 PIN, OTP slot access code, initial on-key FIDO2 credential, \
-                          and a PIV signing certificate carrying the holder's e-mail."
+            description: "FIDO2 PIN (transport, forced change on first use), OTP slot access \
+                          code, initial on-key FIDO2 credential, and a PIV signing certificate \
+                          carrying the holder's e-mail."
                 .into(),
             steps: vec![
                 TemplateStep::new(
@@ -223,6 +224,13 @@ impl BootstrapTemplate {
                     "Raise the minimum FIDO2 PIN length (firmware 5.7+ only)",
                 )
                 .with_param("min_length", "6")
+                .optional(),
+                TemplateStep::new(
+                    "fido2-force-pin-change",
+                    StepKind::Fido2ForcePinChange,
+                    "Require {{holder.name}} to change the transport PIN before first use",
+                )
+                .with_param("enforcement", "firmware-if-available")
                 .optional(),
                 TemplateStep::new(
                     "otp-access-code",
@@ -304,6 +312,7 @@ impl BootstrapTemplate {
                         s.kind,
                         StepKind::Fido2Pin
                             | StepKind::Fido2MinPinLength
+                            | StepKind::Fido2ForcePinChange
                             | StepKind::Fido2Credential
                             | StepKind::Verify
                     )

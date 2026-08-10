@@ -207,6 +207,13 @@ pub fn native_op(kind: StepKind) -> Option<NativeOp> {
             // against the crate; `ykman` carries this step meanwhile.
             false,
         ),
+        StepKind::Fido2ForcePinChange => NativeOp::new(
+            "ctap-hid-fido2",
+            "authenticatorConfig(forcePINChange)",
+            "native-fido",
+            // Same unconfirmed CTAP 2.1 config coverage as setMinPINLength.
+            false,
+        ),
         StepKind::Fido2Credential => NativeOp::new(
             "ctap-hid-fido2",
             "make_credential(rk = true)",
@@ -292,6 +299,27 @@ fn plan_step(step: &TemplateStep, ctx: &RenderContext) -> Result<PlannedCommand,
                 p,
                 a,
                 Some("Requires firmware 5.7 or newer; skipped automatically on older keys.".into()),
+            )
+        }
+        StepKind::Fido2ForcePinChange => {
+            let (p, a) = ykman(
+                ctx,
+                vec![
+                    Arg::literal("fido"),
+                    Arg::literal("access"),
+                    Arg::literal("force-change"),
+                ],
+            );
+            (
+                p,
+                a,
+                Some(
+                    "Custody model B: the PIN the operator set is a transport PIN, and the key \
+                     refuses to be used until the holder changes it. Needs firmware 5.7+ \
+                     (CTAP 2.1); below that the change is instructed on the hand-over term \
+                     instead, and the run records which of the two applied."
+                        .into(),
+                ),
             )
         }
         StepKind::Fido2Credential => {

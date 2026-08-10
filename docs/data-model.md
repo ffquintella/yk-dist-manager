@@ -62,10 +62,13 @@ Transitions are enforced in `domain::KeyStatus::can_transition_to` and refused b
 | `finished_at` | TEXT | Null while running |
 | `status` | TEXT (JSON enum) | `Planned` \| `Running` \| `Completed` \| `Failed` \| `Aborted` |
 | `steps` | TEXT (JSON) | `Vec<StepOutcome>`; schema v2 moves these to rows |
-| `custody` | TEXT | **Where** custody of the secrets went — never a secret value |
+| `custody` | TEXT | The custody model: `transport-pin+forced-change` (the decided default), `holder-set`, `escrowed:<external reference>`, or `no-secret-set`. Never a secret value |
 
 `StepOutcome`: `step_id`, `kind`, `status`, `started_at`, `finished_at`, `detail`.
-`detail` is operator-facing text and must be secret-free.
+`detail` is operator-facing text and must be secret-free. For a secret-setting step it also
+carries the change enforcement (`enforced-by-firmware` / `instructed-on-handover`), which is
+what distinguishes a key that obliges the holder to replace the transport PIN from one that
+merely asks.
 
 ## `distributions` — the hand-over
 

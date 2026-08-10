@@ -344,7 +344,9 @@ impl YkDistApp {
             self.operator.clone(),
             steps,
         );
-        run.custody = "dry run — no secret was set".into();
+        // A dry run sets no secret; a real run records the decided model
+        // (custody model B) — see features/secrets-custody.md.
+        run.custody = crate::domain::CustodyModel::NoSecretSet.note(None);
 
         let Some(store) = &self.store else { return };
         if let Err(e) = store.insert_run(&run) {

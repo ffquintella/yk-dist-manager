@@ -131,8 +131,8 @@ make coverage          # whole crate, including untested paint code
 make coverage-html     # browsable report
 ```
 
-Current: **89.70%** core line coverage (85.67% region), 119 tests.
-Whole-crate line coverage is 57.49%, the difference being ~950 lines of egui
+Current: **90.26%** core line coverage (86.29% region), 129 tests.
+Whole-crate line coverage is 59.00%, the difference being ~1000 lines of egui
 paint code.
 
 - `src/ui/`, `src/app.rs` and `src/main.rs` are excluded from the gate because

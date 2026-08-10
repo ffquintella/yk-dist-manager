@@ -146,9 +146,9 @@ future audit checks what was issued.
   whoever runs the CA, and needs ESI agreement.
 - Is `emailProtection` enough, or is document signing (Adobe's trust list) also
   required? The answer changes the profile, not the code.
-- Whether the alternative OpenPGP reading of the requirement is the one actually
-  wanted — see `features/step-openpgp-signing-subkey.md` and `roadmap.md`
-  *Open questions* #1.
+- ~~Whether the OpenPGP reading was the one wanted~~ — **resolved 2026-08-10: this PIV 9c
+  path is the chosen mechanism.** `features/step-openpgp-signing-subkey.md` stays specified
+  but unscheduled.
 
 ## References
 

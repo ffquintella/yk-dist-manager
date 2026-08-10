@@ -88,7 +88,7 @@ key and recorded in the phase notes.
 | 1 | Planner with transports and secret placeholders | Done | 19 template tests |
 | 2 | Dry-run recording | Done | `bootstrap.dry_run` audited |
 | 3 | Executor skeleton: sequencing, status persistence, abort policy | Todo | against mock write traits |
-| 4 | Secret input: prompt, generate, show-once, zeroise | Todo | with `features/secrets-custody.md` |
+| 4 | Secret input: prompt, generate, show-once, zeroise | Todo | model B is decided, so this is unblocked — `features/secrets-custody.md` |
 | 5 | FIDO2 steps live | Todo | `features/step-fido2-pin.md`, `features/step-fido2-credentials.md` |
 | 6 | PIV steps live | Todo | `features/step-piv-*.md` |
 | 7 | OTP step live | Todo | `features/step-otp-access-code.md` |
@@ -129,8 +129,9 @@ scenario per step against a mock write trait.
 
 ## Open questions and gates
 
-- **Custody model** (holder-chosen vs operator-generated with escrow) blocks Phase 4;
-  see `features/secrets-custody.md`.
+- ~~Custody model~~ **decided 2026-08-10 (model B)**, so Phase 4 is unblocked. The
+  executor must set the transport secret, mark the key for forced change where the firmware
+  allows it, and record which enforcement applied.
 - Whether a bootstrap requires a second operator's confirmation for a batch is an
   operational policy question.
 - The CA decision blocks the PIV certificate steps in Phase 6

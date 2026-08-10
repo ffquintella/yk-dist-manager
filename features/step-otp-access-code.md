@@ -74,6 +74,7 @@ tool's own database — see `features/db-password-and-encryption.md` Phase 7).
 | # | Phase | State | Notes |
 |---|---|---|---|
 | 1 | Plan entry with a secret placeholder and the fallback command | Done | |
+| 1b | Custody default under model B: generate and discard | Done (default taken) | the holder never needs this code, so the slot is deliberately frozen; confirmation pending — `roadmap.md` #6 |
 | 2 | Executor on the `ykman` path using the prompt form (`--access-code -`) | Todo | no code in argv |
 | 3 | Native read path over `hidapi` (slot status, sequence) | Todo | verify against `ykman otp info` first |
 | 4 | Native write path (access code) | Todo | frame + CRC + status confirmation |
@@ -104,9 +105,11 @@ tool's own database — see `features/db-password-and-encryption.md` Phase 7).
 - **Is OTP even wanted?** For a FIDO2 + PIV deployment, the safest choice may be to
   *disable* the OTP application over USB rather than protect it. That is a policy
   decision; the template supports both once Phase 6 lands.
-- Custody of the access code: a generated code nobody records means the slot is
-  permanently frozen — which is arguably the desired outcome ("nobody reprograms
-  this"), but it must be a deliberate choice, written down.
+- Custody of the access code under model B: the default taken is **generate and discard**.
+  Nobody records it, so the slot is permanently frozen — arguably the desired outcome
+  ("nobody reprograms this"), at the cost of needing an OTP applet reset to change it later.
+  It is written down here and in `roadmap.md` #6 rather than left implicit, and the
+  alternative (put it in the sealed envelope) is one template parameter away.
 
 ## References
 

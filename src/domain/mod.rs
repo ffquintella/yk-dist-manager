@@ -6,11 +6,13 @@
 //! specifications.
 
 pub mod bootstrap;
+pub mod custody;
 pub mod distribution;
 pub mod holder;
 pub mod key;
 
 pub use bootstrap::{BootstrapRun, RunStatus, StepKind, StepOutcome, StepStatus};
+pub use custody::{ChangeEnforcement, CustodyModel};
 pub use distribution::{DeliveryMethod, DistributionRecord};
 pub use holder::Holder;
 pub use key::{KeyStatus, YubiKeyRecord};

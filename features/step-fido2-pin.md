@@ -2,8 +2,13 @@
 
 ## Summary
 
-Set (or change) the PIN that guards FIDO2 on the key, and where the firmware allows
-it, raise the minimum PIN length.
+Set (or change) the PIN that guards FIDO2 on the key, mark it so the holder must replace it
+before first use, and where the firmware allows it, raise the minimum PIN length.
+
+> **Custody model B (decided 2026-08-10):** the PIN the operator sets is a *transport* PIN.
+> `forcePINChange` makes the key refuse to be used until the holder replaces it — on
+> firmware 5.7+. Below that, the change is instructed on the hand-over term, and the run
+> records which of the two applied.
 
 ## Motivation
 
@@ -34,9 +39,11 @@ reference command. Nothing is applied yet — the executor is Wave 1.
   `setPIN` and `changePIN` subcommands. Setting requires no current PIN; changing
   requires the current one. The step must read `get_info` first
   (`options.clientPin`) to know which it is, instead of guessing and burning a retry.
-- **`forcePINChange`** (CTAP 2.1): the key can be marked so the *user* must change
-  the PIN before first use. This is the clean answer to "the operator set the PIN,
-  so the operator knows it": set a transport PIN, force a change, hand the key over.
+- **`forcePINChange`** (CTAP 2.1, firmware 5.7+): the key is marked so the *user* must
+  change the PIN before first use. This is the mechanism custody model B is built on: set a
+  transport PIN, mark it, hand the key over. On a pre-5.7 key the flag does not exist, so
+  the same procedure runs with `ChangeEnforcement::ByProcedure` and the term carries the
+  instruction — the tool must not imply an enforcement the firmware cannot provide.
 - **`setMinPINLength`** (CTAP 2.1, firmware 5.7+): raises the floor. Once raised it
   **cannot be lowered** except by resetting FIDO2. Optional and firmware-gated for
   exactly that reason.
@@ -49,7 +56,7 @@ reference command. Nothing is applied yet — the executor is Wave 1.
 |---|---|---|
 | `min_length` | Minimum PIN length to enforce (needs 5.7+) | `6` |
 | `source` | `operator-entered` \| `holder-entered` \| `generated` | `operator-entered` |
-| `force_change` | Mark the PIN for mandatory change on first use | (Phase 4) |
+| `enforcement` (on the `fido2-force-pin-change` step) | `firmware-if-available` — use `forcePINChange` where the firmware has it, otherwise fall back to the instruction on the term | `firmware-if-available` |
 
 ### Why the native path is not optional here
 
@@ -62,18 +69,20 @@ function parameter, and the value is zeroised after use.
 | # | Phase | State | Notes |
 |---|---|---|---|
 | 1 | Plan entry with a secret placeholder | Done | |
-| 2 | Read `get_info`: is a PIN already set, how many retries remain | Todo | never burn a retry to find out |
-| 3 | Set PIN over CTAP2 (`setPIN`) | Todo | |
-| 4 | Change PIN (`changePIN`) for an already-configured key | Todo | requires the current PIN |
-| 5 | `setMinPINLength` gated on firmware 5.7+ | Todo | irreversible; confirm explicitly |
-| 6 | `forcePINChange` so the holder must set their own | Todo | preferred custody answer |
-| 7 | Retry-count display before and after, in the wizard | Todo | with a hard warning near zero |
+| 2 | `fido2-force-pin-change` step in both built-in templates, with the firmware gate on the step | Done | custody model B made visible in the plan |
+| 3 | Read `get_info`: is a PIN already set, how many retries remain | Todo | never burn a retry to find out |
+| 4 | Set PIN over CTAP2 (`setPIN`) | Todo | |
+| 5 | Change PIN (`changePIN`) for an already-configured key | Todo | requires the current PIN |
+| 6 | `forcePINChange` executed, with the pre-5.7 procedural fallback recorded | Todo | **the mechanism model B depends on** |
+| 7 | `setMinPINLength` gated on firmware 5.7+ | Todo | irreversible; confirm explicitly |
+| 8 | Retry-count display before and after, in the wizard | Todo | with a hard warning near zero |
 
 ## Audit events
 
 | Event | Detail (never the PIN) |
 |---|---|
 | `bootstrap.step.done` | `step=fido2-pin action=set|change retries_after=8` |
+| `bootstrap.step.done` | `step=fido2-force-pin-change enforcement=enforced-by-firmware|instructed-on-handover` |
 | `bootstrap.step.failed` | `step=fido2-pin reason=<ctap status> retries_after=<n>` |
 | `bootstrap.step.skipped` | `step=fido2-min-pin-length reason=firmware<5.7` |
 | `fido.pin.force_change_set` | Phase 6 |
@@ -91,9 +100,11 @@ function parameter, and the value is zeroised after use.
 
 ## Open questions and gates
 
-- **Custody**: transport PIN + forced change (nothing to escrow) vs a PIN the
-  operator records. This is the single biggest open decision in Wave 1; see
-  `features/secrets-custody.md`.
+- ~~Custody~~ **answered 2026-08-10: model B**, transport PIN plus forced change, nothing
+  retained. See `features/secrets-custody.md`.
+- On a pre-5.7 key the enforcement is procedural. Is that acceptable for the current
+  inventory, or should pre-5.7 keys be handed over with the holder present (model A) instead?
+  The tool supports both; the fleet's firmware mix decides.
 - Should `alwaysUv` be offered at all? It is a compatibility risk.
 
 ## References

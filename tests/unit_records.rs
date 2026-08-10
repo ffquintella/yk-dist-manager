@@ -3,7 +3,8 @@
 
 use chrono::{Duration, Utc};
 use yk_dist_manager::domain::{
-    DeliveryMethod, DistributionRecord, Holder, KeyStatus, RunStatus, StepKind,
+    ChangeEnforcement, CustodyModel, DeliveryMethod, DistributionRecord, Holder, KeyStatus,
+    RunStatus, StepKind,
 };
 use yk_dist_manager::template::{
     Arg, BootstrapTemplate, RenderContext, TemplateStep, Transport, plan,
@@ -68,6 +69,7 @@ fn every_key_status_and_step_kind_has_a_label() {
     for kind in [
         StepKind::Fido2Pin,
         StepKind::Fido2MinPinLength,
+        StepKind::Fido2ForcePinChange,
         StepKind::Fido2Credential,
         StepKind::OtpAccessCode,
         StepKind::OtpSlotConfig,
@@ -210,4 +212,60 @@ fn native_steps_report_the_native_call_as_their_detail() {
 fn ctx() -> RenderContext {
     let holder = Holder::new("Ana Silva", "ana.silva@fgv.br", "ESI", "").unwrap();
     RenderContext::for_holder(&holder, 20_423_633, "felipe", "FGV")
+}
+
+#[test]
+fn a_dry_run_records_that_no_secret_was_set() {
+    // The custody vocabulary is fixed (model B is the default for real runs), so
+    // a dry run must say "no secret" rather than leave free text behind.
+    let note = CustodyModel::NoSecretSet.note(None);
+    assert_eq!(note, "no-secret-set");
+    assert_eq!(CustodyModel::parse(&note), Some(CustodyModel::NoSecretSet));
+    assert!(!CustodyModel::NoSecretSet.hands_a_secret_to_the_holder());
+}
+
+#[test]
+fn model_b_needs_an_out_of_band_channel_but_nothing_retained() {
+    let model = CustodyModel::DEFAULT;
+    assert_eq!(model, CustodyModel::TransportPinForcedChange);
+    assert!(
+        model.hands_a_secret_to_the_holder(),
+        "a transport PIN has to reach the holder somehow"
+    );
+    assert!(
+        !model.requires_reference(),
+        "nothing is retained, so there is no reference to record"
+    );
+    assert_eq!(model.note(None), "transport-pin+forced-change");
+}
+
+#[test]
+fn escrow_is_the_only_model_that_records_a_pointer() {
+    for model in CustodyModel::ALL {
+        assert_eq!(
+            model.requires_reference(),
+            model == CustodyModel::Escrowed,
+            "{model:?} disagrees about needing a reference"
+        );
+        assert!(!model.label().is_empty());
+    }
+}
+
+#[test]
+fn a_pre_5_7_key_cannot_enforce_the_change_itself() {
+    // The reference key here is firmware 5.4.3, so model B falls back to an
+    // instruction on the hand-over term — and the run must say which applied.
+    assert_eq!(
+        ChangeEnforcement::for_fido2("5.4.3").as_str(),
+        "instructed-on-handover"
+    );
+    assert_eq!(
+        ChangeEnforcement::for_fido2("5.7.1").as_str(),
+        "enforced-by-firmware"
+    );
+    assert_eq!(
+        ChangeEnforcement::for_piv().as_str(),
+        "instructed-on-handover",
+        "PIV has no force-change flag at any firmware level"
+    );
 }

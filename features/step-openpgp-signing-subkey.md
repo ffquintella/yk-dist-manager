@@ -6,6 +6,11 @@ The alternative interpretation of "set up the signing key with the person's e-ma
 signing ready to use": an **OpenPGP signature subkey** generated on the OpenPGP applet,
 with the holder's e-mail in the key's user id.
 
+> **Not the chosen mechanism.** Decided 2026-08-10: the signing credential is a **PIV slot
+> 9c X.509 certificate** with the e-mail in `rfc822Name`
+> (`features/step-piv-signing-certificate.md`). This spec stays as-is for a unit that signs
+> Git commits or `gpg` mail, and is unscheduled.
+
 ## Motivation
 
 "Signing key with the person's e-mail" describes two different mechanisms depending on
@@ -20,16 +25,16 @@ the ecosystem:
 | Needs on the workstation | Nothing (OS smartcard support) | GnuPG installed and configured |
 
 A team that signs Git commits and release artefacts wants the OpenPGP path. A team that
-signs institutional mail and documents wants the PIV path. Both are legitimate readings
-of the requirement, and the roadmap asks the question explicitly
-(`roadmap.md` open question #1) rather than guessing.
+signs institutional mail and documents wants the PIV path. Both were legitimate readings of
+the requirement; the answer (2026-08-10) is the PIV path.
 
-This spec exists so that if the answer is OpenPGP, the work is already scoped.
+This spec stays so that the work is already scoped if OpenPGP is later wanted as well — for
+example a developer template alongside the standard one.
 
 ## Current state
 
-**Specified, not scheduled.** `StepKind` has no OpenPGP variant yet; adding one is the
-first phase.
+**Specified, not scheduled, and not the chosen path.** `StepKind` has no OpenPGP variant;
+adding one is the first phase if this is ever wanted alongside (or instead of) PIV.
 
 ## Design
 
@@ -116,8 +121,10 @@ signature is later traced back to a distributed key.
 
 ## Open questions and gates
 
-1. **Is this the required mechanism, instead of or alongside PIV?**
-   (`roadmap.md` #1.) The whole feature depends on the answer.
+1. ~~Is this the required mechanism?~~ **Answered 2026-08-10: no — PIV 9c is.** The
+   question that remains is whether OpenPGP is wanted *alongside* it for a subset of holders
+   (developers signing commits), which would be a separate template rather than a change to
+   the standard one.
 2. If both are wanted on the same key: the applets are independent, so it is possible —
    but it doubles the PINs the holder must manage, which the custody model must account
    for.

@@ -182,6 +182,49 @@ fn fido_only_template_omits_piv_and_otp() {
 }
 
 #[test]
+fn the_standard_template_forces_the_holder_to_change_the_transport_pin() {
+    // Custody model B: the operator's PIN is a transport PIN, so the template
+    // must mark the key for a mandatory change.
+    let commands = plan(&BootstrapTemplate::default_fgv(), &ctx()).unwrap();
+    let forced = commands
+        .iter()
+        .find(|c| c.kind == StepKind::Fido2ForcePinChange)
+        .expect("the forced-change step is planned");
+
+    assert!(
+        forced
+            .redacted_command()
+            .contains("fido access force-change"),
+        "got: {}",
+        forced.redacted_command()
+    );
+    assert!(
+        !forced.carries_secret(),
+        "marking the PIN for change needs no secret"
+    );
+    let note = forced.note.as_deref().unwrap_or("");
+    assert!(
+        note.contains("5.7"),
+        "the firmware gate must be stated: {note}"
+    );
+    assert!(
+        note.contains("hand-over term"),
+        "below 5.7 the fallback is procedural, and the note must say so: {note}"
+    );
+}
+
+#[test]
+fn the_fido_only_template_keeps_the_forced_change() {
+    let commands = plan(&BootstrapTemplate::fido_only(), &ctx()).unwrap();
+    assert!(
+        commands
+            .iter()
+            .any(|c| c.kind == StepKind::Fido2ForcePinChange),
+        "custody model B applies to every template that sets a FIDO2 PIN"
+    );
+}
+
+#[test]
 fn credential_registration_is_native_because_ykman_cannot_do_it() {
     let commands = plan(&BootstrapTemplate::default_fgv(), &ctx()).unwrap();
     let credential = commands
@@ -212,6 +255,7 @@ fn every_step_kind_declares_a_native_operation() {
     for kind in [
         StepKind::Fido2Pin,
         StepKind::Fido2MinPinLength,
+        StepKind::Fido2ForcePinChange,
         StepKind::Fido2Credential,
         StepKind::OtpAccessCode,
         StepKind::OtpSlotConfig,

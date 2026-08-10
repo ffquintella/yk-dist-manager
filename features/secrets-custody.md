@@ -2,9 +2,13 @@
 
 ## Summary
 
-Decide and implement what happens to the PINs, PUKs, access codes and management keys
-the bootstrap sets: how they are produced, how they reach the holder, and what — if
-anything — is kept. The database records **where custody went**, never the value.
+What happens to the PINs, PUKs, access codes and management keys the bootstrap sets: how
+they are produced, how they reach the holder, and what — if anything — is kept. The
+database records **where custody went**, never the value.
+
+> **Decided 2026-08-10 — model B: transport secret plus forced change.** The operator sets
+> a temporary secret, the key is marked so the holder must change it before first use, and
+> this tool retains nothing.
 
 ## Motivation
 
@@ -22,31 +26,71 @@ where the alternative is designed.
 
 ## Current state
 
-**Design only.** The infrastructure that keeps secrets out is in place: secrets exist
-in a plan as `Arg::Secret` placeholders, `BootstrapRun.custody` holds a free-text note
-about *where* custody went (currently `"dry run — no secret was set"`), and
-`StepKind::sets_secret()` marks which steps produce one. No secret is generated,
-prompted for, or stored anywhere yet.
+**Model decided; vocabulary fixed in code; the secret-handling machinery is still to
+build.**
+
+What is in place:
+
+- `domain::CustodyModel` — the four models with a stored form
+  (`transport-pin+forced-change`, `holder-set`, `escrowed:<reference>`,
+  `no-secret-set`), `DEFAULT` = model B, and `parse` for reading a run back. Only
+  `Escrowed` carries a reference, and the reference points at an *external* store.
+- `domain::ChangeEnforcement` — whether the key enforces the change
+  (`enforced-by-firmware`) or the hand-over term instructs it
+  (`instructed-on-handover`), decided from the firmware for FIDO2 and always
+  procedural for PIV.
+- `StepKind::Fido2ForcePinChange` and a `fido2-force-pin-change` step in both built-in
+  templates, planned as `ykman fido access force-change` with the firmware gate stated on
+  the step.
+- Secrets in a plan remain `Arg::Secret` placeholders; a dry run records
+  `no-secret-set`.
+
+Still to build: the prompt / generate / show-once / zeroise path, the sealed-envelope
+slip, and the custody report.
 
 ## Design
 
-### The three models
+### The three models, and the one chosen
 
 | Model | How it works | Cost |
 |---|---|---|
 | **A. Holder-set at the desk** | The holder types their own PIN during hand-over; the operator never learns it | Requires the holder present; no recovery — a forgotten PIN means a reset |
-| **B. Transport PIN + forced change** | The operator sets a temporary PIN, marks it for mandatory change (CTAP 2.1 `forcePINChange`), and the holder changes it on first use | Works for posted keys; the transport PIN must reach the holder out of band |
-| **C. Generated + escrowed** | The tool generates the secret, shows it once, and records it in an external secret store (never in this database) | Recovery possible; creates a secret store with per-device values |
+| **B. Transport secret + forced change** ← **chosen** | The operator sets a temporary secret, marks it for mandatory change, and the holder replaces it on first use | The transport secret must reach the holder out of band |
+| **C. Generated + escrowed** | The tool generates the secret and records it in an external secret store (never in this database) | Recovery possible; creates a secret store with per-device values |
 
-The default recommendation is **B for FIDO2** (the mechanism exists in the
-firmware and is designed for exactly this) and **A for the PIV PIN** where the holder
-is present, falling back to B semantics — a transport PIN plus an instruction to
-change it — when the key is posted.
+**B applies to every secret-setting step**, which is what makes the procedure uniform for
+a desk hand-over and a posted key alike. Model A remains available per template (a holder
+who is present may simply type their own), and **C is opt-in and never uses this
+database** — the target is an external store (BastionVault KV under a per-serial path) and
+what is recorded here is the *reference*, `escrowed:bastionvault:kv/yubikeys/20423633`.
 
-**C is opt-in and never uses this database.** If escrow is wanted, the target is an
-external store (BastionVault KV under a per-serial path), and what this tool records
-is the *reference*: `bastionvault:kv/yubikeys/20423633`. That way the custody trail is
-complete and the secret is where a secret store belongs.
+#### What B means per secret
+
+| Secret | Under model B | Enforcement |
+|---|---|---|
+| **FIDO2 PIN** | Operator sets a transport PIN; `forcePINChange` marks the key | **Firmware** from 5.7 (CTAP 2.1); **procedural** below — the reference key here is 5.4.3 |
+| **PIV PIN** | Operator sets a transport PIN; the term instructs the change | **Procedural always** — PIV has no force-change flag at any firmware level |
+| **PIV PUK** | Handed over in the same envelope; nothing retained | Procedural; see sub-decision below |
+| **PIV management key** | `--protect --generate`: random, stored on the key, PIN-guarded | Nothing to hand over and nothing to retain — unaffected by B |
+| **OTP access code** | Generated and discarded; the slot is deliberately frozen | The holder never needs it; see sub-decision below |
+
+The honest consequence of "enforcement is sometimes procedural" is that a transport PIN
+can survive if the holder ignores the instruction. That is why the run records
+`ChangeEnforcement`: an audit can then tell an enforced change from an instructed one, and
+a report can list the keys where it was only instructed.
+
+#### Two sub-decisions B leaves open
+
+1. **The PUK.** Default taken: hand it to the holder in the same sealed envelope and retain
+   nothing. Consequence: a blocked PIN with a lost PUK costs a PIV applet reset and a new
+   certificate. Retaining the PUK for support would be escrow — a per-device secret store
+   with everything that implies.
+2. **The OTP access code.** Default taken: generate and discard, freezing the slot
+   deliberately. Consequence: reprogramming the slot later requires an OTP applet reset.
+   The alternative is to put the code in the envelope, where it will never be used.
+
+Both are recorded as open items in `roadmap.md`; the defaults are what the templates do
+today.
 
 ### Generation rules (when the tool generates)
 
@@ -65,38 +109,42 @@ complete and the secret is where a secret store belongs.
 | Recorded | Never recorded |
 |---|---|
 | Which secrets a run set (by step kind) | Any secret value |
-| Custody destination (`holder-set`, `forced-change`, `envelope:2026-08-10-014`, `bastionvault:kv/…`) | A hint, a partial value, or a reversible transform |
+| The custody model (`transport-pin+forced-change`, `holder-set`, `escrowed:<reference>`, `no-secret-set`) | A hint, a partial value, or a reversible transform |
 | Who performed the run, and when | A "temporary" copy in a note field |
-| Whether a forced change was set | |
+| Whether the change was enforced by firmware or only instructed | |
 
-`BootstrapRun.custody` is free text today; Phase 2 makes it a typed enum plus an
-optional reference, so a report can answer "which keys have escrowed PINs?".
+`BootstrapRun.custody` holds the stored form of `CustodyModel`, so a report can answer
+"which keys have escrowed secrets?" and "which keys were only *instructed* to change the
+transport PIN?" without parsing prose.
 
-### Hand-over channel
+### Hand-over channel — now a required part of the procedure
 
-If a transport PIN must reach the holder, the channel matters: in person, or a sealed
-printed envelope, or an out-of-band message — never the same e-mail that the key's
-own certificate protects, and never a chat message that persists. Phase 5 renders a
-sealed-envelope slip so the physical channel is the default.
+Model B always hands a secret over, so the channel is not an afterthought: in person, or a
+sealed printed envelope, never the same e-mail the key's certificate protects and never a
+chat message that persists. Phase 5's sealed-envelope slip is therefore no longer optional
+polish — it is how model B is executed for a posted key, and it is a prerequisite for
+distributing by courier or post.
 
 ## Phases
 
 | # | Phase | State | Notes |
 |---|---|---|---|
-| 1 | Decide the model (A / B / C per secret) | **Blocked** | needs an owner's decision; see gates |
-| 2 | Typed custody field on the run + report | Todo | replaces free text |
-| 3 | Secret input: prompt, generate, show-once, zeroise, redacted `Debug` | Todo | with `zeroize` |
-| 4 | `forcePINChange` support in the FIDO2 step | Todo | makes model B real |
-| 5 | Sealed-envelope slip rendering | Todo | printable, one per key, no PIN in the database |
+| 1 | Decide the model | **Done (2026-08-10)** | model B — transport secret + forced change, nothing retained |
+| 2 | Typed custody vocabulary on the run | Done | `CustodyModel` + `ChangeEnforcement`; stored in the existing `custody` column, so no migration. A dedicated column arrives with schema v2 if reporting needs one |
+| 3 | Secret input: prompt, generate, show-once, zeroise, redacted `Debug` | Todo | with `zeroize`; the remaining core of this feature |
+| 4 | `forcePINChange` in the FIDO2 step | **In progress** | the step exists in both templates and is planned; the executor call is Wave 1 |
+| 5 | Sealed-envelope slip rendering | Todo | required by B for any non-desk hand-over |
 | 6 | Optional external escrow (BastionVault KV), reference-only in the database | Todo | never the value here |
-| 7 | Custody report: which keys hold which custody model | Todo | `features/reports-and-export.md` |
+| 7 | Custody report: which keys hold which model, and where the change was only *instructed* | Todo | `features/reports-and-export.md` |
+| 8 | Resolve the PUK and OTP-access-code sub-decisions | Todo | defaults implemented; confirmation pending |
 
 ## Audit events
 
 | Event | Detail |
 |---|---|
 | `secret.generated` | `step=<id> kind=fido2-pin length=6` — never the value |
-| `secret.custody.recorded` | `run=<id> custody=forced-change` (or the escrow reference) |
+| `secret.custody.recorded` | `run=<id> custody=transport-pin+forced-change` (or the escrow reference) |
+| `secret.change_enforcement` | `step=fido2-pin enforcement=enforced-by-firmware\|instructed-on-handover` |
 | `secret.shown` | The show-once panel was displayed and dismissed |
 | `secret.escrowed` | `reference=bastionvault:kv/yubikeys/20423633` |
 
@@ -105,6 +153,13 @@ sealed-envelope slip so the physical channel is the default.
 - Existing: `no_plan_output_can_leak_a_secret`,
   `pin_carrying_steps_use_a_secret_placeholder`,
   `scenario_the_plan_never_shows_a_pin`.
+- Model B: `the_default_is_model_b`, `model_b_needs_an_out_of_band_channel_but_nothing_retained`,
+  `escrow_is_the_only_model_that_records_a_pointer`,
+  `a_stored_note_reads_back_including_its_reference`,
+  `a_pre_5_7_key_cannot_enforce_the_change_itself`,
+  `the_standard_template_forces_the_holder_to_change_the_transport_pin`,
+  `the_fido_only_template_keeps_the_forced_change`,
+  `a_dry_run_records_that_no_secret_was_set`.
 - Phase 3 adds: a generated secret's `Debug` output contains no digits of the value; a
   secret's buffer is zeroised after use; nothing containing the value reaches the
   audit or log sinks (assert by capturing both sinks during a mock run).
@@ -114,13 +169,16 @@ sealed-envelope slip so the physical channel is the default.
 
 ## Open questions and gates
 
-1. **Which model, per secret?** This is the decision that blocks Wave 1's executor
-   (`roadmap.md` open question #4). It is an operational and risk decision, not an
-   implementation choice.
-2. **If escrow is chosen**, the store, its access control and its retention are ESI
-   decisions, and the DPO should be aware that a credential store now exists.
-3. **Reset policy**: who may reset a key whose PIN is forgotten, and does that require
-   a second operator?
+1. ~~Which model?~~ **Answered 2026-08-10: model B.**
+2. **The PUK** — handed over (default, nothing retained) or retained for support
+   (escrow). `roadmap.md` open question #5.
+3. **The OTP access code** — generated and discarded (default, slot deliberately frozen)
+   or carried in the envelope. `roadmap.md` open question #6.
+4. **Reset policy**: who may reset a key whose PIN is forgotten, and does that require a
+   second operator? Model B makes this more likely to be needed, not less: a holder who
+   forgets the PIN they just set has no recovery path.
+5. If escrow is ever switched on for a template, the store, its access control and its
+   retention are ESI decisions, and the DPO should know a credential store now exists.
 
 ## References
 

@@ -2,20 +2,28 @@
 # See AGENTS.md for the rules these targets enforce.
 
 .DEFAULT_GOAL := help
-.PHONY: help build run check check-all fmt lint test test-all coverage coverage-core \
-        coverage-html hardware clean release-check
+.PHONY: help build run run-native check check-all fmt lint test test-all coverage \
+        coverage-core coverage-html hardware clean release-check
 
 COVERAGE_FLOOR := 80
 
 help: ## Show this help
+	@echo "yk-dist-manager — available targets:"
+	@echo
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | \
+		sed 's/$$(COVERAGE_FLOOR)/$(COVERAGE_FLOOR)/' | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
+	@echo
+	@echo "Database: set YKDM_DB to choose the file (a path on a share is detected)."
 
 build: ## Debug build (default features)
 	cargo build
 
 run: ## Launch the GUI
 	cargo run
+
+run-native: ## Launch the GUI with native hardware access + encrypted-db support
+	cargo run --features native-device,encrypted-db
 
 check: ## Fast compile check, default features
 	cargo check

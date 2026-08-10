@@ -34,8 +34,11 @@ Generated from the record, no retyping:
   that succeeded — so the holder knows the key carries a signing certificate in their
   name.
 - Certificate details, when one was issued: subject, e-mail SAN, issuer, validity.
-- Custody statement: whether the holder set their own PIN, or must change a transport
-  PIN on first use (`features/secrets-custody.md`).
+- **Custody statement — load-bearing under model B**: the PINs handed over are *transport*
+  PINs and must be changed on first use. Where the firmware cannot enforce that (FIDO2 below
+  5.7, and PIV always), this sentence is the *only* mechanism, so its wording is not
+  boilerplate. The term states which secrets were enforced by the key and which are the
+  holder's responsibility (`features/secrets-custody.md`).
 - Obligations: the key identifies the holder; the PIN is not to be shared; loss or
   suspected compromise is reported immediately, to whom, and by what channel; the key is
   returned when the holder leaves or changes role.
@@ -78,6 +81,7 @@ PDFs. The record holds a reference.
 
 | # | Phase | State | Notes |
 |---|---|---|---|
+| 0 | Sealed-envelope slip for the transport secrets | Todo | **required by custody model B** for any hand-over that is not face to face; shares this feature's rendering |
 | 1 | Text/Markdown term generated from the record | Todo | proves the content before investing in layout |
 | 2 | PDF output | Todo | pure-Rust writer preferred |
 | 3 | Editable, versioned document template | Todo | wording is owned outside the code |

@@ -20,6 +20,7 @@ The default template (`fgv-standard`) applies, in order:
 |---|---|
 | FIDO2 PIN | Sets the PIN that guards FIDO2 |
 | FIDO2 minimum PIN length | Raises the floor to 6 (firmware 5.7+, skipped on older keys) |
+| Forced PIN change | Marks the key so the holder must replace the transport PIN (firmware 5.7+; instructed on the hand-over term below that) |
 | OTP access code | Writes the 6-byte code that write-protects the OTP slot |
 | Initial FIDO2 credential | Registers a **discoverable credential resident on the key** |
 | PIV PIN + PUK | Replaces both factory defaults |
@@ -32,6 +33,11 @@ The default template (`fgv-standard`) applies, in order:
 Templates are data: steps can be deselected, parameters carry
 `{{holder.email}}`-style variables, and a template has an id and a version that
 end up in the distribution record.
+
+**Custody of the secrets** follows model B: every PIN the operator sets is a *transport*
+PIN, the holder replaces it on first use, and the tool retains nothing. Each run records the
+model and whether the change was enforced by the key or instructed on the hand-over term.
+See [`features/secrets-custody.md`](features/secrets-custody.md).
 
 > **Status.** The bootstrap screen is currently **dry run only**: it builds and
 > records the plan, but nothing is written to a key until the executor lands
@@ -78,7 +84,8 @@ Requires a recent stable Rust (developed on 1.96) and, for the `ykman` fallback,
 `ykman` 5.x on `PATH`.
 
 ```bash
-cargo run
+make run          # or: cargo run
+make              # list every task
 ```
 
 With native hardware access and an encrypted database:
@@ -97,9 +104,9 @@ YKDM_DB=/Volumes/ti-share/yubikeys/yk-dist-manager.sqlite3 cargo run
 ## Tests
 
 ```bash
-cargo test                                   # 119 unit + behaviour tests
+cargo test                                   # 129 unit + behaviour tests
 cargo clippy --all-targets --all-features    # warning-free
-make coverage-core                           # 89.70% — floor is 80%
+make coverage-core                           # 90.26% — floor is 80%
 ```
 
 `make help` lists the rest.

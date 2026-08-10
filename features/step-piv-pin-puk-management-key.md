@@ -2,9 +2,15 @@
 
 ## Summary
 
-Leave no factory default on the PIV applet: change the PIN, change the PUK, and
-replace the default management key — preferably with a random one stored on the key
-itself and guarded by the PIN, so there is nothing to hold in custody.
+Leave no factory default on the PIV applet: change the PIN, change the PUK, and replace the
+default management key — with a random one stored on the key itself and guarded by the PIN,
+so there is nothing to hold in custody.
+
+> **Custody model B (decided 2026-08-10):** the PIV PIN the operator sets is a transport
+> PIN. **PIV has no force-change flag at any firmware level**, so the change is always
+> instructed on the hand-over term and the run records
+> `ChangeEnforcement::ByProcedure`. The PUK goes to the holder in the same sealed envelope
+> and nothing is retained (a sub-decision still open — see below).
 
 ## Motivation
 
@@ -78,7 +84,7 @@ operator should know it.
 |---|---|---|
 | `algorithm` | `aes256` \| `aes192` \| `aes128` \| `tdes` | `aes256` |
 | `protect` | Store a random management key on the key, PIN-guarded | `true` |
-| `source` (PIN/PUK) | `operator-entered` \| `holder-entered` \| `generated` | `operator-entered` |
+| `source` (PIN/PUK) | `operator-entered` \| `holder-entered` \| `generated` | `operator-entered` (a transport PIN, under model B) |
 | `set_retries` | Optional PIN/PUK retry counts | unset |
 
 ## Phases
@@ -114,9 +120,12 @@ operator should know it.
 
 ## Open questions and gates
 
-- Who chooses the PIV PIN — the operator (then it must be handed over and changed) or
-  the holder at the desk (nothing to escrow, but the holder must be present)? Same
-  decision as the FIDO2 PIN; see `features/secrets-custody.md`.
+- ~~Who chooses the PIV PIN?~~ **Answered 2026-08-10: model B** — the operator sets a
+  transport PIN and the holder changes it. Because PIV cannot enforce that, the instruction
+  on the hand-over term is the only mechanism, so the term's wording is load-bearing here
+  (`features/receipts-and-terms.md`).
+- **The PUK** — handed to the holder (default, nothing retained) or retained for support
+  (escrow, with a store to protect)? `roadmap.md` open question #5.
 - Whether to change the retry counts from the default 3 at all.
 
 ## References

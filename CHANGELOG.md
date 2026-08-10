@@ -54,9 +54,9 @@ Maintenance instructions (see AGENTS.md §5):
   (`[dd/mm/aaaa] hh:mm:ss ; evento ; detalhes`) with three levels.
 - **egui GUI** with six screens (Inventory, Holders, Distribution, Bootstrap,
   Audit, Settings) plus the unlock screen, on eframe 0.36.
-- **Test suite**: 119 unit and behaviour tests (89.70% line coverage of the
-  headless core), recorded `ykman` fixtures, a mock device backend, and
-  read-only hardware tests that are ignored by default.
+- **Test suite**: 129 unit and behaviour tests (line coverage of the headless
+  core above the 80% floor), recorded `ykman` fixtures, a mock device backend,
+  and read-only hardware tests that are ignored by default.
 - **Documentation set**: `roadmap.md`, 31 feature specs under `features/`, and
   `docs/` covering architecture, data model, bootstrap procedure, YubiKey
   reference, security and compliance, operations and development.
@@ -65,6 +65,32 @@ Maintenance instructions (see AGENTS.md §5):
   changelog and semantic-versioning discipline.
 - **`Makefile`** with the checks that must pass before a release
   (`make release-check`).
+
+### Changed
+
+- **Custody model decided: B — transport secret plus forced change.** Every PIN
+  the operator sets is a transport PIN; the holder replaces it on first use and
+  the tool retains nothing. `domain::CustodyModel` fixes the stored vocabulary
+  (`transport-pin+forced-change`, `holder-set`, `escrowed:<reference>`,
+  `no-secret-set`) and `domain::ChangeEnforcement` records whether the key
+  enforced the change (`forcePINChange`, firmware 5.7+) or the hand-over term
+  merely instructed it — PIV has no force-change flag at any firmware level, so
+  there it is always procedural.
+- **The signing credential is a PIV slot 9c X.509 certificate** with the holder's
+  e-mail in `rfc822Name`. The OpenPGP signature-subkey alternative stays
+  specified in `features/step-openpgp-signing-subkey.md` but unscheduled.
+- `device::ykman::supports_ctap21_config` names the firmware 5.7 gate once;
+  `supports_min_pin_length` delegates to it, so the same fact is not re-derived
+  per step.
+
+### Added (custody model B)
+
+- `StepKind::Fido2ForcePinChange` and a `fido2-force-pin-change` step in both
+  built-in templates, planned as `ykman fido access force-change` with the
+  firmware gate and the procedural fallback stated on the step.
+- `Makefile`: `make` alone lists every target; `make run` launches the GUI,
+  `make run-native` launches it with native hardware access and password
+  support, and `make coverage-core` is the coverage gate.
 
 ### Security
 

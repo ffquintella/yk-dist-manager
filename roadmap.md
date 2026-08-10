@@ -37,8 +37,8 @@ deployment.
 Current wave: **Wave 1 — native execution.** Wave 0 (foundation) is in place:
 the app builds, reads a real key natively, records inventory, holders,
 distributions and dry-run bootstraps into a single-file database with a
-hash-chained, trigger-protected audit trail. 119 tests pass (plus 2 read-only
-hardware tests), with 89.70% line coverage of the headless core.
+hash-chained, trigger-protected audit trail. 129 tests pass (plus 2 read-only
+hardware tests), with 90.26% line coverage of the headless core.
 
 ## How to read this
 
@@ -70,7 +70,7 @@ Everything needed before a single byte is written to a key.
 | `[/]` | Bootstrap planner | [spec](features/bootstrap-engine.md) — plan with per-step transport (native / ykman / manual) and secret placeholders; dry runs recorded. **The executor is Wave 1.** |
 | `[/]` | GUI shell | [spec](features/gui-shell.md) — six screens, unlock screen, status bar, egui 0.36 `App::ui`. |
 | `[/]` | Bootstrap wizard | [spec](features/gui-bootstrap-wizard.md) — selection, per-step opt-out, plan review, dry run. Execution progress view pending. |
-| `[/]` | Testing strategy | [spec](features/testing-strategy.md) — 119 tests across unit + behaviour suites, mock backend, recorded fixtures, ignored hardware tests; 89.70% core line coverage. The gate is not yet enforced in CI. |
+| `[/]` | Testing strategy | [spec](features/testing-strategy.md) — 129 tests across unit + behaviour suites, mock backend, recorded fixtures, ignored hardware tests; 90.26% core line coverage. The gate is not yet enforced in CI. |
 
 ## Wave 1 — Execute the bootstrap, natively
 
@@ -79,13 +79,13 @@ The point of the tool: apply the template to a key, safely, with evidence.
 | Status | Feature | Notes |
 |---|---|---|
 | `[ ]` | Bootstrap executor | [spec](features/bootstrap-engine.md) — run the plan step by step with per-step results, abort-on-required-failure, idempotency, resume, and no secret in any record. |
-| `[ ]` | Step: FIDO2 PIN | [spec](features/step-fido2-pin.md) — set/change the PIN over CTAP2, minimum length policy (fw 5.7+), retry accounting, forced change on first use. |
+| `[ ]` | Step: FIDO2 PIN | [spec](features/step-fido2-pin.md) — set/change the PIN over CTAP2, minimum length policy (fw 5.7+), retry accounting, and `forcePINChange` so the holder must replace the transport PIN (custody model B). |
 | `[ ]` | Step: initial FIDO2 credential | [spec](features/step-fido2-credentials.md) — `authenticatorMakeCredential` with `rk=true` so the credential is resident on the key. `ykman` cannot do this at all. |
 | `[ ]` | Step: OTP slot access code | [spec](features/step-otp-access-code.md) — the 6-byte code that write-protects a slot, plus optional slot programming. Needs the HID config frame (no crate covers it). |
 | `[ ]` | Step: PIV PIN / PUK / management key | [spec](features/step-piv-pin-puk-management-key.md) — leave no factory default; prefer a PIN-protected random management key so nothing needs custody. |
 | `[ ]` | Step: PIV signing certificate | [spec](features/step-piv-signing-certificate.md) — on-device key in slot 9c, CSR **with `rfc822Name` SAN**, issued certificate imported, attestation stored. The SAN is why this step goes native. |
 | `[ ]` | CA integration | [spec](features/ca-integration.md) — internal CA for pilots, BastionVault PKI, and an enterprise CA profile; SAN and EKU requirements per option. |
-| `[ ]` | Secrets custody | [spec](features/secrets-custody.md) — generate, show once, hand over, record *where* custody went; never store the value. |
+| `[/]` | Secrets custody | [spec](features/secrets-custody.md) — **model B decided (2026-08-10)**: transport secret + forced change, nothing retained. `CustodyModel` fixes the vocabulary in code and the standard template carries the forced-change step; the prompt / generate / show-once / zeroise machinery is still Todo. |
 
 ## Wave 2 — Operations at scale
 
@@ -102,7 +102,7 @@ The point of the tool: apply the template to a key, safely, with evidence.
 
 | Status | Feature | Notes |
 |---|---|---|
-| `[ ]` | OpenPGP signing subkey | [spec](features/step-openpgp-signing-subkey.md) — the alternative reading of "signing key": an OpenPGP signature subkey on the OpenPGP applet with the holder's e-mail in the UID. See *Open questions*. |
+| `[ ]` | OpenPGP signing subkey | [spec](features/step-openpgp-signing-subkey.md) — **not the chosen mechanism** (PIV 9c is, decided 2026-08-10). Kept specified for a unit that signs Git commits or `gpg` mail; unscheduled. |
 | `[ ]` | SSH authentication via PIV | [spec](features/ssh-authentication.md) — slot 9a plus PKCS#11 for SSH, for units that want it. |
 | `[ ]` | Packaging & release | [spec](features/packaging-and-release.md) — macOS / Windows / Linux builds, signing and notarisation, tagged releases, semver. |
 | `[ ]` | FGV compliance artefacts | [spec](features/fgv-compliance.md) — classification proposal, system registration, data documentation, change/homologation records. |
@@ -130,26 +130,38 @@ Full text in [AGENTS.md](AGENTS.md). The short version:
 
 Decisions that change what gets built, and are not the implementer's to make.
 
-1. **"Adjust the SSK signing certificate" — which mechanism?** The roadmap
-   assumes **PIV slot 9c** with an X.509 certificate carrying `rfc822Name` =
-   holder's e-mail (S/MIME-style, works with Outlook, Apple Mail, Adobe, and
-   document signing). The alternative reading is an **OpenPGP signature subkey**
-   (`features/step-openpgp-signing-subkey.md`), which is what a GnuPG-centric
-   workflow needs. Both are specified; only the PIV path is scheduled for Wave 1.
-   *Answer needed before Wave 1 starts.*
-2. **Which CA issues the signing certificate?** Internal CA, BastionVault PKI, or
+1. **Which CA issues the signing certificate?** Internal CA, BastionVault PKI, or
    an enterprise CA. This decides whether we build the CSR ourselves (needed for
-   the SAN) or rely on a CA profile to inject it.
-3. **Where does the audit trail live?** The norm wants audit storage segregated
+   the SAN) or rely on a CA profile to inject it. *Blocks the certificate step
+   going live.*
+2. **Where does the audit trail live?** The norm wants audit storage segregated
    from operational data; the requirement here is a *single file*. Current design:
    audit in the same file, immutable by trigger, plus an optional append-only
    mirror elsewhere. This needs ESI sign-off.
-4. **Custody model for PINs.** Holder-chosen at hand-over (nothing to escrow) or
-   operator-generated with escrow (recoverable, but creates a secret store). This
-   changes `features/secrets-custody.md` substantially.
-5. **Retention** of audit entries and logs — not fixed by the norm; ESI decides.
-6. **Classification level** of the system. Proposed: level 3 (see
+3. **Retention** of audit entries and logs — not fixed by the norm; ESI decides.
+4. **Classification level** of the system. Proposed: level 3 (see
    `docs/security-and-compliance.md`). ESI validates.
+5. **The PUK under model B.** The transport PIN is handed over and changed by the
+   holder; the PUK has no force-change mechanism. Default taken: hand the PUK to
+   the holder in the same sealed envelope and retain nothing, which means a
+   blocked PIN with a lost PUK costs an applet reset (and a new certificate).
+   Retaining the PUK instead would be escrow, with a store to protect. Confirm.
+6. **The OTP access code under model B.** The holder never needs it, so the
+   default taken is generate-and-discard: the slot is deliberately frozen, and
+   reprogramming it later requires an OTP applet reset. Confirm, or switch the
+   template to put the code in the envelope.
+
+### Answered
+
+- **"Adjust the SSK signing certificate" — which mechanism?** *(2026-08-10)*
+  **PIV slot 9c**, X.509 with `rfc822Name` = the holder's e-mail. The OpenPGP
+  signature-subkey reading stays specified in
+  `features/step-openpgp-signing-subkey.md` but unscheduled.
+- **Custody model for the secrets a bootstrap sets.** *(2026-08-10)* **Model B —
+  transport secret plus forced change.** The operator sets a temporary PIN, the
+  key is marked so the holder must change it before first use, and this tool
+  retains nothing. See `features/secrets-custody.md`; the two sub-decisions it
+  leaves open are items 5 and 6 above.
 
 ## Decision log
 
@@ -161,3 +173,5 @@ Decisions that change what gets built, and are not the implementer's to make.
 | 2026-08-10 | Audit immutability by database trigger, not by application code | The norm requires the guarantee to come from the database |
 | 2026-08-10 | egui/eframe directly, not `ironroot-gui` | `ironroot-gui` is unpublished; the port is a later, contained change |
 | 2026-08-10 | Bootstrap is dry-run only until the executor lands | Nothing should touch a key before the plan, custody and audit paths are proven |
+| 2026-08-10 | The signing credential is a PIV 9c X.509 certificate with the e-mail in `rfc822Name`, not an OpenPGP subkey | Works with the mail clients and document signers in use, needs nothing installed on the workstation, and the OS surfaces slot 9c for signing |
+| 2026-08-10 | Custody model **B**: transport secret + forced change; nothing retained | Works for posted keys as well as desk hand-overs, and avoids creating a per-device credential store. FIDO2 enforces it in firmware from 5.7; below that, and for PIV always, the change is instructed on the hand-over term and the run records which applied |

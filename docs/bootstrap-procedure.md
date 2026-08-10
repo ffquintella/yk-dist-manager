@@ -8,6 +8,28 @@ must be changed together.
 > in Wave 1 ([`../roadmap.md`](../roadmap.md)); the "Execute on key" button is disabled and
 > says so.
 
+## Custody: what happens to the secrets
+
+**Model B, decided 2026-08-10.** Every secret the operator sets is a **transport**
+secret: the holder replaces it on first use, and this tool retains nothing.
+
+| Secret | Who ends up with it | How the change is enforced |
+|---|---|---|
+| FIDO2 PIN | Holder replaces the transport PIN | `forcePINChange` on firmware **5.7+**; instructed on the term below that |
+| PIV PIN | Holder replaces the transport PIN | Instructed on the term — PIV has no force-change flag |
+| PIV PUK | Handed over in the same sealed envelope | Instructed |
+| PIV management key | Nobody — random, on the key, PIN-guarded | n/a |
+| OTP access code | Nobody — generated and discarded, slot frozen | n/a |
+
+The transport secrets must reach the holder out of band: in person, or a sealed printed
+envelope. Never the e-mail the key's own certificate protects.
+
+Each run records the model (`transport-pin+forced-change`) and, per step, whether the
+change was `enforced-by-firmware` or `instructed-on-handover` — so an audit can tell the
+two apart, and a report can list the keys where it was only instructed. Details and the two
+sub-decisions still open (the PUK, the OTP access code) are in
+[`../features/secrets-custody.md`](../features/secrets-custody.md).
+
 ## Before the first step
 
 1. **Read the key.** Serial, model, firmware and enabled applications come from the
@@ -20,7 +42,7 @@ must be changed together.
 4. **Review the plan.** Every step, its transport (`native` / `ykman` / `manual`) and its
    caveats, on screen, before anything is written.
 
-## The ten steps
+## The eleven steps
 
 ### 1. FIDO2 PIN — *required*
 
@@ -38,6 +60,8 @@ losing every credential. There is no PUK for FIDO2.
 
 Parameters: `min_length` (6), `source` (`operator-entered`).
 
+Under model B this is a **transport** PIN — step 3 is what obliges the holder to replace it.
+
 ### 2. FIDO2 minimum PIN length — *optional, firmware 5.7+*
 
 Raises the floor so a later PIN change cannot weaken it.
@@ -49,7 +73,22 @@ ykman:   ykman --device <serial> fido access set-min-length 6
 **Irreversible** short of a FIDO2 reset, and skipped automatically below 5.7 (the reference
 key here is 5.4.3, so it is skipped).
 
-### 3. OTP slot access code — *required*
+### 3. Forced PIN change — *optional, firmware 5.7+*
+
+Marks the FIDO2 PIN so the key refuses to be used until the holder changes it. This is the
+mechanism custody model B rests on.
+
+```
+native:  ctap-hid-fido2 → authenticatorConfig(forcePINChange)
+ykman:   ykman --device <serial> fido access force-change
+```
+
+Below firmware 5.7 the flag does not exist: the same procedure runs, the hand-over term
+carries the instruction instead, and the run records
+`enforcement=instructed-on-handover` rather than claiming an enforcement the key cannot
+provide. (The reference key here is 5.4.3, so this is the common case today.)
+
+### 4. OTP slot access code — *required*
 
 Writes the 6-byte code that write-protects OTP slot 1. Without it, anyone who plugs the key
 in can reprogram the slot to type whatever they like.
@@ -64,7 +103,7 @@ blocks USB interface mode switching** until the code is removed.
 
 Parameters: `slot` (1), `source` (`generated`).
 
-### 4. Initial FIDO2 credential, resident on the key — *required*
+### 5. Initial FIDO2 credential, resident on the key — *required*
 
 Registers a **discoverable** credential (`rk=true`), so the credential id, user handle and
 RP id live on the key itself.
@@ -81,7 +120,7 @@ always runs its own enrolment. See
 
 Parameters: `rp_id` (`{{org}}`), `user_name` (`{{holder.email}}`), `resident` (`true`).
 
-### 5. PIV PIN and PUK — *required*
+### 6. PIV PIN and PUK — *required*
 
 Replaces both factory defaults (`123456` / `12345678`). Changing only the PIN is pointless:
 the PUK resets the PIN.
@@ -95,7 +134,11 @@ ykman:   ykman piv access change-pin --pin <old> --new-pin <new>
 3 retries each. Exhausting the PIN needs the PUK; exhausting the PUK needs an applet reset
 that destroys the keys and certificates.
 
-### 6. PIV management key — *required*
+Under model B both are transport secrets handed over in the sealed envelope, with the term
+instructing the holder to change the PIN. PIV cannot enforce that, so the wording of the
+term is the only mechanism.
+
+### 7. PIV management key — *required*
 
 Replaces the default TDES management key with a **random AES-256 key stored on the key
 itself, guarded by the PIN**, so there is nothing to hold in custody.
@@ -107,7 +150,7 @@ ykman:   ykman piv access change-management-key --algorithm aes256 --protect --g
 
 Parameters: `algorithm` (`aes256`), `protect` (`true`).
 
-### 7. PIV key generation, slot 9c — *required*
+### 8. PIV key generation, slot 9c — *required*
 
 Generates the signing key **on the device**. The private key never exists anywhere else,
 and `piv::attest` can prove that afterwards.
@@ -124,7 +167,7 @@ is what you want for signing and what the wizard should say plainly (the slot ov
 Parameters: `slot` (9c), `algorithm` (`eccp256`), `pin_policy` (`once`),
 `touch_policy` (`cached` — one touch covers 15 seconds).
 
-### 8. Certificate request, with the e-mail SAN — *required*
+### 9. Certificate request, with the e-mail SAN — *required*
 
 Produces a CSR for the generated key, carrying:
 
@@ -145,7 +188,7 @@ the DN contains no `@`.
 Then the CSR goes to a CA ([`../features/ca-integration.md`](../features/ca-integration.md)).
 If issuance is offline, the run suspends and resumes when the certificate comes back.
 
-### 9. Certificate import, slot 9c — *required*
+### 10. Certificate import, slot 9c — *required*
 
 Writes the issued certificate into the slot, verifying it matches the slot's key.
 
@@ -159,7 +202,7 @@ e-mail exactly, subject matches what was requested, `digitalSignature` key usage
 `emailProtection` EKU where S/MIME is the use case, and the chain builds. A certificate
 failing any of those is refused with the specific reason.
 
-### 10. Verification — *required*
+### 11. Verification — *required*
 
 Reads the key back and stores the end state as evidence: FIDO2 PIN present, credential
 count, OTP slot protected, PIV slot 9c occupied with the expected subject and SAN, plus the
@@ -188,14 +231,14 @@ These are in the executor, not in the operator's head:
 ## What the record ends up saying
 
 For each run: template id and version, operator, key serial, holder, start and end time,
-every step's outcome with a secret-free detail line, the custody destination, and the
-attestation. That is what gets attached to the hand-over, and what answers "what was
+every step's outcome with a secret-free detail line, the custody model and per-step change
+enforcement, and the attestation. That is what gets attached to the hand-over, and what answers "what was
 applied on the bootstrap" a year later.
 
 ## Variants
 
-- **`fido-only`** — FIDO2 PIN, minimum PIN length, credential, verification. For keys that
-  only need WebAuthn.
+- **`fido-only`** — FIDO2 PIN, minimum PIN length, forced change, credential, verification.
+  For keys that only need WebAuthn.
 - **`fgv-sysadmin`** (planned) — adds an SSH credential
   ([`../features/ssh-authentication.md`](../features/ssh-authentication.md)).
 - **Stock preparation** (planned) — everything that does not need a holder, so keys can be

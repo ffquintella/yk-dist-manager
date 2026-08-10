@@ -18,12 +18,13 @@ whole even though every part passes.
 
 **Suites in place; CI and the coverage gate are not.**
 
-- **119 tests** pass (`cargo test`), plus 2 hardware tests ignored by default.
-- Core line coverage **89.70%** (region 85.67%), above the 80% floor; 57.49%
-  whole-crate, the difference being ~950 lines of egui paint code.
-- Unit suites: `unit_domain.rs` (11), `unit_template.rs` (19), `unit_audit.rs` (6),
+- **129 tests** pass (`cargo test`), plus 2 hardware tests ignored by default.
+- Core line coverage **90.26%** (region 86.29%), above the 80% floor; 59.00%
+  whole-crate, the difference being ~1000 lines of egui paint code.
+- Unit suites: `unit_domain.rs` (11), `unit_template.rs` (21), `unit_audit.rs` (6),
   `unit_ykman_parse.rs` (8), `unit_store.rs` (16), `unit_device_backends.rs` (9),
-  `unit_records.rs` (12), `unit_logging_format.rs` (6), plus 4 in-module tests.
+  `unit_records.rs` (16), `unit_logging_format.rs` (6), plus 8 in-module tests
+  (`logging`, `domain`, `custody`).
 - Behaviour suites: `behaviour_distribution.rs` (7 scenarios),
   `behaviour_bootstrap.rs` (10), `behaviour_storage.rs` (11).
 - `device::MockBackend` serves canned devices, can simulate hot-plug via
@@ -95,7 +96,7 @@ make coverage-html    # browsable report
 
 | # | Phase | State | Notes |
 |---|---|---|---|
-| 1 | Unit suites for domain, template, audit, parsers, store, backends, log format | Done | 91 tests |
+| 1 | Unit suites for domain, template, audit, parsers, store, backends, log format, custody | Done | 101 tests |
 | 2 | Behaviour suites for distribution, bootstrap, storage | Done | 28 scenarios |
 | 3 | Mock device backend + recorded fixtures | Done | `MockBackend`, `tests/fixtures/` |
 | 4 | Ignored, read-only hardware tests | Done | verified against a real 5 NFC |

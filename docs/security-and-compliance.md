@@ -53,15 +53,33 @@ a panic message.
 - Command construction uses argv vectors, never a shell string; the native transport passes
   secrets as function parameters instead of command-line arguments.
 
+### Custody — decided
+
+**Model B (2026-08-10): transport secret plus forced change.** The operator sets a
+temporary secret, the key is marked so the holder must replace it before first use, and
+**this tool retains nothing**. FIDO2 enforces the change in firmware from 5.7
+(`forcePINChange`); below that, and for PIV at any firmware level, the change is instructed
+on the hand-over term, and the run records which of the two applied.
+
+This is the reading of NRM §5.3.2 that fits: these secrets need neither one-way hashing nor
+reversible storage, because none of them is stored at all. The management key is random and
+kept on the key itself (PIN-guarded), and the OTP access code is generated and discarded.
+
+Consequences to be honest about:
+
+- A transport secret must travel to the holder out of band (in person, or a sealed printed
+  envelope). That channel is part of the procedure, not an afterthought.
+- Where enforcement is procedural, a transport PIN can survive if the holder ignores the
+  instruction. The run records `instructed-on-handover`, so this is auditable rather than
+  invisible.
+- There is no recovery. A holder who forgets the PIN they set needs a reset and a new
+  certificate. That is the accepted cost of retaining nothing.
+
 ### When real secret input arrives (Wave 1)
 
 Rules already fixed: OS CSPRNG only; in memory for the shortest possible time; zeroised
 after use (`zeroize`); a manual `Debug` that prints `<redacted>`; shown once in a panel the
 operator dismisses deliberately; never copied to the clipboard silently.
-
-NRM §5.3.2: data that does not need recovery is hashed one-way; reversible data is opened
-only in memory, for the shortest possible time. Here the cleanest reading is that most of
-these secrets need *neither* — the holder sets them, or the key generates and keeps them.
 
 ### No secret in the repository
 
@@ -208,8 +226,10 @@ everything that does not depend on it, and say plainly what is pending. That is 
    SSDF, DevSecOps). The copy available when this was written was IRM-protected and could not
    be read. **Ask the ESI for the current text before homologation**; where it conflicts with
    this document, the official document prevails.
-6. **Custody model undecided** — until it is, the tool does not write to keys at all, which
-   is the conservative failure mode.
+6. **Enforcement of the PIN change is sometimes procedural** — `forcePINChange` needs
+   firmware 5.7+, and PIV has no equivalent at all. Under custody model B those keys rely on
+   the hand-over term's instruction. The run records which applied, so the exposure is
+   measurable; closing it would mean either a 5.7+ fleet or model A (holder present).
 
 Declaring gaps with an adequacy plan is the process the norm anticipates (§5.4.6). A claim of
 full conformance that does not survive a look at the code would not be.
