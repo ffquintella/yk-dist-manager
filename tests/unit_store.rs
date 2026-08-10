@@ -390,3 +390,74 @@ fn a_v1_database_migrates_forward_keeping_its_rows() {
     // The new tables exist and are usable.
     assert_eq!(store.seed_builtin_terms().unwrap(), 2);
 }
+
+#[test]
+fn a_cloud_sync_folder_is_recognised_whatever_the_client() {
+    use std::path::Path;
+    use yk_dist_manager::store::looks_like_cloud_sync;
+
+    // The real path that prompted this check, from a --diagnose report.
+    assert!(looks_like_cloud_sync(Path::new(
+        "/Users/felipe/Library/CloudStorage/OneDrive-FGV/ykman/yk-dist-manager-v1.sqlite3"
+    )));
+
+    for path in [
+        "/Users/x/OneDrive/keys.sqlite3",
+        "/Users/x/Dropbox/ti/keys.sqlite3",
+        "/Users/x/Google Drive/keys.sqlite3",
+        "/Users/x/Library/Mobile Documents/com~apple~CloudDocs/keys.sqlite3",
+        "C:\\Users\\x\\OneDrive - FGV\\keys.sqlite3",
+        "/home/x/pCloud Drive/keys.sqlite3",
+    ] {
+        assert!(looks_like_cloud_sync(Path::new(path)), "missed: {path}");
+    }
+
+    for path in [
+        "/Users/x/Library/Application Support/yk-dist-manager/keys.sqlite3",
+        "/Volumes/ti-share/keys.sqlite3",
+        "/srv/ti/keys.sqlite3",
+    ] {
+        assert!(
+            !looks_like_cloud_sync(Path::new(path)),
+            "false positive: {path}"
+        );
+    }
+}
+
+#[test]
+fn a_cloud_sync_database_avoids_wal_and_says_so() {
+    use std::path::Path;
+
+    // Classified with the shares: WAL's shared-memory sidecars cannot survive a
+    // sync client, so the journal mode must be the conservative one.
+    assert_eq!(
+        Location::detect(Path::new("/Users/x/OneDrive/keys.sqlite3")),
+        Location::NetworkShare
+    );
+
+    // And the warning reaches the operator through the status line.
+    let dir = tempfile::tempdir().unwrap();
+    let cloudish = dir.path().join("OneDrive-FGV");
+    std::fs::create_dir_all(&cloudish).unwrap();
+    let store = Store::open(&StoreConfig::new(cloudish.join("keys.sqlite3"))).unwrap();
+
+    assert!(store.on_cloud_sync());
+    assert!(
+        store.describe().contains("cloud-sync"),
+        "the status line must warn: {}",
+        store.describe()
+    );
+
+    // No WAL sidecars, as for a share.
+    let names: Vec<String> = std::fs::read_dir(&cloudish)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        !names
+            .iter()
+            .any(|n| n.ends_with("-wal") || n.ends_with("-shm")),
+        "found: {names:?}"
+    );
+}

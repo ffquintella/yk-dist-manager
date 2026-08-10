@@ -24,8 +24,27 @@ For the `ykman` fallback, `ykman` 5.x must be on `PATH`
 First run:
 
 ```bash
-cargo run                                  # or the packaged application
+make run          # from a source checkout
 ```
+
+On macOS, build and launch the **bundled application** if you want camera scanning:
+
+```bash
+make bundle           # assembles target/bundle/YubiKey Distribution Manager.app
+make verify-bundle    # checks the bundle is what macOS needs
+make run-bundled      # launches it
+```
+
+To see what a build is and what it can reach — the first thing to attach to a support
+request:
+
+```bash
+make diagnose         # or: yk-dist-manager --diagnose
+```
+
+It prints the version, the features compiled in, whether macOS sees an app bundle,
+whether the camera is authorised and which cameras exist, the database and settings
+paths, and whether `ykman` is on `PATH`.
 
 Set the operator name and organisation in **Settings**. Check that the status bar shows the
 database path and whether it is local or on a share.
@@ -71,9 +90,19 @@ is detected as a share and opened in rollback-journal mode with `synchronous=FUL
 new location, because the heuristic can be wrong.
 
 **On a share:** two operators can use the file, but they are serialised. If someone else is
-writing, you will see a busy message rather than a corruption. Do not put the file on a
-filesystem that does not support locking (some cloud-sync folders do not — a synced folder is
-the one place *not* to put it, since sync conflicts produce duplicate files, not merges).
+writing, you will see a busy message rather than a corruption.
+
+**Not in a cloud-sync folder.** OneDrive, Dropbox, Google Drive, iCloud and the like are
+the one place *not* to put this file:
+
+- the sync client copies it while a writer holds it open;
+- a conflict is resolved by keeping **both** copies rather than merging — so the failure
+  mode is two divergent registers of who holds which key.
+
+The application recognises those paths, opens them with the conservative journal mode
+(never WAL), and warns in the status line, in Settings and in `--diagnose`. That reduces
+the risk; it does not remove it. Move the file to a real network share, or keep it local
+and back it up on a schedule.
 
 **With a password:** run a build with `--features encrypted-db`; the app prompts at startup.
 Note that everyone shares the one password — it is confidentiality at rest, not per-operator

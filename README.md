@@ -98,6 +98,10 @@ One SQLite file. That is the whole deployment.
   UNC path is detected and opened in rollback-journal mode with
   `synchronous=FULL` and a 20-second busy timeout, because WAL does not work over
   SMB/NFS.
+- **Cloud-sync folders are refused politely** — OneDrive, Dropbox, Google Drive and
+  friends get the conservative journal mode *and* a visible warning: a sync client
+  copies the file mid-write and resolves a clash by keeping both copies, so the failure
+  mode is two divergent registers. Use a real share, or keep it local and back it up.
 - **Optional password** — build with `--features encrypted-db` for a
   SQLCipher-encrypted file; the app asks for the password at startup. Without a
   password it is a plain SQLite file.
@@ -113,6 +117,17 @@ Requires a recent stable Rust (developed on 1.96) and, for the `ykman` fallback,
 ```bash
 make run          # or: cargo run
 make              # list every task
+make diagnose     # what this build is, and what it can reach
+```
+
+On macOS, camera scanning needs the application **bundle** — a bare binary has no
+`Info.plist`, so macOS has nothing to attach a camera permission to:
+
+```bash
+make bundle        # assembles target/bundle/YubiKey Distribution Manager.app
+make verify-bundle # checks the bundle is what macOS needs, using --diagnose
+make run-bundled   # launch it
+make dmg           # release build wrapped in a .dmg
 ```
 
 The default build includes the file dialogs and camera scanning. With native hardware

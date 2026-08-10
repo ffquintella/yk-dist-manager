@@ -29,6 +29,10 @@ pub const DEFAULT_LANGUAGE: &str = "pt-BR";
 /// Languages shipped with the application.
 pub const BUILTIN_LANGUAGES: [&str; 2] = ["pt-BR", "en"];
 
+/// Bound on the body of a term. Generous for a legal document, still a bound —
+/// every input in this application has one.
+pub const MAX_BODY: usize = 20_000;
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TermError {
     #[error("unknown variable `{0}` in the term template")]
@@ -39,6 +43,10 @@ pub enum TermError {
     NoTemplate(String),
     #[error("the term is missing required information: {0}")]
     Incomplete(&'static str),
+    #[error("the term template needs {0}")]
+    Missing(&'static str),
+    #[error("the term {field} is longer than {max} characters")]
+    TooLong { field: &'static str, max: usize },
 }
 
 /// A term template in one language.
@@ -82,6 +90,25 @@ impl TermTemplate {
         vec![Self::consignment_pt_br(), Self::consignment_en()]
     }
 
+    /// The wording shipped for a language, so the editor can offer *restore the
+    /// built-in text* after an edit that went wrong.
+    pub fn builtin_for(id: &str, language: &str) -> Option<Self> {
+        Self::builtin()
+            .into_iter()
+            .find(|t| t.id == id && t.language.eq_ignore_ascii_case(language))
+    }
+
+    /// An empty template in a new language, for the editor to start from.
+    pub fn blank(id: &str, language: &str) -> Self {
+        Self {
+            id: id.to_owned(),
+            language: language.to_owned(),
+            version: "1".into(),
+            title: String::new(),
+            body: String::new(),
+        }
+    }
+
     /// Variables the body references, in order of first appearance. Used by the
     /// editor to show what a template depends on, and by `validate`.
     pub fn referenced_variables(&self) -> Vec<String> {
@@ -109,6 +136,83 @@ impl TermTemplate {
         }
         Ok(())
     }
+
+    /// Everything that must hold before an edited template is stored: the fields
+    /// a term cannot do without, the length bounds, and [`Self::validate`].
+    ///
+    /// This is the gate the editor and [`crate::store::Store`] both go through, so
+    /// a template that reaches the database renders — an unknown variable in a
+    /// term would otherwise only surface at the counter, with the holder waiting.
+    pub fn check(&self) -> Result<(), TermError> {
+        let fields: [(&'static str, &str, &'static str, usize); 4] = [
+            ("an id", self.id.trim(), "id", crate::domain::MAX_TEXT),
+            (
+                "a language",
+                self.language.trim(),
+                "language",
+                crate::domain::MAX_TEXT,
+            ),
+            (
+                "a title",
+                self.title.trim(),
+                "title",
+                crate::domain::MAX_TEXT,
+            ),
+            ("a body", self.body.trim(), "body", MAX_BODY),
+        ];
+        for (needs, value, field, max) in fields {
+            if value.is_empty() {
+                return Err(TermError::Missing(needs));
+            }
+            if value.chars().count() > max {
+                return Err(TermError::TooLong { field, max });
+            }
+        }
+        self.validate()
+    }
+
+    /// The same template under a new version, trimmed as it will be stored.
+    pub fn as_version(&self, version: &str) -> Self {
+        Self {
+            id: self.id.trim().to_owned(),
+            language: self.language.trim().to_owned(),
+            version: version.trim().to_owned(),
+            title: self.title.trim().to_owned(),
+            body: self.body.clone(),
+        }
+    }
+}
+
+/// Sort key for a version: the leading digits numerically, so `10` sorts after
+/// `9`, then the whole string so the order is total and stable.
+fn version_order(version: &str) -> (u64, &str) {
+    let digits: String = version
+        .trim()
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    (digits.parse().unwrap_or(0), version)
+}
+
+/// The version to give the next edit: one more than the highest numeric version
+/// already present. A version that is not a number counts as 0, so the first
+/// numbered edit of a hand-named template becomes `1`.
+pub fn next_version(existing: &[String]) -> String {
+    let highest = existing
+        .iter()
+        .map(|version| version_order(version).0)
+        .max()
+        .unwrap_or(0);
+    (highest + 1).to_string()
+}
+
+/// The highest-versioned template among the candidates.
+fn latest<'a>(candidates: impl Iterator<Item = &'a TermTemplate>) -> Option<&'a TermTemplate> {
+    candidates.max_by(|a, b| version_order(&a.version).cmp(&version_order(&b.version)))
+}
+
+fn base_language(tag: &str) -> &str {
+    tag.split('-').next().unwrap_or(tag)
 }
 
 /// Everything a term can interpolate.
@@ -200,6 +304,37 @@ impl TermContext {
             receipt_ref: distribution
                 .map(|d| d.receipt_ref.clone())
                 .unwrap_or_default(),
+        }
+    }
+
+    /// A fully populated context of obviously fictitious values, so a template
+    /// can be reviewed in the editor before any hand-over exists.
+    ///
+    /// Every variable has a value on purpose: line omission is what the operator
+    /// wants to *see*, and a sample with blanks would hide lines that the real
+    /// term will print.
+    pub fn sample() -> Self {
+        Self {
+            holder_name: "Ana Exemplo da Silva".into(),
+            holder_identification: "000.000.000-00".into(),
+            holder_email: "ana.exemplo@exemplo.br".into(),
+            holder_unit: "Unidade de Exemplo".into(),
+            holder_registration: "000000".into(),
+            holder_phone: "+55 21 0000-0000".into(),
+            holder_address: "Rua de Exemplo, 000 — Rio de Janeiro/RJ".into(),
+            key_serial: "00000000".into(),
+            key_model: "YubiKey 5 NFC".into(),
+            key_firmware: "5.7.1".into(),
+            applied: "fgv-standard 1 — FIDO2 PIN, OTP access code, FIDO2 credential, PIV \
+                      certificate"
+                .into(),
+            custody: crate::domain::CustodyModel::DEFAULT.label().to_owned(),
+            operator: "operador.exemplo".into(),
+            org: "Organização de Exemplo".into(),
+            org_unit: "Unidade de Exemplo".into(),
+            date: chrono::Local::now().format("%d/%m/%Y").to_string(),
+            delivery_method: crate::domain::DeliveryMethod::InPerson.label().to_owned(),
+            receipt_ref: "EXEMPLO-0000".into(),
         }
     }
 
@@ -313,6 +448,10 @@ fn render_line(line: &str, ctx: &TermContext) -> Result<Option<String>, TermErro
 /// Exact match first, then the base language (`pt-BR` satisfies a request for
 /// `pt`), then the default language, then any template at all — a term in the
 /// wrong language is better than no term, and the caller is told which was used.
+///
+/// Within a language the **newest version wins**, which is what makes the editor
+/// work: an edit stores a new version, and the next term generated uses it while
+/// the version somebody already signed stays in the database, readable.
 pub fn choose_template<'a>(
     templates: &'a [TermTemplate],
     id: &str,
@@ -323,27 +462,89 @@ pub fn choose_template<'a>(
         return None;
     }
 
-    let wanted_base = wanted.split('-').next().unwrap_or(wanted);
+    let wanted_base = base_language(wanted);
+    let candidates = || of_id.iter().copied();
 
-    of_id
+    latest(candidates().filter(|t| t.language.eq_ignore_ascii_case(wanted)))
+        .or_else(|| {
+            latest(
+                candidates()
+                    .filter(|t| base_language(&t.language).eq_ignore_ascii_case(wanted_base)),
+            )
+        })
+        .or_else(|| {
+            latest(candidates().filter(|t| t.language.eq_ignore_ascii_case(DEFAULT_LANGUAGE)))
+        })
+        .or_else(|| latest(candidates()))
+}
+
+/// The audit event, target and detail for a version of a term being stored.
+///
+/// `previous` is the version the editor had open — `None` when the language had
+/// nothing on record, which is what makes the entry an *addition* rather than an
+/// *edit*. Lives here, next to the model, so the shape of the entry is covered by
+/// a test rather than buried in paint-adjacent code.
+///
+/// The detail names the version and the one it came from and nothing else: the
+/// wording itself is in the database under that version, so there is no reason to
+/// copy a document into an audit row.
+pub fn edit_audit_entry(
+    stored: &TermTemplate,
+    previous: Option<&str>,
+) -> (&'static str, String, String) {
+    let event = match previous {
+        Some(_) => "term.template_edited",
+        None => "term.template_added",
+    };
+    let target = format!("term:{}@{}", stored.id, stored.language);
+    let detail = format!(
+        "id={} language={} version={} previous={}",
+        stored.id,
+        stored.language,
+        stored.version,
+        previous.unwrap_or("none")
+    );
+    (event, target, detail)
+}
+
+/// Has an edited title or body moved away from the version it was loaded from?
+///
+/// The editor asks before it changes language, so an unsaved edit is never
+/// discarded silently. A language with nothing stored counts as edited as soon
+/// as anything is typed.
+pub fn is_edited(stored: Option<&TermTemplate>, title: &str, body: &str) -> bool {
+    match stored {
+        Some(template) => template.title != title.trim() || template.body != *body,
+        None => !title.trim().is_empty() || !body.trim().is_empty(),
+    }
+}
+
+/// Every language a term is stored in, sorted, each with its newest version.
+pub fn languages_of<'a>(templates: &'a [TermTemplate], id: &str) -> Vec<&'a TermTemplate> {
+    let mut languages: Vec<&str> = templates
         .iter()
-        .find(|t| t.language.eq_ignore_ascii_case(wanted))
-        .or_else(|| {
-            of_id.iter().find(|t| {
-                t.language
-                    .split('-')
-                    .next()
-                    .unwrap_or(&t.language)
-                    .eq_ignore_ascii_case(wanted_base)
-            })
-        })
-        .or_else(|| {
-            of_id
-                .iter()
-                .find(|t| t.language.eq_ignore_ascii_case(DEFAULT_LANGUAGE))
-        })
-        .or(of_id.first())
-        .copied()
+        .filter(|t| t.id == id)
+        .map(|t| t.language.as_str())
+        .collect();
+    languages.sort_unstable();
+    languages.dedup();
+    languages
+        .into_iter()
+        .filter_map(|language| latest_in_language(templates, id, language))
+        .collect()
+}
+
+/// The newest version of a template in one exact language, for the editor to open.
+pub fn latest_in_language<'a>(
+    templates: &'a [TermTemplate],
+    id: &str,
+    language: &str,
+) -> Option<&'a TermTemplate> {
+    latest(
+        templates
+            .iter()
+            .filter(|t| t.id == id && t.language.eq_ignore_ascii_case(language)),
+    )
 }
 
 const PT_BR_BODY: &str = r#"{{org}} — {{org.unit}}

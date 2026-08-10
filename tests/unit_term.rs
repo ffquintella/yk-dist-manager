@@ -4,9 +4,20 @@
 use yk_dist_manager::device::DeviceInfo;
 use yk_dist_manager::domain::{Holder, SerialSource, YubiKeyRecord};
 use yk_dist_manager::term::{
-    BUILTIN_LANGUAGES, DEFAULT_LANGUAGE, TermContext, TermError, TermTemplate, choose_template,
-    render_term,
+    BUILTIN_LANGUAGES, DEFAULT_LANGUAGE, MAX_BODY, TermContext, TermError, TermTemplate,
+    choose_template, is_edited, languages_of, latest_in_language, next_version, render_term,
 };
+
+/// A template in one language and version, for the version-selection tests.
+fn versioned(language: &str, version: &str, body: &str) -> TermTemplate {
+    TermTemplate {
+        id: "consignment".into(),
+        language: language.into(),
+        version: version.into(),
+        title: format!("Term {version}"),
+        body: body.into(),
+    }
+}
 
 fn holder_full() -> Holder {
     Holder::new("Ana Silva", "ana.silva@fgv.br", "ESI", "12345")
@@ -269,4 +280,195 @@ fn a_key_known_only_by_serial_still_produces_a_term() {
         "unknown model must not print a label"
     );
     assert!(!text.contains("Versão de firmware:"));
+}
+
+// ------------------------------------------------------ editing a term template
+
+#[test]
+fn the_next_version_is_one_past_the_highest_number_on_record() {
+    assert_eq!(next_version(&[]), "1");
+    assert_eq!(next_version(&["1".to_owned()]), "2");
+    // Text ordering would put `10` before `9`; the numbering must not.
+    let many: Vec<String> = ["1", "2", "9", "10"]
+        .iter()
+        .map(|v| v.to_string())
+        .collect();
+    assert_eq!(next_version(&many), "11");
+}
+
+#[test]
+fn a_hand_named_version_does_not_block_the_numbering() {
+    // A template whose version is not a number counts as 0, so the first edit of
+    // it is version 1 rather than an error.
+    assert_eq!(next_version(&["draft".to_owned()]), "1");
+}
+
+#[test]
+fn generating_a_term_takes_the_newest_version_of_the_language() {
+    // Given: an edited pt-BR term stored beside the version it replaced.
+    let templates = vec![
+        versioned("pt-BR", "1", "original {{holder.name}}\n"),
+        versioned("pt-BR", "2", "edited {{holder.name}}\n"),
+        versioned("en", "1", "english {{holder.name}}\n"),
+    ];
+
+    // When / Then: the newest version is the one a term is generated from, and
+    // the older one is still there to read.
+    let chosen = choose_template(&templates, "consignment", "pt-BR").unwrap();
+    assert_eq!(chosen.version, "2");
+    assert!(chosen.body.starts_with("edited"));
+    assert_eq!(
+        latest_in_language(&templates, "consignment", "pt-BR")
+            .unwrap()
+            .version,
+        "2"
+    );
+    assert_eq!(templates.len(), 3, "nothing was replaced");
+}
+
+#[test]
+fn version_ten_wins_over_version_nine() {
+    let templates = vec![
+        versioned("pt-BR", "9", "nine\n"),
+        versioned("pt-BR", "10", "ten\n"),
+    ];
+    let chosen = choose_template(&templates, "consignment", "pt-BR").unwrap();
+    assert_eq!(chosen.version, "10");
+}
+
+#[test]
+fn the_base_language_fallback_also_takes_the_newest_version() {
+    let templates = vec![
+        versioned("pt-BR", "1", "one\n"),
+        versioned("pt-BR", "3", "three\n"),
+    ];
+    // `pt` is satisfied by `pt-BR`, and by its newest version.
+    let chosen = choose_template(&templates, "consignment", "pt").unwrap();
+    assert_eq!(chosen.version, "3");
+}
+
+#[test]
+fn each_language_is_listed_once_at_its_newest_version() {
+    let templates = vec![
+        versioned("pt-BR", "1", "one\n"),
+        versioned("pt-BR", "2", "two\n"),
+        versioned("en", "1", "one\n"),
+        versioned("es", "4", "cuatro\n"),
+    ];
+    let listed = languages_of(&templates, "consignment");
+    let pairs: Vec<(&str, &str)> = listed
+        .iter()
+        .map(|t| (t.language.as_str(), t.version.as_str()))
+        .collect();
+    assert_eq!(pairs, vec![("en", "1"), ("es", "4"), ("pt-BR", "2")]);
+}
+
+#[test]
+fn a_template_with_an_unknown_variable_is_refused_before_it_is_stored() {
+    let template = versioned("pt-BR", "1", "Nome: {{holder.nome}}\n");
+    assert_eq!(
+        template.check().unwrap_err(),
+        TermError::UnknownVariable("holder.nome".into()),
+        "a term that cannot render must be refused at the editor, not at the counter"
+    );
+}
+
+#[test]
+fn a_term_template_needs_a_title_and_a_body() {
+    let mut template = TermTemplate::consignment_pt_br();
+    template.title = "   ".into();
+    assert_eq!(template.check().unwrap_err(), TermError::Missing("a title"));
+
+    let mut template = TermTemplate::consignment_pt_br();
+    template.body = String::new();
+    assert_eq!(template.check().unwrap_err(), TermError::Missing("a body"));
+
+    let mut template = TermTemplate::consignment_pt_br();
+    template.language = String::new();
+    assert_eq!(
+        template.check().unwrap_err(),
+        TermError::Missing("a language")
+    );
+}
+
+#[test]
+fn a_term_body_is_length_bound_like_every_other_input() {
+    let mut template = TermTemplate::consignment_pt_br();
+    template.body = "a".repeat(MAX_BODY + 1);
+    assert_eq!(
+        template.check().unwrap_err(),
+        TermError::TooLong {
+            field: "body",
+            max: MAX_BODY
+        }
+    );
+}
+
+#[test]
+fn the_builtin_wording_passes_the_editor_check() {
+    for template in TermTemplate::builtin() {
+        template
+            .check()
+            .unwrap_or_else(|e| panic!("{} is not storable: {e}", template.language));
+    }
+}
+
+#[test]
+fn the_builtin_wording_can_be_recovered_for_a_language_the_build_ships() {
+    assert!(TermTemplate::builtin_for("consignment", "pt-BR").is_some());
+    assert!(TermTemplate::builtin_for("consignment", "en").is_some());
+    assert!(TermTemplate::builtin_for("consignment", "es").is_none());
+    let blank = TermTemplate::blank("consignment", "es");
+    assert_eq!(blank.language, "es");
+    assert!(blank.body.is_empty());
+}
+
+#[test]
+fn an_unsaved_edit_is_recognised_as_one() {
+    let stored = versioned("pt-BR", "1", "Nome: {{holder.name}}\n");
+
+    // The buffers as loaded: not an edit. Surrounding space in the title is not
+    // an edit either, because that is what is stored.
+    assert!(!is_edited(
+        Some(&stored),
+        "Term 1",
+        "Nome: {{holder.name}}\n"
+    ));
+    assert!(!is_edited(
+        Some(&stored),
+        "  Term 1  ",
+        "Nome: {{holder.name}}\n"
+    ));
+
+    // A changed word in either field is.
+    assert!(is_edited(
+        Some(&stored),
+        "Termo 1",
+        "Nome: {{holder.name}}\n"
+    ));
+    assert!(is_edited(
+        Some(&stored),
+        "Term 1",
+        "Nome: {{holder.email}}\n"
+    ));
+
+    // A language with nothing stored: an edit as soon as anything is typed.
+    assert!(!is_edited(None, "", "   "));
+    assert!(is_edited(None, "Término", ""));
+}
+
+#[test]
+fn the_sample_context_fills_every_variable_so_no_preview_line_is_hidden() {
+    let sample = TermContext::sample();
+    for (name, value) in sample.as_map() {
+        assert!(
+            !value.trim().is_empty(),
+            "`{name}` is empty in the sample, so its line would vanish from the preview"
+        );
+    }
+    // And it renders both shipped languages.
+    for template in TermTemplate::builtin() {
+        let text = render_term(&template, &sample).unwrap();
+        assert!(text.contains("Ana Exemplo da Silva"));
+    }
 }

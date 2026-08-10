@@ -5,8 +5,13 @@
 //! and can be recorded as evidence of intent, but no step touches the key. The
 //! executor is Wave 2 in `roadmap.md`.
 
+use elegance::{Accent, Badge, BadgeTone, Button, CalloutTone, Card, Checkbox, Select};
+
 use crate::app::YkDistApp;
 use crate::template::Transport;
+
+/// Width of the wider selects on this screen.
+const FIELD: f32 = 360.0;
 
 pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
     super::screen_header(
@@ -16,35 +21,38 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
          and a PIV signing certificate carrying the holder's e-mail.",
     );
 
-    selection(app, ui);
-    ui.add_space(10.0);
-    steps(app, ui);
-    ui.add_space(10.0);
+    Card::new().heading("Selection").show(ui, |ui| {
+        selection(app, ui);
+        ui.add_space(14.0);
+        steps(app, ui);
 
-    ui.horizontal_wrapped(|ui| {
-        if ui.button("Build plan").clicked() {
-            app.build_plan();
+        ui.add_space(16.0);
+        ui.horizontal_wrapped(|ui| {
+            if ui.add(Button::new("Build plan")).clicked() {
+                app.build_plan();
+            }
+            if ui
+                .add(
+                    Button::new("Record dry run")
+                        .accent(Accent::Green)
+                        .enabled(!app.wizard.plan.is_empty()),
+                )
+                .on_hover_text("save the plan as evidence of intent; no step touches the key")
+                .clicked()
+            {
+                app.record_dry_run();
+            }
+            ui.add(Button::new("Execute on key").outline().enabled(false))
+                .on_hover_text("the executor lands in Wave 2 — see roadmap.md");
+        });
+
+        if let Some(error) = app.wizard.error.clone() {
+            ui.add_space(10.0);
+            super::error_label(ui, &error);
         }
-        if ui
-            .add_enabled(
-                !app.wizard.plan.is_empty(),
-                egui::Button::new("Record dry run"),
-            )
-            .clicked()
-        {
-            app.record_dry_run();
-        }
-        ui.add_enabled(false, egui::Button::new("Execute on key (Wave 2)"));
     });
 
-    if let Some(error) = app.wizard.error.clone() {
-        ui.add_space(6.0);
-        super::error_label(ui, &error);
-    }
-
-    ui.add_space(12.0);
-    ui.separator();
-    ui.add_space(6.0);
+    ui.add_space(18.0);
     plan_table(app, ui);
 }
 
@@ -56,65 +64,71 @@ fn selection(app: &mut YkDistApp, ui: &mut egui::Ui) {
         .map(|t| format!("{} (v{})", t.name, t.version))
         .collect();
 
-    egui::Grid::new("wizard-selection")
-        .num_columns(2)
-        .spacing([12.0, 6.0])
-        .show(ui, |ui| {
-            ui.label("Key serial");
-            ui.horizontal(|ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut app.wizard.serial)
-                        .char_limit(12)
-                        .desired_width(140.0),
-                );
-                if ui.button("read attached key").clicked() {
-                    app.detect_keys();
-                }
+    ui.horizontal_top(|ui| {
+        ui.vertical(|ui| {
+            ui.set_width(200.0);
+            super::capped_input(ui, &mut app.wizard.serial, 12, |input| {
+                input
+                    .label("Key serial")
+                    .id_salt("wizard-serial")
+                    .desired_width(140.0)
             });
-            ui.end_row();
+            ui.add_space(6.0);
+            if ui
+                .add(
+                    Button::new("read attached key")
+                        .outline()
+                        .size(elegance::ButtonSize::Small),
+                )
+                .clicked()
+            {
+                app.detect_keys();
+            }
+        });
 
-            ui.label("Holder");
+        ui.add_space(20.0);
+
+        ui.vertical(|ui| {
+            ui.set_width(FIELD + 16.0);
+
             if holder_labels.is_empty() {
-                ui.label("register a holder first");
+                super::notice(ui, CalloutTone::Warning, "Register a holder first.");
             } else {
                 app.wizard.holder_index = app.wizard.holder_index.min(holder_labels.len() - 1);
-                egui::ComboBox::from_id_salt("wizard-holder")
-                    .selected_text(&holder_labels[app.wizard.holder_index])
-                    .width(340.0)
-                    .show_ui(ui, |ui| {
-                        for (index, label) in holder_labels.iter().enumerate() {
-                            ui.selectable_value(&mut app.wizard.holder_index, index, label);
-                        }
-                    });
+                ui.add(
+                    Select::new("wizard-holder", &mut app.wizard.holder_index)
+                        .label("Holder")
+                        .options(holder_labels.iter().cloned().enumerate())
+                        .width(FIELD),
+                );
             }
-            ui.end_row();
 
-            ui.label("Template");
+            ui.add_space(8.0);
+
             if template_labels.is_empty() {
-                ui.label("no template available");
+                super::notice(ui, CalloutTone::Warning, "No template available.");
             } else {
                 app.wizard.template_index =
                     app.wizard.template_index.min(template_labels.len() - 1);
                 let before = app.wizard.template_index;
-                egui::ComboBox::from_id_salt("wizard-template")
-                    .selected_text(&template_labels[app.wizard.template_index])
-                    .width(340.0)
-                    .show_ui(ui, |ui| {
-                        for (index, label) in template_labels.iter().enumerate() {
-                            ui.selectable_value(&mut app.wizard.template_index, index, label);
-                        }
-                    });
+                ui.add(
+                    Select::new("wizard-template", &mut app.wizard.template_index)
+                        .label("Template")
+                        .options(template_labels.iter().cloned().enumerate())
+                        .width(FIELD),
+                );
                 if before != app.wizard.template_index {
                     app.wizard.step_enabled.clear();
                     app.wizard.plan.clear();
                 }
             }
-            ui.end_row();
         });
+    });
 
     if let Some(template) = app.selected_template() {
-        ui.add_space(4.0);
-        ui.label(egui::RichText::new(&template.description).weak().small());
+        ui.add_space(8.0);
+        let description = template.description.clone();
+        super::hint(ui, &description);
     }
 }
 
@@ -126,17 +140,25 @@ fn steps(app: &mut YkDistApp, ui: &mut egui::Ui) {
         app.wizard.step_enabled = template.steps.iter().map(|s| s.enabled).collect();
     }
 
-    ui.label("Steps to apply:");
+    let theme = elegance::Theme::current(ui.ctx());
+    ui.add(egui::Label::new(
+        egui::RichText::new("Steps to apply")
+            .size(theme.typography.label)
+            .color(theme.palette.text_muted)
+            .strong(),
+    ));
+    ui.add_space(6.0);
+
     for (index, step) in template.steps.iter().enumerate() {
-        let required = step.required;
         ui.horizontal(|ui| {
+            // A required step cannot be opted out of; showing it disabled is
+            // more honest than hiding the choice.
             ui.add_enabled(
-                !required,
-                egui::Checkbox::new(&mut app.wizard.step_enabled[index], ""),
+                !step.required,
+                Checkbox::new(&mut app.wizard.step_enabled[index], step.kind.label()),
             );
-            ui.label(step.kind.label());
-            if required {
-                ui.label(egui::RichText::new("required").small().weak());
+            if step.required {
+                ui.add(Badge::new("required", BadgeTone::Neutral));
             }
         });
     }
@@ -144,51 +166,45 @@ fn steps(app: &mut YkDistApp, ui: &mut egui::Ui) {
 
 fn plan_table(app: &mut YkDistApp, ui: &mut egui::Ui) {
     if app.wizard.plan.is_empty() {
-        ui.label("No plan built yet. Nothing has been sent to the key.");
+        super::notice(
+            ui,
+            CalloutTone::Neutral,
+            "No plan built yet. Nothing has been sent to the key.",
+        );
         return;
     }
 
-    ui.label(
-        egui::RichText::new(
-            "Secrets appear as placeholders — a PIN is never rendered, logged or stored.",
-        )
-        .small()
-        .weak(),
-    );
-    ui.add_space(6.0);
-
-    egui::Grid::new("plan")
-        .striped(true)
-        .num_columns(4)
-        .spacing([14.0, 6.0])
+    Card::new()
+        .heading(format!("Planned steps ({})", app.wizard.plan.len()))
         .show(ui, |ui| {
-            for header in ["Step", "Transport", "Operation", "Note"] {
-                ui.strong(header);
-            }
-            ui.end_row();
+            super::notice(
+                ui,
+                CalloutTone::Info,
+                "Secrets appear as placeholders — a PIN is never rendered, logged or stored.",
+            );
+            ui.add_space(10.0);
 
-            for command in &app.wizard.plan {
-                ui.label(command.kind.label());
-                let (text, color) = match command.transport() {
-                    Transport::Native => ("native", egui::Color32::from_rgb(60, 140, 70)),
-                    Transport::Ykman => ("ykman", egui::Color32::from_rgb(190, 140, 40)),
-                    Transport::Manual => ("manual", egui::Color32::from_rgb(150, 90, 170)),
-                };
-                ui.label(egui::RichText::new(text).color(color).small());
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(command.transport_detail())
-                            .monospace()
-                            .small(),
-                    )
-                    .selectable(true),
-                );
-                ui.label(
-                    egui::RichText::new(command.note.clone().unwrap_or_default())
-                        .small()
-                        .weak(),
-                );
-                ui.end_row();
-            }
+            egui::Grid::new("plan")
+                .striped(true)
+                .num_columns(4)
+                .spacing([14.0, 8.0])
+                .show(ui, |ui| {
+                    super::table_header(ui, &["Step", "Transport", "Operation", "Note"]);
+
+                    for command in &app.wizard.plan {
+                        ui.label(command.kind.label());
+                        // The transport is the thing to notice: `ykman` is a
+                        // labelled fallback, `manual` means a human does it.
+                        let (text, tone) = match command.transport() {
+                            Transport::Native => ("native", BadgeTone::Ok),
+                            Transport::Ykman => ("ykman", BadgeTone::Warning),
+                            Transport::Manual => ("manual", BadgeTone::Info),
+                        };
+                        ui.add(Badge::new(text, tone));
+                        super::mono(ui, &command.transport_detail());
+                        super::faint(ui, &command.note.clone().unwrap_or_default());
+                        ui.end_row();
+                    }
+                });
         });
 }

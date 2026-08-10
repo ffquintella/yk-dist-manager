@@ -17,6 +17,101 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-10
+
+### Added
+
+- **A theme, and a picker for it.** The GUI now draws itself with
+  [`egui-elegance`](https://github.com/stephenberry/egui-elegance) 0.15 (egui 0.36):
+  a real palette, consistent typography, cards, badges, tinted callouts, styled
+  inputs and selects, and a tab bar with an underlined active tab. All eight
+  screens were restyled, the database chooser included.
+
+  - Four palettes ship — **Slate** (the default, dark), Charcoal, Frost and Paper.
+    The choice lives in `settings.json` next to the operator identity, is
+    cosmetic only, and an unknown or hand-edited name resolves to Slate rather
+    than failing to open. Picked from *Settings → Operator → Theme*.
+  - A key's lifecycle state, a plan's transport (`native` / `ykman` / `manual`)
+    and a hand-over's term count now read as coloured badges rather than as text
+    the operator has to parse.
+  - The status bar tells routine outcomes apart from refusals and from an audit
+    failure, which is painted in the danger colour and bold — AGENTS.md §3 asks
+    for an audit failure to be loud, and now it looks it.
+  - `domain::clamp_text` keeps NRM §5.3.5's input bound: the elegance inputs have
+    no `char_limit`, so `ui::capped_input` / `capped_area` apply the cap by
+    character (not byte) immediately after each field is painted.
+  - Refusals stay **selectable** — `ui::error_label` reproduces the callout's
+    tinted-danger frame around a real `egui::Label` rather than using
+    `elegance::Callout`, whose body text cannot be copied into a ticket.
+
+- **A place to edit the consignment term.** New **Terms** screen: pick the language,
+  edit the title and body, and save. The wording of the term is institutional text
+  somebody else owns, so it has to be editable by the unit that owns it — until now it
+  could only be changed by editing the source.
+
+  - Saving stores a **new version** rather than overwriting:
+    `Store::save_term_template_version` numbers it one past the highest version on
+    record for that `(id, language)`, so the wording a holder already signed stays
+    byte-for-byte in the database, and two workstations editing the same term cannot
+    both write "version 2".
+  - `term::choose_template` now hands out the **newest** version of a language (and
+    numerically, so `10` follows `9`), which is what makes an edit apply to the next
+    term generated.
+  - A draft is checked before it is stored (`TermTemplate::check`): id, language,
+    title, body, the length bounds, and every `{{variable}}` known to `TermContext`.
+    An unknown variable is refused at the desk instead of at the counter.
+  - **Preview** renders the draft against `TermContext::sample()` — fictitious values,
+    all of them filled, so the preview shows every line the real document can print.
+  - *Restore built-in wording* brings back the text the build ships, *Reload stored
+    version* discards an edit, and switching language with unsaved changes is refused.
+  - A unit can add a language it needs (`es`, `fr-FR`, …) from the same screen.
+  - New audit events `term.template_edited` and `term.template_added`, carrying the id,
+    language, the new version and the version it came from.
+  - The distribution screen's term panel now names the template version it rendered
+    from, and offers *Edit wording…* straight into the new screen.
+
+  Closes phase 8 of [`features/consignment-terms.md`](features/consignment-terms.md).
+
+- **macOS application bundle.** `packaging/macos/` assembles
+  `YubiKey Distribution Manager.app` — an `Info.plist` template with
+  `NSCameraUsageDescription`, the version taken from `Cargo.toml`, an optional
+  `icon.icns`, plist linting and code signing (ad-hoc by default,
+  `--sign 'Developer ID Application: …'` for a real identity, `--dmg` to wrap it).
+  No bundling crate: the layout is a few directories and one plist, so a reviewable
+  script beats a dependency that can go unmaintained.
+
+  This is what unblocks camera scanning on macOS. Verified end to end:
+  `make verify-bundle` checks the layout, the plist, the version against
+  `Cargo.toml` and the signature, then asks the bundled binary itself whether macOS
+  sees a bundle — the camera verdict moves from "not running from an .app bundle" to
+  "not yet authorised", which the permission prompt resolves.
+
+  `make bundle`, `bundle-release`, `verify-bundle`, `run-bundled`, `dmg`.
+
+- **`--diagnose`** (plus `--version` and `--help`): version, compiled features,
+  bundle state and `Info.plist` path, camera authorisation and the cameras found,
+  the database and settings paths, and whether `ykman` is on `PATH` — ending in a
+  one-line verdict on whether camera scanning will work and why not if it will not.
+  It opens no database, touches no key and starts no camera, so it is safe to run
+  anywhere. `make diagnose`.
+
+### Fixed
+
+- **A database in a cloud-sync folder was opened in WAL mode.** Found by reading a
+  `--diagnose` report from a real installation, where the file lived under
+  `~/Library/CloudStorage/OneDrive-…/`. That is the most dangerous place for a SQLite
+  database: the sync client copies the file while a writer holds it open, WAL's
+  `-wal`/`-shm` sidecars are synchronised independently of the database, and a
+  conflict is resolved by keeping **both** files rather than merging — so the failure
+  mode is two divergent registers of who holds which key.
+
+  `looks_like_cloud_sync()` now recognises OneDrive, Dropbox, Google Drive, iCloud
+  (`Mobile Documents`), pCloud and macOS's `CloudStorage` File Provider directory.
+  Such a path is classified with the network shares, so the journal mode is at least
+  the conservative one, and the operator is warned in the status line, on the
+  Settings screen and in `--diagnose`. Safer pragmas reduce the risk; they do not
+  remove it, and the docs say so.
+
 ## [0.2.2] - 2026-08-10
 
 ### Fixed
@@ -205,6 +300,7 @@ Maintenance instructions (see AGENTS.md §5):
 - Uploaded filenames are treated as data: any directory component is stripped, so a
   name like `../../etc/passwd.pdf` cannot escape.
 
-[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/ffquintella/yk-dist-manager/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/ffquintella/yk-dist-manager/compare/cdea137...v0.2.1

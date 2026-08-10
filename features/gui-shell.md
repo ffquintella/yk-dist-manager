@@ -31,14 +31,22 @@ continuously too.
   `audit_view`) refreshed by `refresh()` after every mutation — the paint pass reads
   vectors, never SQLite.
 - Status bar shows the operator, whether the database is local or on a share, and the
-  last outcome message.
+  last outcome message — the last of these coloured by `status::classify`, so an
+  audit failure is loud rather than being one more grey line.
 - `ui::error_label` renders errors in red, selectable, on the screen that caused them.
-- All text inputs are length-capped with `char_limit`, matching the domain bounds.
+- All text inputs are length-capped by `ui::capped_input` / `capped_area`, matching
+  the domain bounds.
 - Deferred-mutation pattern: table rows record an intent (`status_change`,
   `to_return`) and the mutation runs after the table closure, so nothing borrows the
   app mutably while the grid is being painted.
+- **Themed with `egui-elegance` 0.15** — `ui::install_theme` runs once per frame from
+  `App::ui`, before anything paints. Four palettes (Slate by default, Charcoal,
+  Frost, Paper), chosen in Settings and persisted in `settings.json`. The shared
+  building blocks live in `src/ui/mod.rs`; see [`docs/gui.md`](../docs/gui.md#theme)
+  for the helper table and the two deliberate departures from the crate's defaults
+  (selectable refusals, hand-applied input caps).
 
-Not yet done: theming, keyboard shortcuts, search, window-state persistence, and
+Not yet done: keyboard shortcuts, search, window-state persistence, and
 localisation.
 
 ## Design
@@ -90,7 +98,8 @@ is rejected.
 | 7 | Confirmation dialogs for hardware writes | Todo | blocks the executor going live |
 | 8 | Log panel (last N lines, copyable) | Todo | `features/logging.md` Phase 3 |
 | 9 | Localisation (pt-BR / en) | Todo | the audience is Brazilian; log format is already pt |
-| 10 | Accessibility pass: contrast, font scaling, no colour-only meaning | Todo | the transport column currently relies on colour plus text — keep both |
+| 10 | Accessibility pass: contrast, font scaling, no colour-only meaning | Todo | the transport column relies on colour plus text — keep both; contrast now has to hold in all four palettes |
+| 11 | Theming | Done | `egui-elegance` 0.15; four palettes, the choice persisted in `settings.json` |
 
 ## Audit events
 

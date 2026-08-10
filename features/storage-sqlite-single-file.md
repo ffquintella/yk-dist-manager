@@ -53,8 +53,30 @@ network. Rollback journal plus `synchronous=FULL` is the supported configuration
 A behaviour test asserts no `-wal`/`-shm` file is created in share mode.
 
 Detection heuristic (overridable): `\\` UNC, `//`, `/Volumes/`, `/mnt/`,
-`/net/`, `/media/`. It is a heuristic on purpose — the operator can override it in
-Settings, because no prefix list is right everywhere.
+`/net/`, `/media/`, **and any path that looks like a cloud-sync folder**. It is a
+heuristic on purpose — the operator can override it in Settings, because no prefix list
+is right everywhere.
+
+### Cloud-sync folders are the worst case, and are now called out
+
+A `--diagnose` report from a real installation showed the database living in
+`~/Library/CloudStorage/OneDrive-…/`. That is the single most dangerous place for a
+SQLite file, and it was being opened in **WAL** mode because the path is under `$HOME`
+and matched no share prefix:
+
+- the sync client copies the file while a writer holds it open;
+- WAL's `-wal` and `-shm` sidecars are synchronised independently of the database, so
+  the three can arrive out of step;
+- and a sync conflict is resolved by keeping **both** files, not by merging — so the
+  failure mode is two divergent registers of who holds which security token.
+
+`looks_like_cloud_sync()` recognises OneDrive, Dropbox, Google Drive, iCloud
+(`Mobile Documents`), pCloud and macOS's `CloudStorage` File Provider directory. Such a
+path is classified with the network shares, so at least the journal mode is safe, and
+the operator is warned in the status line, in the Settings screen and in `--diagnose`.
+
+Safer pragmas reduce the risk; they do not remove it. The recommendation stays a real
+network share, or a local file with a scheduled backup.
 
 ### Schema
 
@@ -97,6 +119,7 @@ Two operators on the same share will collide eventually. Planned policy:
 | 1b | Strict `open_existing` / `create_new` | Done | [spec](database-selection.md) — a typo can no longer create an empty database |
 | 1c | Schema v2 (serial provenance) and v3 (optional holder fields, term templates, documents) | Done | the v1→v3 chain is covered by a test that builds a v1 file by hand |
 | 2 | Location-aware pragmas | Done | WAL vs rollback journal, tested |
+| 2b | Cloud-sync detection: safe pragmas plus a visible warning | Done | found by a `--diagnose` report from a real installation |
 | 3 | Backup (`VACUUM INTO`) + `integrity_check` | Done | Settings screen |
 | 4 | Multi-operator concurrency policy | Todo | busy retry + optimistic `updated_at` |
 | 5 | Schema v2: per-step run rows instead of a JSON blob | Todo | needed for step-level reporting |

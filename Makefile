@@ -2,7 +2,8 @@
 # See AGENTS.md for the rules these targets enforce.
 
 .DEFAULT_GOAL := help
-.PHONY: help build run run-native check check-all fmt lint test test-all coverage \
+.PHONY: help build run run-native diagnose bundle bundle-release run-bundled \
+        verify-bundle dmg check check-all fmt lint test test-all coverage \
         coverage-core coverage-html hardware clean release-check
 
 COVERAGE_FLOOR := 80
@@ -24,6 +25,24 @@ run: ## Launch the GUI
 
 run-native: ## Launch the GUI with native hardware access + encrypted-db support
 	cargo run --features native-device,encrypted-db
+
+diagnose: ## Print build, path and capability information
+	cargo run --quiet -- --diagnose
+
+bundle: ## macOS: assemble the .app (debug build)
+	packaging/macos/bundle.sh
+
+bundle-release: ## macOS: assemble the .app from a release build
+	packaging/macos/bundle.sh --release
+
+verify-bundle: ## macOS: check the assembled .app is what macOS needs
+	packaging/macos/verify-bundle.sh
+
+run-bundled: bundle ## macOS: launch the bundled app (camera scanning works here)
+	open "target/bundle/YubiKey Distribution Manager.app"
+
+dmg: ## macOS: assemble a release .app and wrap it in a .dmg
+	packaging/macos/bundle.sh --release --dmg
 
 check: ## Fast compile check, default features
 	cargo check

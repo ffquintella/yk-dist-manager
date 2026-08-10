@@ -7,7 +7,9 @@ use yk_dist_manager::domain::{
     KeyStatus, YubiKeyRecord,
 };
 use yk_dist_manager::store::{Store, StoreConfig};
-use yk_dist_manager::term::{TermContext, TermTemplate, choose_template, render_term};
+use yk_dist_manager::term::{
+    TermContext, TermTemplate, choose_template, edit_audit_entry, render_term,
+};
 
 struct World {
     store: Store,
@@ -160,6 +162,218 @@ fn scenario_a_unit_adds_its_own_language() {
     let chosen = choose_template(&templates, "consignment", "es").unwrap();
     assert_eq!(chosen.language, "es");
     assert_eq!(templates.len(), 3);
+}
+
+#[test]
+fn scenario_the_operator_edits_the_wording_and_the_next_term_uses_it() {
+    // Given: the shipped pt-BR term, and a hand-over waiting for its document.
+    let world = World::new();
+    world.store.seed_builtin_terms().unwrap();
+    let (key, holder, record) = world.handed_over();
+    let before = world.store.term_templates().unwrap();
+    let original = choose_template(&before, "consignment", "pt-BR").unwrap();
+    assert_eq!(original.version, "1");
+
+    // When: the wording is edited in the GUI and saved.
+    let mut draft = original.clone();
+    draft.body = draft.body.replace(
+        "4.5. O portador declara ter recebido orientação sobre o uso da chave e sobre a",
+        "4.5. O portador declara ter recebido treinamento presencial sobre o uso da chave e",
+    );
+    let stored = world.store.save_term_template_version(&draft).unwrap();
+
+    // Then: it is a new version, the signed one is untouched, and the term
+    // generated next carries the new wording.
+    assert_eq!(stored.version, "2");
+    let after = world.store.term_templates().unwrap();
+    assert_eq!(after.len(), 3, "version 1 is kept, not overwritten");
+    assert!(
+        after
+            .iter()
+            .any(|t| t.language == "pt-BR" && t.version == "1" && t.body.contains("orientação")),
+        "the version somebody may have signed stays readable"
+    );
+
+    let chosen = choose_template(&after, "consignment", "pt-BR").unwrap();
+    assert_eq!(chosen.version, "2");
+    let ctx = TermContext::from_records(
+        &holder,
+        &key,
+        Some(&record),
+        "fgv-standard 1",
+        "Transport secret, holder must change it on first use",
+        "felipe",
+        "FGV",
+    );
+    let text = render_term(chosen, &ctx).unwrap();
+    assert!(text.contains("treinamento presencial"));
+    assert!(
+        text.contains("Ana Silva"),
+        "still generated from the record"
+    );
+}
+
+#[test]
+fn scenario_the_editor_refuses_wording_that_could_not_render() {
+    // Given a draft with a variable the context cannot supply — a typo in a
+    // legal document that would otherwise only surface at the counter.
+    let world = World::new();
+    world.store.seed_builtin_terms().unwrap();
+    let mut draft = TermTemplate::consignment_pt_br();
+    draft.body = "Nome: {{holder.nome}}\n".into();
+
+    // When it is saved
+    let refused = world
+        .store
+        .save_term_template_version(&draft)
+        .expect_err("must be refused");
+
+    // Then nothing was stored, and the refusal names the variable.
+    assert!(refused.to_string().contains("holder.nome"));
+    assert_eq!(
+        world
+            .store
+            .term_template_versions("consignment", "pt-BR")
+            .unwrap(),
+        vec!["1".to_owned()]
+    );
+}
+
+#[test]
+fn scenario_a_unit_adds_a_language_through_the_editor() {
+    // Given the shipped languages only
+    let world = World::new();
+    world.store.seed_builtin_terms().unwrap();
+    assert!(
+        world
+            .store
+            .term_template_versions("consignment", "es")
+            .unwrap()
+            .is_empty()
+    );
+
+    // When a Spanish term is written in the editor and saved
+    let draft = TermTemplate {
+        id: "consignment".into(),
+        language: "es".into(),
+        // The editor leaves the version to the store, which numbers it.
+        version: String::new(),
+        title: "Término de Consignación de Llave de Seguridad".into(),
+        body: "Nombre: {{holder.name}}\nSerie: {{key.serial}}\nTeléfono: {{holder.phone}}\n".into(),
+    };
+    let stored = world.store.save_term_template_version(&draft).unwrap();
+
+    // Then it is version 1 of that language, and it is what a Spanish-speaking
+    // holder gets — with the phone line dropped for a holder who gave none.
+    assert_eq!(
+        (stored.language.as_str(), stored.version.as_str()),
+        ("es", "1")
+    );
+    let templates = world.store.term_templates().unwrap();
+    let chosen = choose_template(&templates, "consignment", "es").unwrap();
+    assert_eq!(chosen.language, "es");
+
+    let holder = Holder::new("Carlos Ruiz", "carlos.ruiz@fgv.br", "ESI", "").unwrap();
+    let key = YubiKeyRecord::from_device(&DeviceInfo {
+        serial: 12_345_678,
+        model: "YubiKey 5C".into(),
+        firmware: "5.7.1".into(),
+        form_factor: "Keychain (USB-C)".into(),
+        nfc: false,
+        usb_applications: vec!["FIDO2".into()],
+    });
+    let text = render_term(
+        chosen,
+        &TermContext::from_records(&holder, &key, None, "none", "custody", "felipe", "FGV"),
+    )
+    .unwrap();
+    assert!(text.contains("Nombre: Carlos Ruiz"));
+    assert!(!text.contains("Teléfono:"));
+}
+
+#[test]
+fn scenario_editing_the_wording_is_audited() {
+    // Given a term on record
+    let world = World::new();
+    world.store.seed_builtin_terms().unwrap();
+    let mut draft = TermTemplate::consignment_pt_br();
+    draft.title = "Termo de Consignação — revisão jurídica".into();
+
+    // When it is saved and audited, the way the Terms screen does it
+    let stored = world.store.save_term_template_version(&draft).unwrap();
+    let (event, target, details) = edit_audit_entry(&stored, Some("1"));
+    world
+        .store
+        .append_audit("felipe", event, &target, &details)
+        .unwrap();
+
+    // Then the trail says who changed which wording, from which version to which,
+    // and the chain still verifies.
+    let entries = world.store.audit_entries(10).unwrap();
+    let entry = entries
+        .iter()
+        .find(|e| e.event == "term.template_edited")
+        .expect("the edit must be audited");
+    assert_eq!(entry.target, "term:consignment@pt-BR");
+    assert_eq!(
+        entry.details,
+        "id=consignment language=pt-BR version=2 previous=1"
+    );
+    assert_eq!(entry.actor, "felipe");
+    world.store.verify_audit().unwrap();
+
+    // And a language that had nothing on record is an addition, not an edit.
+    let spanish = TermTemplate {
+        id: "consignment".into(),
+        language: "es".into(),
+        version: String::new(),
+        title: "Término de Consignación".into(),
+        body: "Nombre: {{holder.name}}\nSerie: {{key.serial}}\n".into(),
+    };
+    let stored = world.store.save_term_template_version(&spanish).unwrap();
+    let (event, target, details) = edit_audit_entry(&stored, None);
+    assert_eq!(event, "term.template_added");
+    assert_eq!(target, "term:consignment@es");
+    assert!(details.ends_with("previous=none"));
+    world
+        .store
+        .append_audit("felipe", event, &target, &details)
+        .unwrap();
+    world.store.verify_audit().unwrap();
+}
+
+#[test]
+fn scenario_two_edits_in_a_row_number_themselves() {
+    // Given a term already edited once
+    let world = World::new();
+    world.store.seed_builtin_terms().unwrap();
+    let mut draft = TermTemplate::consignment_pt_br();
+    draft.title = "Termo de Consignação — revisão jurídica".into();
+    let second = world.store.save_term_template_version(&draft).unwrap();
+    assert_eq!(second.version, "2");
+
+    // When it is edited again — the draft still carrying an old version number,
+    // because the number is the store's to assign, not the editor's.
+    draft.title = "Termo de Consignação — revisão do DPO".into();
+    let third = world.store.save_term_template_version(&draft).unwrap();
+
+    // Then the versions run 1, 2, 3 and the newest is the one in use.
+    assert_eq!(third.version, "3");
+    assert_eq!(
+        world
+            .store
+            .term_template_versions("consignment", "pt-BR")
+            .unwrap()
+            .len(),
+        3
+    );
+    let templates = world.store.term_templates().unwrap();
+    assert_eq!(
+        choose_template(&templates, "consignment", "pt-BR")
+            .unwrap()
+            .title,
+        "Termo de Consignação — revisão do DPO"
+    );
 }
 
 #[test]

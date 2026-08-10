@@ -17,8 +17,31 @@ version control and carries a tag. No hand-built binaries.
 
 ## Current state
 
-**Not started.** `cargo build` produces a local binary; there is no bundle, no signing,
-no release workflow.
+**macOS bundle shipped; signing for distribution and the other platforms are not.**
+
+- `packaging/macos/Info.plist.in` — the plist template, with
+  `NSCameraUsageDescription` as its reason for existing.
+- `packaging/macos/bundle.sh` — assembles
+  `target/bundle/YubiKey Distribution Manager.app`: builds the binary, substitutes the
+  version from `Cargo.toml` (single source of truth), copies an optional
+  `packaging/macos/icon.icns`, lints the plist, and code-signs. Ad-hoc by default;
+  `--sign 'Developer ID Application: …'` for a real identity. `--dmg` wraps it with
+  `hdiutil`.
+- `packaging/macos/verify-bundle.sh` — checks the layout, the plist, the version
+  against `Cargo.toml`, the signature, and then asks **the bundled binary itself**
+  (`--diagnose`) whether macOS sees it as bundled and whether camera scanning is still
+  refused. Packaging is verified rather than assumed.
+- `--diagnose` / `--version` / `--help` on the binary: build, paths, features,
+  bundle state, camera verdict, database and settings locations, `ykman` presence.
+  What an operator pastes into a ticket, and what the verifier interrogates.
+- `make bundle`, `make bundle-release`, `make verify-bundle`, `make run-bundled`,
+  `make dmg`, `make diagnose`.
+
+No bundling crate is used: the layout is a few directories and one plist, so
+assembling it in a reviewable script beats a dependency that can go unmaintained.
+
+Still to do: Developer ID signing and notarisation, Windows, Linux, CI, and the
+`block` 0.1.6 resolution.
 
 ## Design
 
@@ -73,6 +96,14 @@ changelog — because an operator on a share may run an older build against a ne
 which the store refuses (`StoreError::SchemaTooNew`). That refusal is only useful if the
 release notes tell people to upgrade together.
 
+### Signing is not only about Gatekeeper
+
+macOS remembers a camera grant against the **code signature**. An ad-hoc signature
+changes whenever the binary is rebuilt, so a developer gets the permission prompt again
+after every `make bundle`. That is tolerable locally and unacceptable for an operator,
+which makes a stable Developer ID identity a requirement for the camera feature and not
+just for installation.
+
 ### Reproducibility
 
 `Cargo.lock` is committed (it is a binary, not a library). The build records its version
@@ -83,10 +114,12 @@ identifies the exact build.
 
 | # | Phase | State | Notes |
 |---|---|---|---|
-| 0 | Clear the two `camera` release blockers | **Todo — gates every artefact** | `NSCameraUsageDescription`; the `block` 0.1.6 chain |
+| 0a | `NSCameraUsageDescription` in a real bundle | **Done** | `make bundle` + `make verify-bundle`; the camera refusal is now "not yet authorised", which the prompt resolves |
+| 0b | Resolve the `block` 0.1.6 chain | **Todo — still gates every artefact** | upstream fix, `[patch.crates-io]`, a native AVFoundation path, or `camera` back to opt-in |
 | 1 | CI build matrix (macOS / Windows / Linux) with `native-device` | Todo | proves the transports compile everywhere; the default build now needs a V4L2-capable Linux image |
-| 2 | Version + commit hash embedded and shown in Settings | Todo | `VERSION` exists; add the hash |
-| 3 | macOS `.app` + `.dmg`, Developer ID signing, notarisation | Todo | Gatekeeper blocks otherwise |
+| 2 | Version + commit hash embedded and shown in Settings | Partial | the version is in the plist and in `--diagnose`; the commit hash is not |
+| 3 | macOS `.app` + `.dmg` | **Done** | `bundle.sh [--release] [--dmg]` |
+| 3b | Developer ID signing + notarisation | Todo | ad-hoc signing works locally but re-prompts for the camera after every rebuild, and Gatekeeper blocks distribution |
 | 4 | Windows MSI + Authenticode | Todo | SmartScreen otherwise |
 | 5 | Linux packages + udev rule + `pcscd` dependency documented | Todo | |
 | 6 | Tagged release workflow with artefacts attached | Todo | norm: every installed build comes from a tag |

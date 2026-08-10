@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template. `packaging/macos/bundle.sh` substitutes @VERSION@, @IDENTIFIER@ and
+  @COPYRIGHT@ and writes the result into the bundle. Do not edit the generated
+  copy: it is rebuilt every time.
+
+  NSCameraUsageDescription is the load-bearing key. Without it macOS has nothing to
+  show the operator and no identity to attribute the grant to, and AVFoundation
+  raises an Objective-C exception that aborts the process rather than failing —
+  see features/serial-scanning.md.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>YubiKey Distribution Manager</string>
+
+	<key>CFBundleDisplayName</key>
+	<string>YubiKey Distribution Manager</string>
+
+	<key>CFBundleExecutable</key>
+	<string>yk-dist-manager</string>
+
+	<key>CFBundleIdentifier</key>
+	<string>@IDENTIFIER@</string>
+
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+
+	<key>NSHumanReadableCopyright</key>
+	<string>@COPYRIGHT@</string>
+
+	<!-- Retina rendering; egui draws at the backing scale factor. -->
+	<key>NSHighResolutionCapable</key>
+	<true/>
+
+	<!-- A desk application, not an agent: it belongs in the Dock. -->
+	<key>LSUIElement</key>
+	<false/>
+
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+
+	<!--
+	  Shown verbatim in the permission prompt, so it says what the camera is for
+	  and what happens to the frames. Vague text here is how an operator ends up
+	  declining a permission they needed.
+	-->
+	<key>NSCameraUsageDescription</key>
+	<string>Reads the serial number from a YubiKey package barcode. Frames are decoded on this computer and are never stored or sent anywhere.</string>
+</dict>
+</plist>

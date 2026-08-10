@@ -132,6 +132,14 @@ Rendering drops any line whose placeholder resolves to empty, which is how the
 optional holder fields stay optional — see
 [`../features/consignment-terms.md`](../features/consignment-terms.md).
 
+The **Terms** screen writes here through `Store::save_term_template_version`, which
+never updates a row: it reads the versions on record for that `(id, language)` and
+inserts one past the highest number. So an edit adds `2` beside `1`, the version a
+holder may already have signed stays exactly as it was, and the version number the
+editor happened to be showing cannot decide what gets written. `term::choose_template`
+hands out the **newest** version of a language, which is what makes an edit take effect
+on the next term generated.
+
 ## `documents` — the signed term and anything filed with it
 
 | Column | Type | Notes |

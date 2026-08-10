@@ -49,6 +49,14 @@ cargo test
 cargo llvm-cov --all-features --workspace --summary-only
 ```
 
+macOS bundle (needed for camera scanning, since a bare binary has no `Info.plist`):
+
+```bash
+make bundle          # assemble target/bundle/YubiKey Distribution Manager.app
+make verify-bundle   # layout, plist, version, signature, and the binary's own --diagnose
+make run-bundled
+```
+
 Feature combinations that must keep compiling:
 
 ```bash

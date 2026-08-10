@@ -16,6 +16,27 @@ use serde::{Deserialize, Serialize};
 /// How many databases are remembered in the picker.
 pub const MAX_RECENT: usize = 8;
 
+/// The palettes the operator can pick from, in the order they are offered.
+/// These are the four built-in `egui-elegance` themes: two dark, two light.
+pub const THEMES: [&str; 4] = ["slate", "charcoal", "frost", "paper"];
+
+/// What the application opens with, and what an unrecognised name falls back
+/// to. Dark, cool blue.
+pub const DEFAULT_THEME: &str = "slate";
+
+/// Resolve a stored palette name to one of [`THEMES`].
+///
+/// A name that is unknown, differently cased, or simply absent resolves to
+/// [`DEFAULT_THEME`] — a settings file written by a newer build that offers
+/// more palettes must still open here, with a theme rather than an error.
+pub fn normalise_theme(name: &str) -> &'static str {
+    let wanted = name.trim();
+    THEMES
+        .into_iter()
+        .find(|known| known.eq_ignore_ascii_case(wanted))
+        .unwrap_or(DEFAULT_THEME)
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppSettings {
@@ -27,6 +48,9 @@ pub struct AppSettings {
     pub operator: String,
     /// Organisation, used in certificate subjects.
     pub org: String,
+    /// Chosen palette, one of [`THEMES`]. Cosmetic only — nothing about the
+    /// record depends on it.
+    pub theme: String,
 }
 
 impl AppSettings {
@@ -72,7 +96,18 @@ impl AppSettings {
             recent_databases: Vec::new(),
             operator: default_operator(),
             org: String::new(),
+            theme: DEFAULT_THEME.to_owned(),
         }
+    }
+
+    /// The chosen palette, always one of [`THEMES`].
+    pub fn theme(&self) -> &'static str {
+        normalise_theme(&self.theme)
+    }
+
+    /// Record the operator's palette choice.
+    pub fn set_theme(&mut self, name: &str) {
+        self.theme = normalise_theme(name).to_owned();
     }
 
     /// Write atomically: a crash mid-write must not leave an unreadable file.
@@ -135,6 +170,7 @@ impl AppSettings {
         if self.operator.trim().is_empty() {
             self.operator = default_operator();
         }
+        self.theme = normalise_theme(&self.theme).to_owned();
     }
 }
 
@@ -182,6 +218,26 @@ mod tests {
                 .recent_databases
                 .contains(&PathBuf::from("/db-0.sqlite3"))
         );
+    }
+
+    #[test]
+    fn an_unknown_palette_name_falls_back_to_the_default() {
+        assert_eq!(normalise_theme("frost"), "frost");
+        // Case is not the operator's problem, and neither is a hand-edited file.
+        assert_eq!(normalise_theme("  Charcoal "), "charcoal");
+        assert_eq!(normalise_theme("neon"), DEFAULT_THEME);
+        assert_eq!(normalise_theme(""), DEFAULT_THEME);
+    }
+
+    #[test]
+    fn a_settings_file_without_a_theme_still_loads_with_one() {
+        // What `#[serde(default)]` produces for a file written before the
+        // field existed.
+        let mut settings = AppSettings::default();
+        assert!(settings.theme.is_empty());
+        settings.normalise();
+        assert_eq!(settings.theme, DEFAULT_THEME);
+        assert_eq!(settings.theme(), DEFAULT_THEME);
     }
 
     #[test]

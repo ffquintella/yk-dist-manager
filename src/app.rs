@@ -56,6 +56,9 @@ pub struct TermPanel {
     pub rendered: Option<String>,
     /// Language actually used, when it differs from the request.
     pub language_used: Option<String>,
+    /// Which template version produced the rendered text, so the operator can see
+    /// that an edit has taken effect — and which version a saved term came from.
+    pub template_used: Option<String>,
     pub error: Option<String>,
 }
 
@@ -67,8 +70,71 @@ impl Default for TermPanel {
             language: crate::term::DEFAULT_LANGUAGE.to_owned(),
             rendered: None,
             language_used: None,
+            template_used: None,
             error: None,
         }
+    }
+}
+
+/// Term-template editor state (Terms screen).
+///
+/// The buffers are a *draft*: nothing reaches the database until the operator
+/// saves, and saving stores a new version rather than overwriting the one that
+/// may already have been signed.
+pub struct TermEditor {
+    /// Which term is being edited. Only `consignment` exists today.
+    pub id: String,
+    /// Language of the template in the buffers.
+    pub language: String,
+    /// Version the buffers were loaded from; `None` for a language with nothing
+    /// stored yet, which is what makes the save an *addition* rather than an edit.
+    pub loaded_version: Option<String>,
+    /// False until the buffers have been filled from a template.
+    pub loaded: bool,
+    pub title: String,
+    pub body: String,
+    /// Language tag typed into "add a language".
+    pub new_language: String,
+    /// The draft rendered against the sample context, for review before saving.
+    pub preview: Option<String>,
+    pub error: Option<String>,
+    pub notice: Option<String>,
+}
+
+impl Default for TermEditor {
+    fn default() -> Self {
+        Self {
+            id: "consignment".into(),
+            language: crate::term::DEFAULT_LANGUAGE.to_owned(),
+            loaded_version: None,
+            loaded: false,
+            title: String::new(),
+            body: String::new(),
+            new_language: String::new(),
+            preview: None,
+            error: None,
+            notice: None,
+        }
+    }
+}
+
+impl TermEditor {
+    /// The draft as a template. The version is left empty: the store assigns it
+    /// from what the database already holds.
+    pub fn draft(&self) -> crate::term::TermTemplate {
+        crate::term::TermTemplate {
+            id: self.id.trim().to_owned(),
+            language: self.language.trim().to_owned(),
+            version: String::new(),
+            title: self.title.clone(),
+            body: self.body.clone(),
+        }
+    }
+
+    /// True when the buffers differ from the version they came from.
+    pub fn is_dirty(&self, templates: &[crate::term::TermTemplate]) -> bool {
+        let stored = crate::term::latest_in_language(templates, &self.id, &self.language);
+        crate::term::is_edited(stored, &self.title, &self.body)
     }
 }
 
@@ -94,16 +160,18 @@ pub enum Tab {
     Holders,
     Distribution,
     Bootstrap,
+    Terms,
     Audit,
     Settings,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 6] = [
+    pub const ALL: [Tab; 7] = [
         Tab::Inventory,
         Tab::Holders,
         Tab::Distribution,
         Tab::Bootstrap,
+        Tab::Terms,
         Tab::Audit,
         Tab::Settings,
     ];
@@ -114,9 +182,21 @@ impl Tab {
             Tab::Holders => "Holders",
             Tab::Distribution => "Distribution",
             Tab::Bootstrap => "Bootstrap",
+            Tab::Terms => "Terms",
             Tab::Audit => "Audit",
             Tab::Settings => "Settings",
         }
+    }
+
+    /// Position in [`Tab::ALL`] — what `elegance::TabBar` selects on.
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|tab| *tab == self).unwrap_or(0)
+    }
+
+    /// Inverse of [`Tab::index`]. An out-of-range index cannot come from the
+    /// tab bar, and falls back to the first screen rather than panicking.
+    pub fn from_index(index: usize) -> Self {
+        Self::ALL.get(index).copied().unwrap_or(Tab::Inventory)
     }
 }
 
@@ -198,6 +278,7 @@ pub struct YkDistApp {
     pub dist_form: DistForm,
     pub wizard: Wizard,
     pub term_panel: TermPanel,
+    pub term_editor: TermEditor,
     /// Term templates, refreshed with everything else.
     pub term_templates: Vec<crate::term::TermTemplate>,
     /// How many documents each distribution has.
@@ -249,6 +330,7 @@ impl YkDistApp {
             dist_form: DistForm::default(),
             wizard: Wizard::default(),
             term_panel: TermPanel::default(),
+            term_editor: TermEditor::default(),
             term_templates: Vec::new(),
             document_counts: std::collections::BTreeMap::new(),
         };
@@ -639,6 +721,7 @@ impl YkDistApp {
         self.term_panel.distribution = Some(distribution_id);
         self.term_panel.rendered = None;
         self.term_panel.language_used = None;
+        self.term_panel.template_used = None;
         self.term_panel.error = None;
 
         let Some(record) = self
@@ -700,6 +783,10 @@ impl YkDistApp {
         if !template.language.eq_ignore_ascii_case(&language) {
             self.term_panel.language_used = Some(template.language.clone());
         }
+        self.term_panel.template_used = Some(format!(
+            "{}@{} ({})",
+            template.id, template.version, template.language
+        ));
 
         match render_term(template, &ctx) {
             Ok(text) => {
@@ -715,6 +802,170 @@ impl YkDistApp {
                 );
             }
             Err(e) => self.term_panel.error = Some(e.to_string()),
+        }
+    }
+
+    // ------------------------------------------------- editing a term template
+
+    /// Fill the editor buffers from the newest stored version of a language.
+    ///
+    /// Reads the cached templates, never the database, so it is safe to call from
+    /// a click. A language with nothing stored opens on the built-in wording when
+    /// the build ships one, and blank otherwise.
+    pub fn load_term_template(&mut self, language: &str) {
+        use crate::term::{TermTemplate, latest_in_language};
+
+        let id = self.term_editor.id.clone();
+        let stored = latest_in_language(&self.term_templates, &id, language).cloned();
+        let (template, loaded_version) = match stored {
+            Some(template) => {
+                let version = template.version.clone();
+                (template, Some(version))
+            }
+            None => (
+                TermTemplate::builtin_for(&id, language)
+                    .unwrap_or_else(|| TermTemplate::blank(&id, language)),
+                None,
+            ),
+        };
+
+        self.term_editor.language = template.language.clone();
+        self.term_editor.title = template.title;
+        self.term_editor.body = template.body;
+        self.term_editor.loaded_version = loaded_version;
+        self.term_editor.loaded = true;
+        self.term_editor.preview = None;
+        self.term_editor.error = None;
+        self.term_editor.notice = None;
+    }
+
+    /// Start a term in the language typed into the editor.
+    ///
+    /// Refuses a language that is already on record — that is an edit, and the
+    /// operator reaches it by selecting the language instead — and refuses to
+    /// discard an unsaved edit to the language currently open.
+    pub fn start_term_language(&mut self) {
+        let language = self.term_editor.new_language.trim().to_owned();
+        self.term_editor.error = None;
+        if language.is_empty() {
+            self.term_editor.error = Some("type a language tag, e.g. `es` or `fr-FR`".into());
+            return;
+        }
+        if language.chars().count() > crate::domain::MAX_TEXT {
+            self.term_editor.error = Some("that is not a language tag".into());
+            return;
+        }
+        if self.term_editor.is_dirty(&self.term_templates) {
+            self.term_editor.error = Some(format!(
+                "there are unsaved changes to `{}` — save them, or discard them with \
+                 “Reload stored version”, before starting `{language}`",
+                self.term_editor.language
+            ));
+            return;
+        }
+        let id = self.term_editor.id.clone();
+        if crate::term::latest_in_language(&self.term_templates, &id, &language).is_some() {
+            self.term_editor.error = Some(format!(
+                "`{language}` is already on record — select it to edit it"
+            ));
+            return;
+        }
+        self.term_editor.new_language.clear();
+        self.load_term_template(&language);
+        self.term_editor.notice = Some(format!(
+            "new language `{language}` — nothing is stored until you save"
+        ));
+    }
+
+    /// Replace the buffers with the wording this build ships for the language.
+    pub fn restore_builtin_term_template(&mut self) {
+        let id = self.term_editor.id.clone();
+        let language = self.term_editor.language.clone();
+        self.term_editor.error = None;
+        match crate::term::TermTemplate::builtin_for(&id, &language) {
+            Some(builtin) => {
+                self.term_editor.title = builtin.title;
+                self.term_editor.body = builtin.body;
+                self.term_editor.preview = None;
+                self.term_editor.notice = Some(
+                    "the built-in wording is in the editor — it is not stored until you save"
+                        .into(),
+                );
+            }
+            None => {
+                self.term_editor.error = Some(format!(
+                    "this build ships no `{id}` template in `{language}`"
+                ));
+            }
+        }
+    }
+
+    /// Render the draft against the sample context, so the wording can be read
+    /// as a document before it is stored.
+    pub fn preview_term_template(&mut self) {
+        use crate::term::{TermContext, render_term};
+
+        self.term_editor.error = None;
+        self.term_editor.notice = None;
+        let draft = self.term_editor.draft();
+        if let Err(e) = draft.check() {
+            self.term_editor.preview = None;
+            self.term_editor.error = Some(e.to_string());
+            return;
+        }
+        match render_term(&draft, &TermContext::sample()) {
+            Ok(text) => self.term_editor.preview = Some(text),
+            Err(e) => {
+                self.term_editor.preview = None;
+                self.term_editor.error = Some(e.to_string());
+            }
+        }
+    }
+
+    /// Store the draft as a **new version** of the term.
+    ///
+    /// The version already on record is left untouched, because it may be the one
+    /// a holder signed; the newly stored version is what the next generated term
+    /// uses (`term::choose_template` takes the newest).
+    pub fn save_term_template(&mut self) {
+        self.term_editor.error = None;
+        self.term_editor.notice = None;
+
+        let draft = self.term_editor.draft();
+        let previous = self.term_editor.loaded_version.clone();
+        let result = {
+            let Some(store) = &self.store else {
+                self.term_editor.error = Some("no database open".into());
+                return;
+            };
+            store.save_term_template_version(&draft)
+        };
+
+        match result {
+            Ok(stored) => {
+                let (event, target, details) =
+                    crate::term::edit_audit_entry(&stored, previous.as_deref());
+                self.record(event, &target, &details);
+                self.status = format!(
+                    "{} ({}) saved as version {}",
+                    stored.id, stored.language, stored.version
+                );
+                self.term_editor.notice = Some(match &previous {
+                    Some(previous) => format!(
+                        "saved as version {} — new terms use it, and version {previous} stays on \
+                         record for the terms already signed against it",
+                        stored.version
+                    ),
+                    None => format!("`{}` added as version {}", stored.language, stored.version),
+                });
+                self.term_editor.loaded_version = Some(stored.version);
+                self.term_editor.preview = None;
+                self.refresh();
+            }
+            Err(e) => {
+                tracing::warn!(event = "term.template.save.refused", reason = %e);
+                self.term_editor.error = Some(e.to_string());
+            }
         }
     }
 
@@ -1181,6 +1432,11 @@ fn source_str(source: SerialSource) -> &'static str {
 
 impl eframe::App for YkDistApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // The palette is the operator's, and installing it is idempotent — the
+        // theme is compared against the one in context memory and the style
+        // write is skipped when it has not changed.
+        crate::ui::install_theme(ui.ctx(), self.settings.theme());
+
         // Deferred work first: dialogs are modal, and camera frames must not be
         // fetched from inside a paint closure.
         self.handle_db_request();
@@ -1195,42 +1451,103 @@ impl eframe::App for YkDistApp {
             return;
         }
 
-        egui::Panel::top("tabs").show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.heading("YubiKey Distribution Manager");
-                ui.separator();
-                for tab in Tab::ALL {
-                    if ui.selectable_label(self.tab == tab, tab.label()).clicked() {
-                        self.tab = tab;
-                    }
-                }
-            });
-        });
-
-        egui::Panel::bottom("status").show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(format!("operator: {}", self.operator));
-                ui.separator();
-                if let Some(store) = &self.store {
-                    ui.label(match store.location() {
-                        Location::NetworkShare => "db: network share",
-                        Location::LocalDisk => "db: local",
-                    });
-                    ui.separator();
-                }
-                ui.label(&self.status);
-            });
-        });
+        self.top_bar(ui);
+        self.status_bar(ui);
 
         egui::CentralPanel::default().show(ui, |ui| {
-            egui::ScrollArea::both().show(ui, |ui| match self.tab {
-                Tab::Inventory => crate::ui::inventory::show(self, ui),
-                Tab::Holders => crate::ui::holders::show(self, ui),
-                Tab::Distribution => crate::ui::distribution::show(self, ui),
-                Tab::Bootstrap => crate::ui::bootstrap::show(self, ui),
-                Tab::Audit => crate::ui::audit::show(self, ui),
-                Tab::Settings => crate::ui::settings::show(self, ui),
+            egui::ScrollArea::both().show(ui, |ui| {
+                // Breathing room around the screen body; the panels above and
+                // below supply their own.
+                ui.add_space(14.0);
+                match self.tab {
+                    Tab::Inventory => crate::ui::inventory::show(self, ui),
+                    Tab::Holders => crate::ui::holders::show(self, ui),
+                    Tab::Distribution => crate::ui::distribution::show(self, ui),
+                    Tab::Bootstrap => crate::ui::bootstrap::show(self, ui),
+                    Tab::Terms => crate::ui::terms::show(self, ui),
+                    Tab::Audit => crate::ui::audit::show(self, ui),
+                    Tab::Settings => crate::ui::settings::show(self, ui),
+                }
+                ui.add_space(18.0);
             });
+        });
+    }
+}
+
+impl YkDistApp {
+    /// Product name, build version, and the tab bar.
+    fn top_bar(&mut self, ui: &mut egui::Ui) {
+        let theme = elegance::Theme::current(ui.ctx());
+
+        egui::Panel::top("tabs").show(ui, |ui| {
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.add(egui::Label::new(
+                    egui::RichText::new("YubiKey Distribution Manager")
+                        .size(theme.typography.heading + 2.0)
+                        .color(theme.palette.text)
+                        .strong(),
+                ));
+                ui.add_space(8.0);
+                ui.add(
+                    elegance::Badge::new(crate::VERSION, elegance::BadgeTone::Neutral)
+                        .preserve_case(),
+                );
+            });
+            ui.add_space(6.0);
+
+            let mut index = self.tab.index();
+            ui.add(elegance::TabBar::new(
+                &mut index,
+                Tab::ALL.map(|tab| tab.label()),
+            ));
+            self.tab = Tab::from_index(index);
+        });
+    }
+
+    /// Who is operating, where the database lives, and the last outcome.
+    fn status_bar(&mut self, ui: &mut egui::Ui) {
+        use crate::status::Severity;
+        use elegance::IndicatorState;
+
+        let theme = elegance::Theme::current(ui.ctx());
+        let severity = crate::status::classify(&self.status);
+
+        egui::Panel::bottom("status").show(ui, |ui| {
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                let mut pill = elegance::StatusPill::new()
+                    .item(format!("operator: {}", self.operator), IndicatorState::On);
+                if let Some(store) = &self.store {
+                    pill = pill.item(
+                        match store.location() {
+                            Location::NetworkShare => "db: network share",
+                            Location::LocalDisk => "db: local",
+                        },
+                        IndicatorState::On,
+                    );
+                }
+                ui.add(pill);
+
+                if !self.status.is_empty() {
+                    ui.add_space(10.0);
+                    // An audit failure is not allowed to look like an ordinary
+                    // outcome (AGENTS.md, "Audit coverage").
+                    let (colour, strong) = match severity {
+                        Severity::Alarm => (theme.palette.danger, true),
+                        Severity::Warning => (theme.palette.warning, false),
+                        Severity::Normal => (theme.palette.text_muted, false),
+                    };
+                    let mut text = egui::RichText::new(&self.status)
+                        .size(theme.typography.small)
+                        .color(colour);
+                    if strong {
+                        text = text.strong();
+                    }
+                    ui.add(egui::Label::new(text).selectable(true));
+                }
+            });
+            ui.add_space(6.0);
         });
     }
 }

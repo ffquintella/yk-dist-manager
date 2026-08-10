@@ -1,5 +1,7 @@
 //! Audit screen: the hash-chained trail, newest first, plus chain verification.
 
+use elegance::{Button, CalloutTone, Card};
+
 use crate::app::YkDistApp;
 
 pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
@@ -11,43 +13,43 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
     );
 
     ui.horizontal_wrapped(|ui| {
-        if ui.button("Verify chain").clicked() {
+        if ui.add(Button::new("Verify chain")).clicked() {
             app.verify_audit();
         }
-        ui.label(
-            egui::RichText::new(format!("{} entries shown", app.audit_view.len()))
-                .weak()
-                .small(),
-        );
+        ui.add_space(4.0);
+        super::faint(ui, &format!("{} entries shown", app.audit_view.len()));
     });
 
-    ui.add_space(10.0);
+    ui.add_space(16.0);
 
     if app.audit_view.is_empty() {
-        ui.label("No audit entries yet.");
+        super::notice(ui, CalloutTone::Neutral, "No audit entries yet.");
         return;
     }
 
-    egui::Grid::new("audit")
-        .striped(true)
-        .num_columns(6)
-        .spacing([14.0, 6.0])
-        .show(ui, |ui| {
-            for header in ["#", "When", "Actor", "Event", "Target", "Details"] {
-                ui.strong(header);
-            }
-            ui.end_row();
+    Card::new().show(ui, |ui| {
+        egui::Grid::new("audit")
+            .striped(true)
+            .num_columns(6)
+            .spacing([14.0, 7.0])
+            .show(ui, |ui| {
+                super::table_header(ui, &["#", "When", "Actor", "Event", "Target", "Details"]);
 
-            for entry in &app.audit_view {
-                ui.monospace(entry.seq.to_string());
-                ui.label(entry.at.format("%d/%m/%Y %H:%M:%S").to_string());
-                ui.label(&entry.actor);
-                ui.label(&entry.event);
-                ui.monospace(&entry.target);
-                ui.add(
-                    egui::Label::new(egui::RichText::new(&entry.details).small()).selectable(true),
-                );
-                ui.end_row();
-            }
-        });
+                for entry in &app.audit_view {
+                    super::mono(ui, &entry.seq.to_string());
+                    ui.label(entry.at.format("%d/%m/%Y %H:%M:%S").to_string());
+                    ui.label(&entry.actor);
+                    ui.label(&entry.event);
+                    super::mono(ui, &entry.target);
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&entry.details)
+                                .size(elegance::Theme::current(ui.ctx()).typography.small),
+                        )
+                        .selectable(true),
+                    );
+                    ui.end_row();
+                }
+            });
+    });
 }

@@ -61,6 +61,8 @@ pub enum StoreError {
     AlreadyExists(PathBuf),
     #[error("serialisation error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("the term template was refused: {0}")]
+    Term(#[from] crate::term::TermError),
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;
@@ -74,6 +76,35 @@ pub enum Location {
     NetworkShare,
 }
 
+/// Path fragments that mean a cloud-sync folder.
+///
+/// A synchronising folder is the **worst** place for a SQLite database: the sync
+/// client copies the file underneath the writer, and a conflict produces a second
+/// file rather than a merge — so the resolution of a clash is "two divergent
+/// registers of who holds which security token". WAL makes it worse again, because
+/// the `-wal` and `-shm` sidecars are synchronised independently of the database.
+const CLOUD_SYNC_MARKERS: [&str; 8] = [
+    "/CloudStorage/", // macOS File Provider: OneDrive, Google Drive, Box, Dropbox
+    "OneDrive",
+    "Dropbox",
+    "Google Drive",
+    "GoogleDrive",
+    "iCloud Drive",
+    "Mobile Documents", // iCloud's on-disk name
+    "pCloud",
+];
+
+/// Does this path look like it is inside a cloud-sync folder?
+///
+/// Case-insensitive and deliberately eager: a false positive costs a slower journal
+/// mode and a warning, while a false negative risks the dataset.
+pub fn looks_like_cloud_sync(path: &Path) -> bool {
+    let raw = path.to_string_lossy().to_ascii_lowercase();
+    CLOUD_SYNC_MARKERS
+        .iter()
+        .any(|marker| raw.contains(&marker.to_ascii_lowercase()))
+}
+
 impl Location {
     /// Heuristic guess from the path. Always overridable in Settings, because
     /// no heuristic can be right everywhere.
@@ -85,7 +116,12 @@ impl Location {
             || raw.starts_with("/mnt/")
             || raw.starts_with("/net/")
             || raw.starts_with("/media/");
-        if looks_remote {
+
+        // A cloud-sync folder is classified with the shares, not with local disk:
+        // WAL's shared-memory sidecars cannot survive a sync client, so at minimum
+        // the file must run in rollback-journal mode. The operator is warned
+        // separately — safer pragmas reduce the risk but do not remove it.
+        if looks_remote || looks_like_cloud_sync(path) {
             Location::NetworkShare
         } else {
             Location::LocalDisk
@@ -216,6 +252,17 @@ impl Store {
         };
         store.apply_pragmas()?;
         store.migrate()?;
+
+        if store.on_cloud_sync() {
+            tracing::warn!(
+                event = "db.cloud_sync.detected",
+                path = %store.path.display(),
+                detail = "a sync client can copy the file mid-write and resolves a clash by \
+                          keeping both copies; use a network share or a local file with a \
+                          scheduled backup"
+            );
+        }
+
         Ok(store)
     }
 
@@ -269,15 +316,30 @@ impl Store {
     /// One line for the GUI status bar.
     pub fn describe(&self) -> String {
         format!(
-            "{} — {}{}",
+            "{} — {}{}{}",
             self.path.display(),
             self.location.label(),
             if self.encrypted {
                 ", password-protected"
             } else {
                 ", no password"
+            },
+            if self.on_cloud_sync() {
+                " — WARNING: cloud-sync folder"
+            } else {
+                ""
             }
         )
+    }
+
+    /// True when the database file sits in a synchronising folder.
+    ///
+    /// Surfaced rather than silently tolerated: a sync client resolves a clash by
+    /// keeping both files, so two operators can end up with divergent registers and
+    /// no merge. The recommendation is a real network share, or a local file with a
+    /// scheduled copy.
+    pub fn on_cloud_sync(&self) -> bool {
+        looks_like_cloud_sync(&self.path)
     }
 
     // ---------------------------------------------------------------- schema
@@ -654,6 +716,36 @@ impl Store {
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Versions on record for one term in one language, oldest first as stored.
+    pub fn term_template_versions(&self, id: &str, language: &str) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT version FROM term_templates WHERE id = ?1 AND language = ?2
+             ORDER BY version",
+        )?;
+        let rows = stmt.query_map(params![id, language], |row| row.get::<_, String>(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Store an edited term **as a new version**, and return what was stored.
+    ///
+    /// This is the only write the editor performs, and it never overwrites: the
+    /// version somebody already signed stays in the database, readable forever,
+    /// while [`crate::term::choose_template`] hands the newest version to the next
+    /// term generated. The draft's own `version` field is ignored — the number
+    /// comes from what the database already holds, so two operators editing the
+    /// same term cannot both produce "version 2".
+    ///
+    /// The template is checked first ([`TermTemplate::check`]), so an unknown
+    /// variable is refused here rather than surfacing at the counter.
+    pub fn save_term_template_version(&self, draft: &TermTemplate) -> Result<TermTemplate> {
+        draft.check()?;
+        let trimmed = draft.as_version(&draft.version);
+        let existing = self.term_template_versions(&trimmed.id, &trimmed.language)?;
+        let stored = trimmed.as_version(&crate::term::next_version(&existing));
+        self.upsert_term_template(&stored)?;
+        Ok(stored)
     }
 
     /// Insert the built-in terms, leaving an edited template of the same id,

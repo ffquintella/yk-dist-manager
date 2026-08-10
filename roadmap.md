@@ -34,13 +34,14 @@ deployment.
 | Todo | 20 |
 | **Total tracked items** | **38** (across 35 specs — two items share a spec) |
 
-Released: **v0.2.2**. Current wave: **Wave 1 — native execution.**
+Released: **v0.3.0**. Current wave: **Wave 1 — native execution.**
 
 Wave 0 (foundation) is in place, and v0.2.1–v0.2.2 add the paperwork and intake half
 of the job: choosing or creating the database file, recording serials from a barcode,
 generating the consignment term in the holder's language, and filing the signed copy
-against the hand-over. 206 tests pass (plus 2 read-only hardware tests), with 86.83%
-line coverage of the headless core.
+against the hand-over — and, from the Terms screen, editing that term's wording per
+language. 246 tests pass (plus 2 read-only hardware tests), with 86.86% line coverage of
+the headless core.
 
 Camera scanning is a default feature, and on macOS it needs the bundled application:
 an unbundled build refuses with an explanation rather than aborting (v0.2.2). Two
@@ -79,15 +80,15 @@ Everything needed before a single byte is written to a key.
 | `[x]` | Distribution records | [spec](features/distribution-records.md) — hand-over, operator, delivery method, receipt reference, linked bootstrap run, return without rewriting history. |
 | `[/]` | Bootstrap templates | [spec](features/bootstrap-templates.md) — versioned templates, `{{variable}}` rendering, two built-ins, validation. A GUI editor and template signing are pending. |
 | `[/]` | Bootstrap planner | [spec](features/bootstrap-engine.md) — plan with per-step transport (native / ykman / manual) and secret placeholders; dry runs recorded. **The executor is Wave 1.** |
-| `[/]` | GUI shell | [spec](features/gui-shell.md) — six screens, unlock screen, status bar, egui 0.36 `App::ui`. |
+| `[/]` | GUI shell | [spec](features/gui-shell.md) — seven screens, unlock screen, status bar, egui 0.36 `App::ui`, themed with `egui-elegance` (four palettes, the choice persisted). Search, keyboard flow and window-state persistence still open. |
 | `[/]` | Bootstrap wizard | [spec](features/gui-bootstrap-wizard.md) — selection, per-step opt-out, plan review, dry run. Execution progress view pending. |
-| `[/]` | Testing strategy | [spec](features/testing-strategy.md) — 129 tests across unit + behaviour suites, mock backend, recorded fixtures, ignored hardware tests; 90.26% core line coverage. The gate is not yet enforced in CI. |
+| `[/]` | Testing strategy | [spec](features/testing-strategy.md) — 246 tests across unit + behaviour suites, mock backend, recorded fixtures, ignored hardware tests; 86.86% core line coverage. The gate is not yet enforced in CI. |
 
 ### Paperwork
 
 | Status | Feature | Notes |
 |---|---|---|
-| `[x]` | Consignment terms | [spec](features/consignment-terms.md) — multilingual templates keyed `(id, language, version)`, pt-BR + en built in, optional fields that omit their own line, generated from the record. The **wording needs its owner's review**. |
+| `[x]` | Consignment terms | [spec](features/consignment-terms.md) — multilingual templates keyed `(id, language, version)`, pt-BR + en built in, optional fields that omit their own line, generated from the record. A **Terms screen** edits the wording and adds languages: saving stores a new version, and terms are generated from the newest. The **wording needs its owner's review**, which the editor is what makes possible. |
 | `[x]` | Signed-term upload | [spec](features/signed-term-documents.md) — the scan is filed in the database with a SHA-256, verified on export, with a per-hand-over "none filed" badge. |
 | `[ ]` | Receipts & terms (PDF, signature tracking) | [spec](features/receipts-and-terms.md) — the broader spec: PDF output, a signature state machine, return receipts, batch generation. |
 
@@ -122,7 +123,7 @@ The point of the tool: apply the template to a key, safely, with evidence.
 |---|---|---|
 | `[ ]` | OpenPGP signing subkey | [spec](features/step-openpgp-signing-subkey.md) — **not the chosen mechanism** (PIV 9c is, decided 2026-08-10). Kept specified for a unit that signs Git commits or `gpg` mail; unscheduled. |
 | `[ ]` | SSH authentication via PIV | [spec](features/ssh-authentication.md) — slot 9a plus PKCS#11 for SSH, for units that want it. |
-| `[ ]` | Packaging & release | [spec](features/packaging-and-release.md) — macOS / Windows / Linux builds, signing and notarisation, tagged releases, semver. |
+| `[/]` | Packaging & release | [spec](features/packaging-and-release.md) — the **macOS bundle is done** (`make bundle` / `verify-bundle` / `dmg`), which is what makes camera scanning work there. Developer ID signing + notarisation, Windows, Linux and CI remain, as does the `block` 0.1.6 resolution. |
 | `[ ]` | FGV compliance artefacts | [spec](features/fgv-compliance.md) — classification proposal, system registration, data documentation, change/homologation records. |
 | `[ ]` | CI & coverage gate | [spec](features/testing-strategy.md) — fmt + clippy + tests + `cargo llvm-cov` with an 80% floor, enforced on every push. |
 
@@ -201,7 +202,11 @@ Decisions that change what gets built, and are not the implementer's to make.
 | 2026-08-10 | `open` and `create` are separate operations, and neither guesses | `Store::open` created a missing file, so a typo'd share path produced an empty database that looked like total data loss |
 | 2026-08-10 | A serial's **provenance** is recorded, and only ever improves | A serial from a box label is a claim about a key nobody has touched; treating it as equal to a device read would let a mis-scan bind a certificate to the wrong key |
 | 2026-08-10 | The USB barcode wedge is the recommended intake path, with the camera as the alternative | A wedge needs no camera, no permission and no decoding; a laptop camera is fixed-focus and awkward at label distance |
+| 2026-08-10 | The macOS bundle is assembled by a reviewable script, not a bundling crate | The layout is a few directories and one plist; a script works in CI, is auditable, and cannot go unmaintained. It is *verified* by asking the bundled binary about itself (`--diagnose`) rather than by assuming |
+| 2026-08-10 | A cloud-sync folder is treated as a hostile location for the database | A sync client copies the file mid-write and resolves a clash by keeping both copies, so the failure mode is two divergent registers. Detected, given the conservative journal mode, and warned about in three places |
 | 2026-08-10 | `camera` is a **default** feature | An operator should not need a special build to point a webcam at a label. The cost is that two problems now gate every artefact rather than an opt-in one: the macOS camera-usage declaration, and the future-incompatible `block` 0.1.6 in `nokhwa`'s macOS bindings. Both are logged as release blockers in `features/serial-scanning.md` |
 | 2026-08-10 | Term templates are data, keyed `(id, language, version)`, with **line omission** instead of a conditional syntax | The wording is institutional text somebody else owns, and one documented rule ("a line whose variable is empty disappears") is far harder to get wrong in a legal document than `{{#if}}` |
 | 2026-08-10 | The signed term is stored **in** the database, not as a path | The database is the unit of deployment: a path reference breaks the moment the file moves to a share, which is exactly when the evidence is needed. The cost — personal data in the file — is an argument for the password, and is documented as such |
 | 2026-08-10 | The identification field is called an **identification number**, not CPF | It holds a CPF in Brazil and the local equivalent elsewhere; naming it `cpf` would have made the first non-Brazilian holder a migration |
+| 2026-08-10 | The GUI is themed with `egui-elegance`, and the theme is the operator's choice | The screens looked like unstyled egui, which is a poor advertisement for a tool people are asked to trust with a key register. The crate targets exactly the egui 0.36 already in use, is one dependency with no build-script or system-library cost, and restyles the stock widgets on install rather than requiring every call site to change. Two of its defaults are deliberately not used: refusals stay selectable (a `Callout` cannot be copied) and inputs are capped by hand (`TextInput` has no `char_limit`) |
+| 2026-08-10 | An edited term is stored as a **new version numbered by the database**, and generation takes the newest | The editor cannot be allowed to overwrite wording a holder has signed, and the version on the operator's screen must not decide what is written — two workstations editing the same term would otherwise both produce "version 2". The store reads what is on record and adds one |

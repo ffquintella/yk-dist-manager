@@ -16,7 +16,7 @@
                             │       │       │
               ┌─────────────▼─┐ ┌───▼────┐ ┌▼──────────────┐
               │ ui/*.rs       │ │ device │ │ template      │
-              │ six screens   │ │ trait  │ │ render + plan │
+              │ seven screens │ │ trait  │ │ render + plan │
               │ + unlock      │ │        │ │               │
               └───────────────┘ └───┬────┘ └───────┬───────┘
                                     │              │

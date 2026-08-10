@@ -77,6 +77,8 @@ Minimum set, kept in sync with the feature files:
 | `bootstrap.dry_run` | wizard |
 | `bootstrap.started`, `bootstrap.step.done`, `bootstrap.step.failed`, `bootstrap.finished` | executor (Wave 1) |
 | `template.created`, `template.changed`, `template.seeded` | templates |
+| `term.generated`, `term.saved`, `term.signed_uploaded` | consignment terms |
+| `term.template_edited`, `term.template_added` | Terms screen — a new version of the wording |
 | `db.backup`, `db.migrated`, `db.unlocked`, `db.unlock.failed` | storage |
 | `export.taken` | reports |
 | `operator.login`, `operator.login.failed`, `operator.role.changed` | Wave 2 auth |

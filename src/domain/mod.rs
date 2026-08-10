@@ -111,6 +111,21 @@ pub fn validate_email(value: &str) -> Result<String, ValidationError> {
     }
 }
 
+/// Cut a live text field down to `max` characters, in place.
+///
+/// NRM §5.3.5 wants the bound applied at the input, not only at validation.
+/// egui's own `TextEdit::char_limit` did that for the stock widget; the
+/// elegance inputs have no equivalent, so the GUI applies the cap here right
+/// after the field is painted. Counting is by `char`, not by byte, so a name
+/// in Cyrillic is bounded the same way a name in ASCII is.
+pub fn clamp_text(value: &mut String, max: usize) {
+    // `char_indices().nth(max)` is `None` exactly when the string is already
+    // short enough, which makes the common case a single pass and no write.
+    if let Some((cut, _)) = value.char_indices().nth(max) {
+        value.truncate(cut);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,6 +142,27 @@ mod tests {
             require_text("name", &long).unwrap_err(),
             ValidationError::TooLong { .. }
         ));
+    }
+
+    #[test]
+    fn clamping_cuts_at_a_character_boundary_not_a_byte_one() {
+        // Five characters, ten bytes: a byte-wise truncation to 3 would split
+        // the third character and panic.
+        let mut value = "áéíóú".to_owned();
+        clamp_text(&mut value, 3);
+        assert_eq!(value, "áéí");
+    }
+
+    #[test]
+    fn clamping_leaves_a_short_enough_field_alone() {
+        let mut value = "Ana".to_owned();
+        clamp_text(&mut value, MAX_TEXT);
+        assert_eq!(value, "Ana");
+
+        // Exactly at the limit is within it.
+        let mut exact = "abc".to_owned();
+        clamp_text(&mut exact, 3);
+        assert_eq!(exact, "abc");
     }
 
     #[test]

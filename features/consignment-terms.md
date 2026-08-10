@@ -45,7 +45,16 @@ control. See `features/secrets-custody.md`.
   clears.
 - Distribution screen: pick a language, generate, review the rendered term, save it
   as text, and upload the signed copy
-  (`features/signed-term-documents.md`).
+  (`features/signed-term-documents.md`). The panel names the template version that
+  produced the text, and offers *Edit wording…*.
+- **Terms screen**: edit the title and body of a term per language, with a live
+  verdict on the draft, a preview against sample values, *restore the built-in
+  wording*, *reload the stored version*, and a list of the versions on record.
+  Saving stores a **new version** — `Store::save_term_template_version` numbers it
+  one past the highest on record and never updates a row — and
+  `term::choose_template` hands out the newest version of a language, so the next
+  term generated uses the edit while a signed version stays exactly as it was.
+  Adding a language is the same operation with nothing on record yet.
 
 ## Design
 
@@ -75,6 +84,29 @@ means those lines disappear rather than printing empty labels.
 `check_required` refuses to render without the holder's name and the key serial.
 Everything else can legitimately be absent.
 
+### The version number belongs to the database, not to the editor
+
+`save_term_template_version` ignores the version on the draft it is handed: it reads
+the versions already on record for that `(id, language)` and inserts one past the
+highest (`term::next_version`, numeric so `10` follows `9`). Two consequences, both
+wanted:
+
+- An edit **adds**; nothing is ever updated in place. The wording somebody signed is
+  still byte-for-byte in the database, which is the whole reason the version is part of
+  the key.
+- Two operators editing the same term from different workstations cannot both write
+  "version 2" — the second one to save gets 3, and neither loses their text.
+
+Storing goes through `TermTemplate::check`: an id, a language, a title, a body, the
+length bounds, and every `{{variable}}` known to `TermContext`. A term that could not
+render is refused at the editor rather than at the counter with the holder waiting.
+
+### The preview fills every variable
+
+The editor previews against `TermContext::sample()`, whose values are all filled and
+obviously fictitious. Filled on purpose: line omission means a blank value *removes* a
+line, so a sample with gaps in it would hide lines the real document will print.
+
 ### Output format
 
 Plain text today, which is honest about what it is: reviewable on screen, saveable,
@@ -93,7 +125,7 @@ beats a beautifully typeset one that does not.
 | 5 | Language selection with documented fallback | Done | the GUI reports a fallback |
 | 6 | Generate, review and save from the distribution screen | Done | plain text |
 | 7 | PDF output | Todo | pure-Rust writer; no TeX dependency on a workstation |
-| 8 | Template editor in the GUI, with a version bump on edit | Todo | as for bootstrap templates |
+| 8 | Template editor in the GUI, with a version bump on edit | Done | Terms screen; the store assigns the version, `choose_template` takes the newest |
 | 9 | Return receipt as a second template id | Todo | closes the custody loop |
 | 10 | Print directly | Todo | platform print dialog |
 
@@ -104,10 +136,12 @@ beats a beautifully typeset one that does not.
 | `term.generated` | `holder=… language=… template=consignment@1` |
 | `term.saved` | Path written |
 | `term.signed_uploaded` | See `features/signed-term-documents.md` |
+| `term.template_edited` | `id=… language=… version=2 previous=1`, target `term:consignment@pt-BR` |
+| `term.template_added` | Same shape with `previous=none`, for a language that had nothing on record |
 
 ## Tests
 
-`tests/unit_term.rs` (18 tests), notably:
+`tests/unit_term.rs` (30 tests), notably:
 
 - `optional_fields_that_are_empty_take_their_whole_line_with_them` — no stray
   `Telefone:` for a holder without one.
@@ -120,12 +154,35 @@ beats a beautifully typeset one that does not.
 - `every_documented_variable_resolves`.
 - `a_key_known_only_by_serial_still_produces_a_term`.
 
+Editing (phase 8):
+
+- `the_next_version_is_one_past_the_highest_number_on_record` and
+  `version_ten_wins_over_version_nine` — text ordering would put `10` before `9`; the
+  numbering must not.
+- `a_hand_named_version_does_not_block_the_numbering`.
+- `generating_a_term_takes_the_newest_version_of_the_language`, and
+  `the_base_language_fallback_also_takes_the_newest_version`.
+- `each_language_is_listed_once_at_its_newest_version`.
+- `a_template_with_an_unknown_variable_is_refused_before_it_is_stored`,
+  `a_term_template_needs_a_title_and_a_body`,
+  `a_term_body_is_length_bound_like_every_other_input`.
+- `the_builtin_wording_passes_the_editor_check` — the shipped text is storable text.
+- `an_unsaved_edit_is_recognised_as_one`.
+- `the_sample_context_fills_every_variable_so_no_preview_line_is_hidden`.
+
 `tests/behaviour_terms_and_documents.rs`:
 
 - `scenario_generate_the_term_for_a_hand_over_in_portuguese` / `..._in_english`.
 - `scenario_term_templates_are_seeded_once_and_survive_an_edit`.
 - `scenario_a_unit_adds_its_own_language`.
 - `scenario_optional_holder_fields_are_filled_in_not_blanked_by_a_later_edit`.
+- `scenario_the_operator_edits_the_wording_and_the_next_term_uses_it` — version 2 is
+  generated from, version 1 is still readable.
+- `scenario_the_editor_refuses_wording_that_could_not_render` — nothing is stored.
+- `scenario_a_unit_adds_a_language_through_the_editor`.
+- `scenario_editing_the_wording_is_audited` — event, target and detail, with the
+  chain still verifying.
+- `scenario_two_edits_in_a_row_number_themselves`.
 
 ## Open questions and gates
 

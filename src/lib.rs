@@ -15,7 +15,9 @@
 //! | [`settings`] | Which database to open, and the recent ones |
 //! | [`scan`] | Reading a serial from a barcode (label or camera) |
 //! | [`term`] | Consignment terms: multilingual templates and rendering |
+//! | [`diagnostics`] | `--diagnose`: what this build is and what it can reach |
 //! | [`audit`] | Append-only, hash-chained audit trail |
+//! | [`status`] | How loudly the status bar reports the last outcome |
 //! | [`logging`] | The single logging entry point for the whole app |
 //! | [`app`] / [`ui`] | egui shell and screens |
 //!
@@ -25,11 +27,13 @@
 pub mod app;
 pub mod audit;
 pub mod device;
+pub mod diagnostics;
 pub mod domain;
 pub mod logging;
 pub mod paths;
 pub mod scan;
 pub mod settings;
+pub mod status;
 pub mod store;
 pub mod template;
 pub mod term;

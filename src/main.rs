@@ -6,9 +6,35 @@
 
 use std::path::PathBuf;
 
+use yk_dist_manager::diagnostics::{self, Invocation};
 use yk_dist_manager::{YkDistApp, logging};
 
 fn main() -> eframe::Result {
+    // Answer the informational switches before doing anything else: `--diagnose` in
+    // particular must not need a database, a key or a window. It is also how
+    // `make verify-bundle` interrogates the packaged application.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match diagnostics::parse_args(args.iter().map(String::as_str)) {
+        Invocation::Gui => {}
+        Invocation::Version => {
+            println!("yk-dist-manager {}", yk_dist_manager::VERSION);
+            return Ok(());
+        }
+        Invocation::Help => {
+            print!("{}", diagnostics::USAGE);
+            return Ok(());
+        }
+        Invocation::Diagnose => {
+            print!("{}", diagnostics::Report::gather().render());
+            return Ok(());
+        }
+        Invocation::Unknown(arg) => {
+            eprintln!("yk-dist-manager: unrecognised option `{arg}`");
+            eprint!("{}", diagnostics::USAGE);
+            std::process::exit(2);
+        }
+    }
+
     logging::init();
 
     // macOS requires this before *anything* touches AVFoundation, and it has to

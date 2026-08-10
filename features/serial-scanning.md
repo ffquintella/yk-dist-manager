@@ -107,9 +107,21 @@ forward — including that a USB barcode reader needs no camera at all.
 access another way; it is documented as "may abort", because that is the truth.
 
 Consequence worth stating plainly: **camera scanning does not work under
-`cargo run` on macOS.** It needs the bundled application
-(`features/packaging-and-release.md` Phase 3). The typed/wedge path works in every
-build, which is one more reason it is the recommended one.
+`cargo run` on macOS.** It needs the bundled application — which now exists:
+
+```bash
+make bundle && make verify-bundle && make run-bundled
+```
+
+`verify-bundle` confirms the fix by asking the bundled binary itself: the camera verdict
+moves from *"not running from an .app bundle"* to *"not yet authorised"*, which the
+permission prompt resolves. The typed/wedge path still works in every build, which is one
+more reason it is the recommended one.
+
+One wrinkle to know about: macOS remembers the camera grant against the **code
+signature**, so an ad-hoc signed bundle re-prompts after every rebuild. A stable
+Developer ID identity is therefore a requirement for the camera feature, not only for
+distribution (`features/packaging-and-release.md` Phase 3b).
 
 ### Other camera realities
 
@@ -134,7 +146,7 @@ unusable.
 | 8 | Batch scanning: keep the camera open and queue serials | Todo | with `features/bulk-enrollment.md` |
 | 9 | "Unverified keys" report | Todo | scanned records never followed by a device read |
 | 10 | Resolve the `block` 0.1.6 chain (patch, upstream fix, or a native AVFoundation path) | **Todo — release blocker** | now applies to the default build |
-| 11 | `NSCameraUsageDescription` in the macOS bundle | **Todo — release blocker** | `features/packaging-and-release.md` |
+| 11 | `NSCameraUsageDescription` in the macOS bundle | **Done** | `packaging/macos/`; verified by `make verify-bundle` |
 
 ## Audit events
 
