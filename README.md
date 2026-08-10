@@ -115,19 +115,32 @@ make run          # or: cargo run
 make              # list every task
 ```
 
-With everything on — native hardware access, an encrypted database, and camera scanning:
+The default build includes the file dialogs and camera scanning. With native hardware
+access and an encrypted database as well:
 
 ```bash
-cargo run --features native-device,encrypted-db,camera
+cargo run --features native-device,encrypted-db
 ```
 
 | Feature | Default | Gives |
 |---|---|---|
 | `file-dialog` | **on** | Native open/save dialogs (`rfd`) |
+| `camera` | **on** | Live camera capture (`nokhwa`), implies `barcode` |
+| `barcode` | on (via `camera`) | Decoding a barcode from an image (`rxing`) |
 | `native-piv` / `native-fido` / `native-otp` / `native-device` | off | Talking to the key from Rust |
 | `encrypted-db` | off | SQLCipher password on the database (vendors OpenSSL) |
-| `barcode` | off | Decoding a barcode from an image (`rxing`) |
-| `camera` | off | Live camera capture (`nokhwa`), implies `barcode` |
+
+Camera scanning is on by default, which carries two obligations before a build is
+*distributed*: a macOS bundle must declare `NSCameraUsageDescription`, and
+`nokhwa`'s macOS bindings currently pull `block` 0.1.6, which cargo reports as
+future-incompatible. Both are tracked in
+[`features/serial-scanning.md`](features/serial-scanning.md) and
+[`features/packaging-and-release.md`](features/packaging-and-release.md). For a build
+without any camera code:
+
+```bash
+cargo build --no-default-features --features file-dialog
+```
 
 Pick the database file with `YKDM_DB`; otherwise the per-user data directory is
 used:
@@ -139,7 +152,7 @@ YKDM_DB=/Volumes/ti-share/yubikeys/yk-dist-manager.sqlite3 cargo run
 ## Tests
 
 ```bash
-cargo test                                   # 129 unit + behaviour tests
+cargo test                                   # 194 unit + behaviour tests
 cargo clippy --all-targets --all-features    # warning-free
 make coverage-core                           # 90.26% — floor is 80%
 ```

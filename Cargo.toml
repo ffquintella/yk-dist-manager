@@ -54,13 +54,19 @@ image = { version = "0.25", optional = true, default-features = false, features 
 nokhwa = { version = "0.10", optional = true, features = ["input-native"] }
 
 [features]
-default = ["file-dialog"]
+default = ["file-dialog", "camera"]
 # Choose or create the database file through a native dialog. Without it the
 # path is still typeable, so the feature is convenience, not capability.
 file-dialog = ["dep:rfd"]
 # Decode a serial from a barcode in an image (a photo of the box label).
 barcode = ["dep:rxing", "dep:image"]
-# Live camera capture feeding the decoder.
+# Live camera capture feeding the decoder. On by default, which brings two
+# obligations with it (see features/serial-scanning.md):
+#   * a macOS bundle MUST carry NSCameraUsageDescription, or the app is killed
+#     the first time it opens the camera;
+#   * `nokhwa`'s macOS bindings pull `block` 0.1.6, which cargo reports as
+#     future-incompatible — that now blocks a *released* build, not an opt-in one.
+# `--no-default-features --features file-dialog` gives the previous build.
 camera = ["barcode", "dep:nokhwa"]
 # Optional password protection of the database file, via SQLCipher
 # (`PRAGMA key`). Off by default because it vendors and builds OpenSSL.

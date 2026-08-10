@@ -8,9 +8,15 @@ Requirements per platform (the native transports link against system libraries):
 
 | Platform | Needs |
 |---|---|
-| macOS | Nothing extra — PC/SC is a system framework |
+| macOS | Nothing extra for smartcards — PC/SC is a system framework. Camera scanning needs camera permission; a bundled app must declare `NSCameraUsageDescription` |
 | Windows | The **Smart Card** service running |
-| Linux | `pcscd` running, `libpcsclite`, and a udev rule granting your user access to the YubiKey HID device |
+| Linux | `pcscd` running, `libpcsclite`, a udev rule granting your user access to the YubiKey HID device, and — for camera scanning — read access to the V4L2 device (usually the `video` group) |
+
+Camera scanning is compiled in by default. For a build with no camera code at all:
+
+```bash
+cargo build --no-default-features --features file-dialog
+```
 
 For the `ykman` fallback, `ykman` 5.x must be on `PATH`
 (`brew install ykman`, or your distribution's package).

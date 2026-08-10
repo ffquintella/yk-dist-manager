@@ -17,6 +17,25 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+### Changed
+
+- **Camera scanning (`camera`) is now a default feature**, so a stock
+  `cargo build` includes barcode decoding and live capture. `barcode` comes with
+  it. A build without any camera code is
+  `--no-default-features --features file-dialog`.
+
+  Two obligations move from "opt-in" to "every build" as a result, and neither is
+  resolved yet:
+
+  1. A macOS bundle **must** carry `NSCameraUsageDescription` in its `Info.plist`,
+     or the operating system terminates the app the first time it opens the camera.
+  2. `nokhwa`'s macOS bindings pull **`block` 0.1.6**, which cargo reports as
+     future-incompatible (`static of uninhabited type`; it will be a hard error in a
+     later rustc). NRM §5.4.3 forbids shipping components without maintainer
+     support, so this is now a **release blocker** rather than a note on an optional
+     path — see `features/serial-scanning.md` and
+     `features/packaging-and-release.md`.
+
 ## [0.2.1] - 2026-08-10
 
 ### Added

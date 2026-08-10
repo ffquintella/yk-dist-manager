@@ -36,11 +36,27 @@ per platform.
 
 ### Feature flags in a release build
 
-Release builds enable `native-device`. `encrypted-db` is the interesting decision: it
-vendors and builds OpenSSL, so either every release carries it (simpler support, longer
-builds) or there are two artefacts (confusing). **Recommendation: one artefact with
-`native-device,encrypted-db`**, because an operator cannot rebuild to get password
-support, and telling them "you have the wrong build" is worse than a slower CI.
+Defaults today are `file-dialog` and `camera`; release builds add `native-device`.
+`encrypted-db` is the interesting decision: it vendors and builds OpenSSL, so either
+every release carries it (simpler support, longer builds) or there are two artefacts
+(confusing). **Recommendation: one artefact with `native-device,encrypted-db`**,
+because an operator cannot rebuild to get password support, and telling them "you have
+the wrong build" is worse than a slower CI.
+
+**Two blockers come from `camera` being a default feature** (see
+`features/serial-scanning.md`):
+
+1. **macOS `Info.plist` must declare `NSCameraUsageDescription`.** Without it the OS
+   terminates the app the first time it opens the camera — a crash, not a refusal.
+   Add it to the bundle template in Phase 3, and smoke-test the camera on a signed,
+   notarised build rather than only under `cargo run`.
+2. **`block` 0.1.6 is future-incompatible.** Resolving it (upstream fix, a
+   `[patch.crates-io]` pin, a native AVFoundation path, or reverting `camera` to
+   opt-in) is a prerequisite for a distributed build under NRM §5.4.3.
+
+Linux adds a third: the V4L2 capture path needs a camera device the user can read
+(`video` group or a udev rule), which belongs in the install documentation next to the
+`pcscd` requirement.
 
 ### Versioning
 
@@ -67,7 +83,8 @@ identifies the exact build.
 
 | # | Phase | State | Notes |
 |---|---|---|---|
-| 1 | CI build matrix (macOS / Windows / Linux) with `native-device` | Todo | proves the transports compile everywhere |
+| 0 | Clear the two `camera` release blockers | **Todo — gates every artefact** | `NSCameraUsageDescription`; the `block` 0.1.6 chain |
+| 1 | CI build matrix (macOS / Windows / Linux) with `native-device` | Todo | proves the transports compile everywhere; the default build now needs a V4L2-capable Linux image |
 | 2 | Version + commit hash embedded and shown in Settings | Todo | `VERSION` exists; add the hash |
 | 3 | macOS `.app` + `.dmg`, Developer ID signing, notarisation | Todo | Gatekeeper blocks otherwise |
 | 4 | Windows MSI + Authenticode | Todo | SmartScreen otherwise |

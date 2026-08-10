@@ -18,8 +18,12 @@ whole even though every part passes.
 
 **Suites in place; CI and the coverage gate are not.**
 
-- **193 tests** pass (`cargo test --all-features`; 189 without), plus 2 hardware
-  tests ignored by default.
+- **194 tests** pass on the default features (`cargo test`); 193 with
+  `--all-features`, the difference being one test that only exists when
+  `encrypted-db` is *off*. Plus 2 hardware tests, ignored by default.
+- `cargo check --no-default-features` is part of the pre-commit sweep, because the
+  no-camera build is a supported configuration
+  (`make check-all`).
 - Core line coverage **86.92%** (region 83.75%), above the 80% floor.
 - Unit suites: `unit_domain.rs`, `unit_template.rs`, `unit_audit.rs`,
   `unit_ykman_parse.rs`, `unit_store.rs` (21), `unit_device_backends.rs`,

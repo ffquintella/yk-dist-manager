@@ -19,7 +19,14 @@ the two apart, so nothing downstream treats a scanned serial as a confirmed key.
 
 ## Current state
 
-**Shipped, with the camera behind a feature flag.**
+**Shipped; the camera is on by default.**
+
+> **`camera` is a default feature.** That was a deliberate choice — an operator
+> should not need a special build to point a webcam at a box label. It moves two
+> problems onto every build, and neither is solved: the macOS camera-usage
+> declaration, and the future-incompatible `block` 0.1.6 in `nokhwa`'s macOS
+> bindings. Both are release blockers now; see *Open questions and gates*.
+> `--no-default-features --features file-dialog` builds without any camera code.
 
 - `SerialSource` (`Device` / `ScannedLabel` / `ManualEntry`) on every inventory
   record, stored in `keys.serial_source` (schema v2). Provenance only ever improves:
@@ -89,6 +96,8 @@ group or a udev rule.
 | 7 | Camera selection when several are attached | Todo | `available_cameras()` exists |
 | 8 | Batch scanning: keep the camera open and queue serials | Todo | with `features/bulk-enrollment.md` |
 | 9 | "Unverified keys" report | Todo | scanned records never followed by a device read |
+| 10 | Resolve the `block` 0.1.6 chain (patch, upstream fix, or a native AVFoundation path) | **Todo — release blocker** | now applies to the default build |
+| 11 | `NSCameraUsageDescription` in the macOS bundle | **Todo — release blocker** | `features/packaging-and-release.md` |
 
 ## Audit events
 
@@ -119,12 +128,25 @@ group or a udev rule.
   on the camera path; the wedge and typed paths are unaffected.
 - macOS packaging must add the camera usage description, or the feature silently
   fails in a bundled app (`features/packaging-and-release.md`).
-- **Dependency flag:** with `camera` enabled, `nokhwa`'s macOS bindings pull `block`
-  0.1.6, which cargo reports as *future-incompatible* (it will be rejected by a later
-  rustc). The NRM forbids shipping discontinued or unsupported components, so this has
-  to be resolved before the camera feature is enabled in a released build: either
-  `nokhwa` updates its bindings, or the macOS capture path is written directly against
-  AVFoundation. It does not affect the default build, which has no camera.
+- **Release blocker — `block` 0.1.6.** `nokhwa`'s macOS bindings depend on it, and
+  cargo reports it as future-incompatible: `static of uninhabited type`, which a later
+  rustc will reject outright. Since `camera` is now a default feature, **every** build
+  carries it. NRM §5.4.3 forbids shipping a component without maintainer support, so
+  one of these has to happen before a tagged build is distributed:
+
+  1. `nokhwa` updates its `objc`/`block` chain (upstream issue worth filing);
+  2. pin a patched `block` through `[patch.crates-io]`;
+  3. write the macOS capture path directly against AVFoundation, which removes the
+     dependency entirely and is the durable answer;
+  4. take `camera` back out of the default set and ship it opt-in.
+
+  Recorded here rather than in a build log, because a default feature is the kind of
+  decision that stops being visible once it works.
+
+- **Release blocker — macOS camera permission.** A bundled `.app` without
+  `NSCameraUsageDescription` is terminated by the OS the first time it opens the
+  camera. It is a one-line `Info.plist` entry, but with `camera` on by default it
+  applies to every macOS build, not just a special one.
 
 ## References
 

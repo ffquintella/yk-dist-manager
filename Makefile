@@ -29,7 +29,8 @@ check: ## Fast compile check, default features
 	cargo check
 
 check-all: ## Compile every feature combination that ships
-	cargo check
+	cargo check                                              # defaults: file-dialog + camera
+	cargo check --no-default-features --features file-dialog # no camera code
 	cargo check --features native-device
 	cargo check --all-features
 
