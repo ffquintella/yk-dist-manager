@@ -34,13 +34,20 @@ deployment.
 | Todo | 20 |
 | **Total tracked items** | **38** (across 35 specs — two items share a spec) |
 
-Released: **v0.2.1**. Current wave: **Wave 1 — native execution.**
+Released: **v0.2.2**. Current wave: **Wave 1 — native execution.**
 
-Wave 0 (foundation) is in place, and v0.2.1 adds the paperwork and intake half of
-the job: choosing or creating the database file, recording serials from a barcode,
-generating the consignment term in the holder's language, and filing the signed
-copy against the hand-over. 193 tests pass (plus 2 read-only hardware tests), with
-86.92% line coverage of the headless core.
+Wave 0 (foundation) is in place, and v0.2.1–v0.2.2 add the paperwork and intake half
+of the job: choosing or creating the database file, recording serials from a barcode,
+generating the consignment term in the holder's language, and filing the signed copy
+against the hand-over. 206 tests pass (plus 2 read-only hardware tests), with 86.83%
+line coverage of the headless core.
+
+Camera scanning is a default feature, and on macOS it needs the bundled application:
+an unbundled build refuses with an explanation rather than aborting (v0.2.2). Two
+release blockers stand in front of any distributed artefact — the
+`NSCameraUsageDescription` bundle entry and the future-incompatible `block` 0.1.6 in
+`nokhwa`'s macOS bindings. See
+[`features/serial-scanning.md`](features/serial-scanning.md).
 
 ## How to read this
 

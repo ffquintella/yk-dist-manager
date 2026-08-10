@@ -17,6 +17,8 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-08-10
+
 ### Fixed
 
 - **Starting the camera aborted the whole application** on an unbundled macOS
@@ -203,5 +205,6 @@ Maintenance instructions (see AGENTS.md §5):
 - Uploaded filenames are treated as data: any directory component is stripped, so a
   name like `../../etc/passwd.pdf` cannot escape.
 
-[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/ffquintella/yk-dist-manager/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/ffquintella/yk-dist-manager/compare/cdea137...v0.2.1

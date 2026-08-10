@@ -104,7 +104,7 @@ is not a fix.
 | Operator name | Accountability for a hand-over and every audit entry | `distributions`, `bootstrap_runs`, `audit` |
 | **Signed term (document)** | The evidence that a key was signed for | `documents.content` |
 
-Two additions in v0.2.1 raise what a copy of this database is worth, and both are
+Two additions in v0.2.x raise what a copy of this database is worth, and both are
 stated rather than glossed over:
 
 1. An **identification number** is a step up in sensitivity from a name and a work
