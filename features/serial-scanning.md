@@ -45,6 +45,8 @@ the two apart, so nothing downstream treats a scanned serial as a confirmed key.
   camera is opened *on* that thread because `nokhwa::Camera` is not `Send`, and the
   open result comes back over a channel with a 10s bound, so a wedged backend or a
   denied permission cannot hang the GUI.
+- `scan::preflight` — the guard that makes the camera path safe to *attempt*. See
+  below; without it, an unbundled macOS build aborted the process.
 - Inventory screen: a scan panel with a typed field (which is what a USB wedge types
   into), camera controls, a preview, and confirm/discard for the decoded serial.
 
@@ -76,12 +78,46 @@ A scanned record is deliberately incomplete: no model, no firmware, no applicati
 list — empty rather than guessed. The bootstrap wizard's firmware gates therefore
 cannot run against a scanned key, which is correct: it has to be read first.
 
-### Camera realities
+### On macOS, a bad camera call aborts the process
+
+This is the sharpest edge in the feature, found by running the default build:
+
+```text
+thread 'camera-scan' panicked at core/src/panicking.rs:225:5:
+panic in a function that cannot unwind
+thread caused non-unwinding panic. aborting.
+```
+
+AVFoundation raises an **Objective-C exception**, which crosses an `extern "C"`
+boundary and becomes a *non-unwinding* panic. `catch_unwind` cannot recover from it,
+`Result` never gets a chance, and the operator loses the application — mid-hand-over,
+potentially. The only defence is to not make the call, so `scan::preflight` checks
+every precondition first:
+
+| Check | Why |
+|---|---|
+| `nokhwa_initialize()` was called | nokhwa's docs: the caller's responsibility "before anything else" on macOS. Runs in `main`, on the main thread, so the permission prompt appears while the operator is there |
+| Authorisation granted (`nokhwa_check()`) | An unauthorised open raises the exception |
+| Running inside a `.app` bundle | A bare binary has no `Info.plist`, so nothing declares `NSCameraUsageDescription` and TCC has no identity to attribute a grant to |
+| The requested device index exists | Opening a device that is not there |
+
+Each failure is a `ScanError::Camera` whose text names the cause **and** the way
+forward — including that a USB barcode reader needs no camera at all.
+`YKDM_ALLOW_UNBUNDLED_CAMERA=1` forces an attempt for someone who has arranged
+access another way; it is documented as "may abort", because that is the truth.
+
+Consequence worth stating plainly: **camera scanning does not work under
+`cargo run` on macOS.** It needs the bundled application
+(`features/packaging-and-release.md` Phase 3). The typed/wedge path works in every
+build, which is one more reason it is the recommended one.
+
+### Other camera realities
 
 Documented in `src/scan/camera.rs` because they will generate support questions: a
-laptop camera is fixed-focus and struggles closer than ~20cm; macOS needs
-`NSCameraUsageDescription` in a bundled app's `Info.plist`; Linux needs the `video`
-group or a udev rule.
+laptop camera is fixed-focus and struggles closer than ~20cm; Linux needs the `video`
+group or a udev rule; a device that matches no requested format is tried three ways
+(highest frame rate, highest resolution, anything) before being reported as
+unusable.
 
 ## Phases
 
@@ -91,6 +127,7 @@ group or a udev rule.
 | 2 | `SerialSource` + schema v2, provenance never downgraded | Done | enforced in the upsert |
 | 3 | `rxing` decoder over a luminance frame | Done | tested against a rendered Code 128 |
 | 4 | Camera capture on a thread, with preview | Done | `camera` feature |
+| 4b | `preflight` guard so a camera problem is an error, not a process abort | Done | regression test calls the same entry point the button does |
 | 5 | Typed / wedge entry in the inventory panel | Done | Enter submits |
 | 6 | Decode a photo from disk in the GUI | Todo | `decode_image_file` exists; no button yet |
 | 7 | Camera selection when several are attached | Todo | `available_cameras()` exists |
@@ -117,8 +154,16 @@ group or a udev rule.
   produced by rxing's own encoder, so the real decoder is exercised: a bare serial, a
   prefixed serial, a blank frame, and a barcode that decodes but is not a serial.
 - `tests/unit_store.rs` — `provenance_is_upgraded_by_a_device_read_but_never_downgraded`.
-- The camera path has no automated test (it needs a camera); the capture thread's
-  contract — never block the GUI, bounded open — is enforced by construction.
+- `src/scan/preflight.rs` — 8 unit tests over pure predicates: the unbundled-macOS
+  refusal and its message, the override spellings, missing and out-of-range devices.
+  The predicates take their inputs as parameters rather than reading the environment,
+  so nothing races when tests share a process.
+- `tests/camera_guard.rs` — calls `CameraScanner::start`, the exact entry point the
+  *Start camera* button calls. Before the guard, this aborted the test binary; now it
+  must return an `Err`. Also asserts that enumerating cameras is safe before
+  authorisation, since the preflight depends on counting devices.
+- The capture loop itself has no automated test (it needs a camera); its contract —
+  never block the GUI, bounded open — is enforced by construction.
 
 ## Open questions and gates
 

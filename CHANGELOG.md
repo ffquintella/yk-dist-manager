@@ -17,6 +17,38 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+### Fixed
+
+- **Starting the camera aborted the whole application** on an unbundled macOS
+  build (`cargo run`, or the binary straight from `target/`):
+
+  ```text
+  thread 'camera-scan' panicked at core/src/panicking.rs:225:5:
+  panic in a function that cannot unwind
+  thread caused non-unwinding panic. aborting.
+  ```
+
+  Two causes, both now handled. `nokhwa_initialize()` — which nokhwa's own
+  documentation says is the caller's responsibility "before anything else" on
+  macOS — was never called; it now runs in `main`, on the main thread, so the
+  permission prompt appears while the operator is present. And a bare binary has no
+  `Info.plist`, so nothing declares `NSCameraUsageDescription`: AVFoundation raises
+  an Objective-C exception which crosses an `extern "C"` boundary as a
+  *non-unwinding* panic. `catch_unwind` cannot recover from that, so the only fix is
+  not to make the call.
+
+  `scan::preflight` is that guard: it refuses before any capture backend is touched,
+  with a message that names the cause and the alternative (a USB barcode reader needs
+  no camera). `YKDM_ALLOW_UNBUNDLED_CAMERA=1` forces an attempt for anyone who has
+  arranged access another way — documented as "may abort", because it may.
+
+  `tests/camera_guard.rs` calls the exact entry point the button calls, so a
+  regression aborts a test run rather than an operator's session.
+
+- Camera opening now tries three format requests (highest frame rate, highest
+  resolution, then whatever the device offers) instead of failing when a device has
+  no match for the first.
+
 ### Changed
 
 - **Camera scanning (`camera`) is now a default feature**, so a stock

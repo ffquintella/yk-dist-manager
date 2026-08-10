@@ -61,6 +61,13 @@ impl CameraScanner {
     /// `decoder` is boxed rather than generic so the GUI can hold a
     /// `CameraScanner` without naming the decoder type.
     pub fn start(index: u32, decoder: Box<dyn BarcodeDecoder + Send>) -> Result<Self, ScanError> {
+        // Nothing may touch the capture backend until these pass: on macOS an
+        // unauthorised or unbundled attempt aborts the process instead of
+        // returning an error. See `scan::preflight`.
+        super::preflight::initialise();
+        let cameras = Self::available_cameras();
+        super::preflight::check(Some(cameras.len()), index)?;
+
         let state = Arc::new(Mutex::new(ScanState::default()));
         let stop = Arc::new(AtomicBool::new(false));
 
@@ -135,6 +142,11 @@ impl CameraScanner {
     }
 
     /// Cameras available for capture.
+    ///
+    /// Enumeration is safe to call before authorisation: it lists devices without
+    /// opening one. An error here means the backend itself is unavailable, which is
+    /// reported as "no cameras" rather than propagated — the caller's preflight
+    /// turns that into an actionable message.
     pub fn available_cameras() -> Vec<(u32, String)> {
         match nokhwa::query(nokhwa::utils::ApiBackend::Auto) {
             Ok(cameras) => cameras
@@ -161,15 +173,45 @@ impl Drop for CameraScanner {
 }
 
 /// Open a camera and start its stream. Runs on the capture thread.
+///
+/// Two format requests are tried: highest frame rate (best for aiming at a barcode
+/// by hand), then whatever the device offers. A camera that matches no format at all
+/// is a real error, not a reason to guess.
 fn open_camera(index: u32) -> Result<Camera, ScanError> {
-    let requested =
-        RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestFrameRate);
-    let mut camera = Camera::new(CameraIndex::Index(index), requested)
-        .map_err(|e| ScanError::Camera(e.to_string()))?;
-    camera
-        .open_stream()
-        .map_err(|e| ScanError::Camera(e.to_string()))?;
-    Ok(camera)
+    let attempts = [
+        RequestedFormatType::AbsoluteHighestFrameRate,
+        RequestedFormatType::AbsoluteHighestResolution,
+        RequestedFormatType::None,
+    ];
+
+    let mut last: Option<String> = None;
+    for requested in attempts {
+        match Camera::new(
+            CameraIndex::Index(index),
+            RequestedFormat::new::<RgbFormat>(requested),
+        ) {
+            Ok(mut camera) => {
+                return match camera.open_stream() {
+                    Ok(()) => Ok(camera),
+                    Err(e) => Err(ScanError::Camera(format!(
+                        "could not start the stream: {e}"
+                    ))),
+                };
+            }
+            Err(e) => {
+                tracing::warn!(
+                    event = "camera.format.rejected",
+                    requested = format!("{requested:?}"),
+                    reason = %e
+                );
+                last = Some(e.to_string());
+            }
+        }
+    }
+
+    Err(ScanError::Camera(last.unwrap_or_else(|| {
+        "the camera offered no usable format".into()
+    })))
 }
 
 fn capture_loop(

@@ -15,6 +15,11 @@
 //! | [`BarcodeDecoder`] — decode a luminance frame | always on (trait) | yes, with a stub |
 //! | [`rxing_decoder`] — the real decoder | `barcode` | yes, against a rendered fixture |
 //! | [`camera`] — live frames | `camera` | no (needs a camera) |
+//! | [`preflight`] — is a capture attempt safe to make at all | always on | yes |
+//!
+//! [`preflight`] exists because on macOS a camera call made without the right
+//! preconditions **aborts the process** rather than returning an error — see that
+//! module.
 //!
 //! A cheaper alternative that needs none of this: a **USB barcode scanner**
 //! emulates a keyboard, so it types the serial into the focused field. The
@@ -24,6 +29,7 @@
 
 #[cfg(feature = "camera")]
 pub mod camera;
+pub mod preflight;
 #[cfg(feature = "barcode")]
 pub mod rxing_decoder;
 

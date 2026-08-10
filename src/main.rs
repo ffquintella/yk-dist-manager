@@ -11,6 +11,12 @@ use yk_dist_manager::{YkDistApp, logging};
 fn main() -> eframe::Result {
     logging::init();
 
+    // macOS requires this before *anything* touches AVFoundation, and it has to
+    // happen on the main thread while the operator is present to answer the
+    // permission prompt. A no-op on other platforms and in builds without the
+    // `camera` feature.
+    yk_dist_manager::scan::preflight::initialise();
+
     let explicit = std::env::var("YKDM_DB")
         .ok()
         .map(|raw| raw.trim().to_owned())

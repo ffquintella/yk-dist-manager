@@ -18,7 +18,7 @@ whole even though every part passes.
 
 **Suites in place; CI and the coverage gate are not.**
 
-- **194 tests** pass on the default features (`cargo test`); 193 with
+- **206 tests** pass on the default features (`cargo test`); 205 with
   `--all-features`, the difference being one test that only exists when
   `encrypted-db` is *off*. Plus 2 hardware tests, ignored by default.
 - `cargo check --no-default-features` is part of the pre-commit sweep, because the

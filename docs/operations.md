@@ -89,9 +89,16 @@ For getting serials in without unboxing every key:
 2. With a **USB barcode scanner** (recommended): click into the field, scan the box
    label, and the scanner types the serial and presses Enter. Repeat. Nothing else to
    configure.
-3. With the **camera** (needs a build with `--features camera`): *Start camera*, hold the
-   label about 20cm away filling the frame width, and confirm the decoded serial. A laptop
-   camera is fixed-focus and will struggle closer than that.
+3. With the **camera**: *Start camera*, hold the label about 20cm away filling the frame
+   width, and confirm the decoded serial. A laptop camera is fixed-focus and will
+   struggle closer than that.
+
+   **On macOS this needs the bundled application.** Run from `cargo run` or a bare
+   binary, the panel refuses with an explanation: there is no `Info.plist`, so nothing
+   declares `NSCameraUsageDescription`, and attempting the capture would abort the
+   process rather than fail. Use the wedge or type the serial until the bundle exists
+   (`features/packaging-and-release.md`). `YKDM_ALLOW_UNBUNDLED_CAMERA=1` forces an
+   attempt if you have arranged access another way — it may abort.
 4. Or just type the serial.
 
 Keys recorded this way are marked **not verified**: no model, no firmware, no application
