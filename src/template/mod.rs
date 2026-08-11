@@ -67,6 +67,12 @@ pub enum TemplateError {
     BadParam { step: String, line: String },
     #[error("a template cannot have more than {0} steps")]
     TooManySteps(usize),
+    #[error(
+        "step `{later}` needs the FIDO2 PIN, but `{marker}` marks the key for a forced PIN \
+         change before it. A key marked that way refuses its PIN for everything except changing \
+         it, so `{later}` could never succeed — move the forced change after it"
+    )]
+    PinLockedBeforeUse { marker: String, later: String },
 }
 
 /// Values a template can interpolate. Everything here is non-secret.
@@ -552,6 +558,33 @@ impl BootstrapTemplate {
         if !self.steps.iter().any(|s| s.enabled) {
             return Err(TemplateError::Empty);
         }
+
+        // Ordering constraint, found the hard way on a 5.7.4 key: once
+        // `forcePINChange` is set, the authenticator refuses the PIN for
+        // everything except changing it. So every FIDO2 step that authenticates
+        // with the PIN has to come *before* the step that marks the key.
+        //
+        // Checked here rather than left to the executor because the failure is a
+        // property of the template, not of the run: it would fail identically on
+        // every key, every time, and the right place to say so is the moment the
+        // procedure is written — which is also when `check()` runs, before
+        // anything can be stored.
+        if let Some(marker) = self
+            .steps
+            .iter()
+            .position(|s| s.enabled && s.kind == StepKind::Fido2ForcePinChange)
+        {
+            if let Some(later) = self.steps[marker + 1..]
+                .iter()
+                .find(|s| s.enabled && s.kind.needs_fido2_pin())
+            {
+                return Err(TemplateError::PinLockedBeforeUse {
+                    marker: self.steps[marker].id.clone(),
+                    later: later.id.clone(),
+                });
+            }
+        }
+
         Ok(())
     }
 
@@ -594,13 +627,6 @@ impl BootstrapTemplate {
                 .with_param("min_length", "6")
                 .optional(),
                 TemplateStep::new(
-                    "fido2-force-pin-change",
-                    StepKind::Fido2ForcePinChange,
-                    "Require {{holder.name}} to change the transport PIN before first use",
-                )
-                .with_param("enforcement", "firmware-if-available")
-                .optional(),
-                TemplateStep::new(
                     "otp-access-code",
                     StepKind::OtpAccessCode,
                     "Write-protect OTP slot 1 with a 6-byte access code",
@@ -615,6 +641,21 @@ impl BootstrapTemplate {
                 .with_param("rp_id", "{{org}}")
                 .with_param("user_name", "{{holder.email}}")
                 .with_param("resident", "true"),
+                // **Last of the FIDO2 steps, and it has to be.** A key marked
+                // `forcePINChange` refuses its PIN for everything except changing
+                // it, so any FIDO2 step placed after this one — the credential in
+                // particular — is handed a PIN the authenticator will no longer
+                // accept. This procedure used to mark the key before creating the
+                // credential, and could not have completed on real hardware;
+                // found on a 5.7.4 key, and now caught by `check()` and by the
+                // mock. See `features/bootstrap-engine.md` ordering rule 5.
+                TemplateStep::new(
+                    "fido2-force-pin-change",
+                    StepKind::Fido2ForcePinChange,
+                    "Require {{holder.name}} to change the transport PIN before first use",
+                )
+                .with_param("enforcement", "firmware-if-available")
+                .optional(),
                 TemplateStep::new(
                     "piv-pin-puk",
                     StepKind::PivPinPuk,

@@ -368,6 +368,16 @@ impl MockWriter {
         self.calls.iter().any(|c| c.operation == operation)
     }
 
+    /// Operations that authenticate with the FIDO2 PIN.
+    ///
+    /// Everything here becomes unusable once `forcePINChange` is set, which is
+    /// the rule below.
+    const USES_FIDO2_PIN: [&'static str; 3] = [
+        "fido2.set_min_pin_length",
+        "fido2.force_pin_change",
+        "fido2.make_credential",
+    ];
+
     fn record(
         &mut self,
         operation: &'static str,
@@ -377,6 +387,29 @@ impl MockWriter {
     ) -> Result<()> {
         if self.attached != Some(serial) {
             return Err(WriteError::NotAttached(serial));
+        }
+
+        // A key marked `forcePINChange` refuses its PIN for everything except
+        // changing it. That is what the flag *means*, and it is the ordering
+        // constraint that made the shipped standard procedure impossible to run:
+        // marking the key before creating the resident credential left the
+        // credential step holding a PIN the authenticator would no longer accept.
+        //
+        // Found on real hardware (YubiKey 5.7.4) rather than here, because the
+        // mock used to allow it. It is modelled now so that a template which
+        // reintroduces the ordering fails in `cargo test` instead of in front of
+        // an operator with a key in their hand.
+        if self.fido2.force_pin_change_set && Self::USES_FIDO2_PIN.contains(&operation) {
+            self.calls.push(RecordedCall {
+                operation,
+                serial,
+                arguments,
+                secrets_supplied,
+            });
+            return Err(WriteError::WrongSecret {
+                applet: "FIDO2",
+                retries_left: 8,
+            });
         }
         if let Some(index) = self.failures.iter().position(|(op, _)| *op == operation) {
             let (_, error) = self.failures.remove(index);

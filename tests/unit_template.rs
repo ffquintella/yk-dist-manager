@@ -656,6 +656,50 @@ fn a_template_nobody_used_can_be_removed() {
 }
 
 #[test]
+fn forcing_the_pin_change_before_a_step_that_needs_the_pin_is_refused() {
+    // Found on a real 5.7.4 key, not here: a key marked `forcePINChange` refuses
+    // its PIN for everything except changing it, so the credential step that
+    // followed the mark could never have succeeded. The shipped procedure had
+    // exactly that ordering. This is the guard that stops it coming back — in a
+    // hand-built template as well as in the built-in one.
+    use yk_dist_manager::domain::StepKind;
+    use yk_dist_manager::template::{TemplateError, TemplateStep};
+
+    let mut broken = BootstrapTemplate::org_standard();
+    let marker = broken
+        .steps
+        .iter()
+        .position(|s| s.kind == StepKind::Fido2ForcePinChange)
+        .expect("the standard procedure marks the key");
+    let step = broken.steps.remove(marker);
+    // Put it back where it used to be: before the credential.
+    let credential = broken
+        .steps
+        .iter()
+        .position(|s| s.kind == StepKind::Fido2Credential)
+        .expect("the standard procedure creates a credential");
+    broken.steps.insert(credential, step);
+
+    match broken.validate() {
+        Err(TemplateError::PinLockedBeforeUse { marker, later }) => {
+            assert_eq!(marker, "fido2-force-pin-change");
+            assert_eq!(later, "fido2-credential");
+        }
+        other => panic!("the ordering must be refused, got: {other:?}"),
+    }
+
+    // And the shipped ordering is the right way round.
+    assert!(BootstrapTemplate::org_standard().validate().is_ok());
+
+    // A forced change with no later PIN step is fine — that is the whole point of
+    // putting it last.
+    let mut fine = BootstrapTemplate::org_standard();
+    fine.steps
+        .push(TemplateStep::new("verify-again", StepKind::Verify, "Read the key back").optional());
+    assert!(fine.validate().is_ok());
+}
+
+#[test]
 fn an_edited_builtin_version_is_no_longer_the_builtin() {
     // Version 2 of `org-standard` is the unit's own procedure: seeding will not
     // re-create it, so it is removable like any other.

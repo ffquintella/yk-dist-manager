@@ -101,6 +101,22 @@ impl StepKind {
         }
     }
 
+    /// Steps that authenticate with the FIDO2 PIN.
+    ///
+    /// These are the steps a `forcePINChange` mark makes impossible: once the key
+    /// is marked, it refuses its PIN for everything except changing it. The
+    /// ordering constraint that follows is enforced by
+    /// [`crate::template::BootstrapTemplate::validate`].
+    ///
+    /// [`StepKind::Fido2Pin`] is deliberately absent: it *sets* the PIN on a key
+    /// that has none rather than authenticating with one.
+    pub fn needs_fido2_pin(&self) -> bool {
+        matches!(
+            self,
+            StepKind::Fido2MinPinLength | StepKind::Fido2Credential
+        )
+    }
+
     /// Steps that write a secret whose custody must be recorded.
     pub fn sets_secret(&self) -> bool {
         matches!(

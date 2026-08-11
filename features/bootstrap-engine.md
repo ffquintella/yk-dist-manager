@@ -88,7 +88,20 @@ Nothing in the *default* build writes to a key.
    blindly overwrite. Where the hardware cannot tell, the step asks.
 5. **Ordering constraints are real.** The PIV PIN must change before key generation
    (generation authenticates with the PIN); the management key must change before
-   or with generation; the certificate can only be imported after issuance.
+   or with generation; the certificate can only be imported after issuance. And
+   **`forcePINChange` must be the last FIDO2 step**: a key marked that way refuses
+   its PIN for everything except changing it, so any PIN-authenticating step after
+   the mark is handed a credential the authenticator will no longer accept.
+
+   That last one was not theory. The shipped standard procedure marked the key at
+   step 3 and created the resident credential at step 5, and could never have
+   completed on real hardware — found on a YubiKey 5.7.4, where the credential
+   step failed with "PIN not accepted" and `ykman fido info` reported *"The FIDO
+   PIN is disabled and must be changed before it can be used"*. The mock had
+   allowed it, so every test passed. It is now enforced in three places:
+   `MockWriter` models the lock, `BootstrapTemplate::validate` refuses the
+   ordering as `TemplateError::PinLockedBeforeUse` before a template can be
+   stored, and the built-in procedure puts the mark last.
 6. **Secrets exist only in memory, only for the step that needs them.** They are
    passed to the native call and dropped; they never reach `StepOutcome::detail`,
    the log, the audit entry, or a temporary file.

@@ -48,9 +48,9 @@ Maintenance instructions (see AGENTS.md §5):
 
 - **The bootstrap executor** ([`features/bootstrap-engine.md`](features/bootstrap-engine.md)
   phases 3, 8, 9, 10). A plan is now applied step by step, with the evidence
-  recorded as it goes. **Nothing in this build can write to a key** — `MockWriter`
-  is the only implementation of the write traits — which is the intended state
-  until the native transports land and are verified against hardware.
+  recorded as it goes. The **default** build still cannot write to a key:
+  `MockWriter` is the only implementation of the write traits compiled in, and
+  `--features native-fido` is what adds a real one.
   - **The confirmation is a type, not a flag.** `Executor::run` takes a
     `Confirmation` that can only be built by naming the serial and step count
     actually shown, and re-checks it against the request. A stale confirmation —
@@ -93,6 +93,18 @@ Maintenance instructions (see AGENTS.md §5):
 
 ### Fixed
 
+- **The standard bootstrap procedure could never have completed on a real key.**
+  It marked the key with `forcePINChange` at step 3 and then tried to create the
+  resident credential at step 5 — but a key marked that way refuses its PIN for
+  everything except changing it, so the credential step was always going to fail
+  with "PIN not accepted". Found by running the procedure against a YubiKey
+  5.7.4; `ykman fido info` says the same thing from the other side ("The FIDO PIN
+  is disabled and must be changed before it can be used"). Every test had passed,
+  because `MockWriter` did not model the rule. Fixed in three places so it cannot
+  return: the mock now locks the PIN, `BootstrapTemplate::validate` refuses the
+  ordering as `TemplateError::PinLockedBeforeUse` before a template can be
+  stored, and the built-in procedure puts the forced change last. The refusal
+  names both steps, because a template author needs to know which pair conflicts.
 - **A run missing a required step is no longer reported as `Completed`.**
   `settle()` counts a skip as neither failure nor pending, so a required step
   that was skipped produced a run claiming success. That is not hypothetical:
