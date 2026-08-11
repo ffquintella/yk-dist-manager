@@ -37,9 +37,9 @@ deployment.
 > The counts above had drifted (they said 11 in progress against 13 `[/]` rows), as
 > had the test and coverage figures quoted in two places. Both are corrected here.
 
-Released: **v0.5.0**. Current wave: **Wave 1 — native execution.**
+Released: **v0.6.0**. Current wave: **Wave 1 — native execution.**
 
-**Out of turn, unreleased** (AGENTS.md §1 asks for the reason, in this file, in the
+**Out of turn, released in v0.6.0** (AGENTS.md §1 asks for the reason, in this file, in the
 same commit): **hosting the database in a OneDrive folder** —
 [`features/cloud-sync-hosting.md`](features/cloud-sync-hosting.md) — was built at the
 request of the operator who will run the tool. It belongs to Wave 0's storage work, not
@@ -55,7 +55,7 @@ with two divergent registers of who holds which security token. No schema change
 not an endorsement of the location — see the ESI gate in the spec and in
 [Open questions](#open-questions).
 
-Also out of turn, unreleased: the **Templates screen** — phase 2 of
+Also out of turn, released in v0.6.0: the **Templates screen** — phase 2 of
 [`features/bootstrap-templates.md`](features/bootstrap-templates.md), plus add /
 duplicate / retire / remove — was built at the request of the operator who will run
 the tool. It belongs to Wave 0, which is not finished, rather than to Wave 1, and it
@@ -68,7 +68,7 @@ against sample data) is the same gate a run will need, and it is now covered by
 tests before anything writes to a key. Schema **v4** (`templates.retired_at`) ships
 with a migration.
 
-**Also out of turn, unreleased**: an **application icon**
+**Also out of turn, released in v0.6.0**: an **application icon**
 ([`features/application-icon.md`](features/application-icon.md)), requested by the
 same operator. It belongs to Wave 0 alongside the GUI shell, and it is small: one
 SVG, a render script, and 30 lines embedding the result. Taken now because it is

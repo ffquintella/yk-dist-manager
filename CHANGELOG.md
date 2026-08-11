@@ -17,6 +17,12 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-11
+
+The storage, cloud-sync, audit and CI halves of Wave 0. The MINOR slot because
+the database schema moves to **v5** with a migration: a bootstrap run's steps
+become rows.
+
 ### Added
 
 - **The audit trail can be mirrored to segregated storage, and a divergence is an
@@ -598,7 +604,10 @@ Maintenance instructions (see AGENTS.md §5):
 - Uploaded filenames are treated as data: any directory component is stripped, so a
   name like `../../etc/passwd.pdf` cannot escape.
 
-[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/ffquintella/yk-dist-manager/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/ffquintella/yk-dist-manager/compare/cdea137...v0.2.1
