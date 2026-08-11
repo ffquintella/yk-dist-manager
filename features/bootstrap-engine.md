@@ -22,14 +22,17 @@ some steps go native and some still fall back to `ykman`.
 
 ## Current state
 
-**Planner and executor shipped; the transports behind them are not.**
+**Planner and executor shipped; one transport is starting to land.**
 
 `src/bootstrap/` runs a plan step by step against the write traits in
 `src/device/write.rs`. What is proven, by ten scenarios against `MockWriter`:
 sequencing, per-step persistence, the abort policy, idempotency, resume, the
-confirmation gate, and that no secret reaches any record. What is **not** there
-is a transport that talks to hardware — `MockWriter` is the only implementation
-in the build, so no code path can currently write to a key.
+confirmation gate, and that no secret reaches any record.
+
+The **default build still cannot write to a key**: `MockWriter` is the only
+implementation of the write traits compiled in. `--features native-fido` adds
+`device::native_fido`, whose state read is verified against real hardware and
+whose write operations are not — see phase 5.
 
 Three decisions in the executor worth knowing about:
 
@@ -66,7 +69,7 @@ Three decisions in the executor worth knowing about:
 - `BootstrapRun::settle()` derives the run status: any failure ⇒ `Failed`, anything
   pending ⇒ `Running`, otherwise `Completed`.
 
-Nothing in the current build writes to a key.
+Nothing in the *default* build writes to a key.
 
 ## Design
 
@@ -117,7 +120,7 @@ key and recorded in the phase notes.
 | 2 | Dry-run recording | Done | `bootstrap.dry_run` audited |
 | 3 | Executor skeleton: sequencing, status persistence, abort policy | **Done** | [`src/bootstrap/`](../src/bootstrap/); 10 scenarios against `MockWriter` |
 | 4 | Secret input: prompt, generate, show-once, zeroise | **Done** | [`src/secret.rs`](../src/secret.rs) — `features/secrets-custody.md` phase 3 |
-| 5 | FIDO2 steps live | Todo | the step logic and its idempotency check are written; what is missing is the transport behind `native-fido` |
+| 5 | FIDO2 steps live | **In progress** | the transport exists (`device::native_fido`) and its state read is hardware-verified; the write operations are unverified until a manual run against a dedicated test key |
 | 6 | PIV steps live | Todo | same, behind `native-piv`. The **certificate import** additionally waits on the CA decision |
 | 7 | OTP step live | Todo | same, behind `native-otp` |
 | 8 | Verification step reading the key back | **Done** | reads all three applets and stores the end state as the step's detail |

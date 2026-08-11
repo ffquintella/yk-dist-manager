@@ -35,6 +35,7 @@ pub mod branding;
 pub mod device;
 pub mod diagnostics;
 pub mod domain;
+pub mod envelope;
 pub mod logging;
 pub mod paths;
 pub mod pdf;

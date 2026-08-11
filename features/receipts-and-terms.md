@@ -103,7 +103,7 @@ gap `features/distribution-records.md` Phase 4 exists to make visible.
 
 | # | Phase | State | Notes |
 |---|---|---|---|
-| 0 | Sealed-envelope slip for the transport secrets | Todo | **required by custody model B** for any hand-over that is not face to face; shares this feature's rendering |
+| 0 | Sealed-envelope slip for the transport secrets | **Done** | [`src/envelope.rs`](../src/envelope.rs), on this feature's PDF writer. Deliberately **not** stored in the database — a slip is a courier, not evidence |
 | 1 | Text term generated from the record | **Done** | [consignment-terms.md](consignment-terms.md) |
 | 2 | PDF output | **Done** | [consignment-terms.md](consignment-terms.md) — the pure-Rust route won: `crate::pdf`, no dependency at all, Courier from the standard fourteen fonts so nothing is embedded |
 | 3 | Editable, versioned, multilingual template | **Done** | keyed `(id, language, version)` |

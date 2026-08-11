@@ -19,6 +19,33 @@ Maintenance instructions (see AGENTS.md §5):
 
 ### Added
 
+- **The sealed-envelope slip** ([`features/secrets-custody.md`](features/secrets-custody.md)
+  phase 5, [`features/receipts-and-terms.md`](features/receipts-and-terms.md) phase 0).
+  Custody model B always hands a transport secret over, so for a posted or
+  couriered key something has to travel with it, sealed. This is the only
+  document the tool produces that carries a live PIN on purpose, and it is shaped
+  by that: it is **never stored** in the database — a slip is a courier, not
+  evidence, and filing one would turn the register into a credential store — its
+  bytes are `Zeroizing`, it refuses to render from a dismissed show-once panel,
+  and it carries only the secrets the holder actually needs (not the management
+  key, which is protected onto the key, nor the OTP access code, which is
+  discarded). The instruction wording changes with the firmware: where the key
+  cannot enforce the PIN change, the sentence on the slip is the only mechanism,
+  so it says so in as many words. It refuses to render a name the document
+  encoding cannot set, rather than printing `?` in a document that still looks
+  valid.
+- **The native FIDO2 transport** ([`features/native-device-transport.md`](features/native-device-transport.md)
+  phase 2), behind `native-fido`. This is the transport the native argument was
+  always about: `ykman` can list and delete resident credentials but **cannot
+  create one**, and creating the initial discoverable credential is a required
+  step. The applet state read is verified against a real YubiKey 5.7.4; the write
+  operations are implemented and **not yet verified**, because setting a PIN can
+  only be undone by a reset that destroys every credential on the key, so that
+  verification is a manual procedure against a dedicated test key. Two read-only
+  hardware tests were added, including one asserting the transport refuses a
+  serial it was not opened for — HID exposes no serial, so that guard is what
+  stands between a run and writing a PIN to the wrong key.
+
 - **The bootstrap executor** ([`features/bootstrap-engine.md`](features/bootstrap-engine.md)
   phases 3, 8, 9, 10). A plan is now applied step by step, with the evidence
   recorded as it goes. **Nothing in this build can write to a key** — `MockWriter`

@@ -18,9 +18,9 @@ whole even though every part passes.
 
 **Suites in place, and CI now enforces the gate.**
 
-- **535 tests** pass on the default features (`cargo test`); one fewer
+- **545 tests** pass on the default features (`cargo test`); one fewer
   with `--all-features`, the difference being a test that only exists when
-  `encrypted-db` is *off*. Plus 2 hardware tests, ignored by default.
+  `encrypted-db` is *off*. Plus 4 hardware tests, ignored by default.
 - **CI runs on every push and pull request**
   ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)): fmt, clippy with
   `-D warnings`, the no-default-features build, the full test suite, and the
@@ -33,7 +33,9 @@ whole even though every part passes.
 - `cargo check --no-default-features` is part of the pre-commit sweep, because the
   no-camera build is a supported configuration
   (`make check-all`).
-- Core line coverage **88.25%** (region 86.84%), above the 80% floor.
+- Core line coverage **86.91%** (region 85.79%), above the 80% floor. It fell from
+  88.25% when `device/native_fido.rs` joined the build: like `native.rs`, it is
+  reachable only with hardware, so it counts against the gate at 0%.
 - Unit suites: `unit_domain.rs` (15), `unit_template.rs` (50), `unit_audit.rs` (17),
   `unit_ykman_parse.rs` (8), `unit_store.rs` (30), `unit_device_backends.rs` (9),
   `unit_records.rs` (16), `unit_logging_format.rs` (6), `unit_term.rs` (45),
@@ -52,8 +54,9 @@ whole even though every part passes.
   docs).
 - **Three mockable seams**, for the same reason: `device::MockBackend` means no test
   needs a key to *read*, `device::write::MockWriter` means none needs one to
-  *write* — it is the only implementation of the write traits in the build, so no
-  test can reach hardware even by mistake — and `store::smb::MockConnector` (behind
+  *write* — it is the only implementation of the write traits in a **default**
+  build, so no test can reach hardware even by mistake, and the one that exists
+  under `native-fido` is never constructed by a non-hardware test — and `store::smb::MockConnector` (behind
   `app.share_connector`) means none needs a file server, a network or a credential
   that exists anywhere.
 - Two files are platform-gated and therefore only compiled where they run —
@@ -69,8 +72,10 @@ whole even though every part passes.
 - `device::MockBackend` serves canned devices, can simulate hot-plug via
   `set_devices`, and can be made to fail on demand.
 - Fixtures are real recorded `ykman` 5.9.2 output.
-- `tests/hardware_native.rs` is `#[ignore]`d, read-only, and asserts the native and
-  `ykman` transports agree.
+- `tests/hardware_native.rs` is `#[ignore]`d and **strictly read-only**: it asserts
+  the native and `ykman` transports agree on the serial, that the FIDO2 applet's
+  state maps coherently, and that the FIDO2 transport refuses a serial it was not
+  opened for. Verified against a YubiKey 5 NFC (5.4.3) and a 5.7.4.
 - `cargo clippy --all-targets --all-features` is warning-free.
 
 ## Design
@@ -130,9 +135,9 @@ make coverage-html    # browsable report
 - Excluding paint code is a contract, not an amnesty: logic belongs in
   `YkDistApp` methods or below, where it *is* covered. Untestable code is a
   design smell.
-- Known gaps inside the core, and why: `device/native.rs` (0%) is reachable only
-  with hardware, so it is covered by the ignored hardware tests rather than by
-  `cargo test`; `audit/mod.rs` sits at 75% because the file-sink I/O error paths
+- Known gaps inside the core, and why: `device/native.rs` and
+  `device/native_fido.rs` (0%) are reachable only with hardware, so they are
+  covered by the ignored hardware tests rather than by `cargo test`; `audit/mod.rs` sits at 75% because the file-sink I/O error paths
   are not simulated yet.
 - The number is reported in the commit/PR description whenever it moves.
 

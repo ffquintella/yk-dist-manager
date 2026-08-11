@@ -26,8 +26,7 @@ where the alternative is designed.
 
 ## Current state
 
-**Model decided; vocabulary fixed in code; the secret-handling machinery is still to
-build.**
+**Model decided, vocabulary fixed in code, and the secret-handling machinery built.**
 
 What is in place:
 
@@ -59,7 +58,7 @@ What is in place:
   mock run against every value it generated — the blunt instrument that catches
   leakage through a field nobody thought about.
 
-Still to build: the sealed-envelope slip, and the custody report.
+Still to build: the custody report.
 
 ## Design
 
@@ -81,7 +80,7 @@ what is recorded here is the *reference*, `escrowed:bastionvault:kv/yubikeys/204
 
 | Secret | Under model B | Enforcement |
 |---|---|---|
-| **FIDO2 PIN** | Operator sets a transport PIN; `forcePINChange` marks the key | **Firmware** from 5.7 (CTAP 2.1); **procedural** below — the reference key here is 5.4.3 |
+| **FIDO2 PIN** | Operator sets a transport PIN; `forcePINChange` marks the key | **Firmware** from 5.7 (CTAP 2.1); **procedural** below. Two reference keys are now on the bench: a 5.4.3 (procedural path) and a **5.7.4** (firmware path), so both are testable |
 | **PIV PIN** | Operator sets a transport PIN; the term instructs the change | **Procedural always** — PIV has no force-change flag at any firmware level |
 | **PIV PUK** | Handed over in the same envelope; nothing retained | Procedural; see sub-decision below |
 | **PIV management key** | `--protect --generate`: random, stored on the key, PIN-guarded | Nothing to hand over and nothing to retain — unaffected by B |
@@ -146,7 +145,7 @@ distributing by courier or post.
 | 2 | Typed custody vocabulary on the run | Done | `CustodyModel` + `ChangeEnforcement`; stored in the existing `custody` column, so no migration. A dedicated column arrives with schema v2 if reporting needs one |
 | 3 | Secret input: prompt, generate, show-once, zeroise, redacted `Debug` | **Done** | [`src/secret.rs`](../src/secret.rs) — `zeroize` + the OS CSPRNG, `ShowOnce` wiped on dismissal and on drop |
 | 4 | `forcePINChange` in the FIDO2 step | **In progress** | the executor calls it and audits the enforcement; the CTAP transport behind it is bootstrap-engine phase 5 |
-| 5 | Sealed-envelope slip rendering | Todo | required by B for any non-desk hand-over |
+| 5 | Sealed-envelope slip rendering | **Done** | [`src/envelope.rs`](../src/envelope.rs) — never stored, bytes zeroised, refuses a dismissed panel |
 | 6 | Optional external escrow (BastionVault KV), reference-only in the database | Todo | never the value here |
 | 7 | Custody report: which keys hold which model, and where the change was only *instructed* | Todo | `features/reports-and-export.md` |
 | 8 | Resolve the PUK and OTP-access-code sub-decisions | Todo | defaults implemented; confirmation pending |
