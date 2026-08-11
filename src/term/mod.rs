@@ -14,6 +14,10 @@
 //!   does not get a stray "Phone:" line. That is the whole conditional logic, and
 //!   it is enough for a document of this kind.
 //!
+//! Two outputs, one document: [`render_term`] gives the text a ticket can carry,
+//! [`render_term_pdf`] gives the sheet the holder signs. Both go through
+//! [`render_term_parts`], so the two can never say different things.
+//!
 //! The signed document itself is attached to the distribution — see
 //! [`crate::domain::document`].
 
@@ -372,36 +376,129 @@ impl TermContext {
 /// `Telefone: {{holder.phone}}` unconditionally: the line appears for a holder who
 /// gave a phone number and vanishes for one who did not. A line with no variables
 /// is always kept.
+///
+/// A gap of two or more spaces after a substitution is a **column**, and is kept
+/// where the template put it — see [`push_literal`]. That is what makes a
+/// two-column signature block writable in a template at all.
 pub fn render_term(template: &TermTemplate, ctx: &TermContext) -> Result<String, TermError> {
-    ctx.check_required()?;
+    let (heading, lines) = render_term_parts(template, ctx)?;
 
     let mut out = String::with_capacity(template.body.len());
-    out.push_str(&render_line(&template.title, ctx)?.unwrap_or_default());
+    out.push_str(&heading);
     out.push_str("\n\n");
+    for line in lines {
+        out.push_str(&line);
+        out.push('\n');
+    }
 
+    Ok(out)
+}
+
+/// The term as its heading and the body lines that survived, ready to be set on
+/// a page or joined into text.
+///
+/// Both outputs go through here on purpose: a PDF that had its own rendering
+/// path could disagree with the text the operator reviewed on screen, and the
+/// document the holder signs is not the place to discover that.
+pub fn render_term_parts(
+    template: &TermTemplate,
+    ctx: &TermContext,
+) -> Result<(String, Vec<String>), TermError> {
+    ctx.check_required()?;
+
+    let heading = render_line(&template.title, ctx)?.unwrap_or_default();
+    let mut lines = Vec::new();
     for line in template.body.lines() {
         match render_line(line, ctx)? {
-            Some(rendered) => {
-                out.push_str(&rendered);
-                out.push('\n');
-            }
+            Some(rendered) => lines.push(rendered),
             // The line depended on something the holder did not provide.
             None => continue,
         }
     }
 
-    Ok(out)
+    Ok((heading, lines))
+}
+
+/// Render the term as a PDF — the sheet that gets printed, signed and filed.
+///
+/// `created` is the `/CreationDate`, from [`crate::pdf::pdf_date`]; it is passed
+/// in so that this function has no clock in it.
+///
+/// The typography is deliberately plain and the font is not embedded; the
+/// reasoning, and what it costs for a language CP1252 cannot set, is in
+/// [`crate::pdf`].
+pub fn render_term_pdf(
+    template: &TermTemplate,
+    ctx: &TermContext,
+    created: &str,
+) -> Result<Vec<u8>, TermError> {
+    let (heading, lines) = render_term_parts(template, ctx)?;
+
+    Ok(crate::pdf::render(&crate::pdf::TextDocument {
+        heading,
+        lines,
+        author: ctx.org.clone(),
+        subject: pdf_subject(template, ctx),
+        footer: pdf_footer(template, ctx),
+        created: created.to_owned(),
+    }))
+}
+
+/// The footer printed on every page of the PDF.
+///
+/// It names the **wording that produced the sheet** — `consignment@2 (pt-BR)` —
+/// the key, and the unit's own term reference. That is what makes a signed sheet
+/// in a filing cabinet traceable back to the exact template version in the
+/// database, which is the reason the wording is versioned at all.
+///
+/// A draft out of the editor has no version yet, and says so.
+pub fn pdf_footer(template: &TermTemplate, ctx: &TermContext) -> String {
+    let version = match template.version.trim() {
+        "" => "draft",
+        version => version,
+    };
+    let mut footer = format!(
+        "{}@{} ({}) · #{}",
+        template.id.trim(),
+        version,
+        template.language.trim(),
+        ctx.key_serial.trim()
+    );
+    if !ctx.receipt_ref.trim().is_empty() {
+        footer.push_str(" · ");
+        footer.push_str(ctx.receipt_ref.trim());
+    }
+    footer
+}
+
+/// The PDF `/Subject`.
+///
+/// The holder's name is deliberately absent: a PDF's metadata travels with the
+/// file into mail clients, previews and search indexes, and the body already
+/// carries every fact the document needs to state.
+pub fn pdf_subject(template: &TermTemplate, ctx: &TermContext) -> String {
+    format!(
+        "{} ({}) · #{}",
+        template.id.trim(),
+        template.language.trim(),
+        ctx.key_serial.trim()
+    )
 }
 
 /// Render one line, returning `None` when it should be dropped.
 fn render_line(line: &str, ctx: &TermContext) -> Result<Option<String>, TermError> {
     let mut out = String::with_capacity(line.len());
     let mut rest = line;
+    // Column in the *template*, in characters. What a gap is aiming at.
+    let mut template_column = 0usize;
     let mut saw_variable = false;
     let mut saw_empty = false;
 
     while let Some(start) = rest.find("{{") {
-        out.push_str(&rest[..start]);
+        let literal = &rest[..start];
+        push_literal(&mut out, literal, template_column, saw_variable);
+        template_column += literal.chars().count();
+
         let after = &rest[start + 2..];
         let Some(end) = after.find("}}") else {
             return Err(TermError::Unterminated);
@@ -411,19 +508,69 @@ fn render_line(line: &str, ctx: &TermContext) -> Result<Option<String>, TermErro
             .lookup(name)
             .ok_or_else(|| TermError::UnknownVariable(name.to_owned()))?;
 
-        saw_variable = true;
         if value.trim().is_empty() {
             saw_empty = true;
         }
         out.push_str(value);
+        // `{{`, the name as written, and `}}` — the width the author was laying
+        // out against when they counted the spaces after it.
+        template_column += 4 + after[..end].chars().count();
+        saw_variable = true;
         rest = &after[end + 2..];
     }
-    out.push_str(rest);
+    push_literal(&mut out, rest, template_column, saw_variable);
 
     if saw_variable && saw_empty {
         return Ok(None);
     }
     Ok(Some(out))
+}
+
+/// Append literal template text, **keeping columns where the template put them**.
+///
+/// A gap of two or more spaces in a term template is a column, not spacing: the
+/// signature block is two columns, and the author counted the spaces so that the
+/// rule, the name under it and the role under that all start at the same place.
+/// Substituting a value of a different width than `{{holder.name}}` would slide
+/// everything after it, so a gap that follows a substitution is resized to put
+/// what comes next back at the column the template declared.
+///
+/// This is layout, not logic — line omission remains the only conditional in a
+/// term ([`render_term`]). And it is not a new thing a template author has to
+/// know: it makes the spaces they already typed mean what they look like.
+///
+/// A gap never shrinks below one space, so two fields cannot be run together by
+/// a value too long for the column the author allowed it.
+fn push_literal(out: &mut String, literal: &str, template_column: usize, after_value: bool) {
+    // Before the first substitution nothing has moved, so the text is verbatim —
+    // which is what leaves the indentation of a wrapped clause alone.
+    if !after_value {
+        out.push_str(literal);
+        return;
+    }
+
+    let mut column = template_column;
+    let mut rest = literal;
+    while let Some((at, width)) = next_gap(rest) {
+        out.push_str(&rest[..at]);
+        column += rest[..at].chars().count();
+
+        let target = column + width;
+        let padding = target.saturating_sub(out.chars().count()).max(1);
+        out.extend(std::iter::repeat_n(' ', padding));
+
+        column += width;
+        rest = &rest[at + width..];
+    }
+    out.push_str(rest);
+}
+
+/// The next gap of two or more spaces: its byte offset and its width. Spaces are
+/// one byte each, so the width is both a character count and a byte count.
+fn next_gap(text: &str) -> Option<(usize, usize)> {
+    let at = text.find("  ")?;
+    let width = text[at..].bytes().take_while(|b| *b == b' ').count();
+    Some((at, width))
 }
 
 /// Pick the best template for a wanted language.

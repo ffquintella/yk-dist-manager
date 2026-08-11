@@ -80,6 +80,21 @@ Detection heuristic (overridable): `\\` UNC, `//`, `/Volumes/`, `/mnt/`,
 heuristic on purpose — the operator can override it in Settings, because no prefix list
 is right everywhere.
 
+A caller that *knows* does not guess: `StoreConfig::with_location` states the location
+outright, and [`smb::ShareConnection::store_config`](smb-share-hosting.md) uses it,
+because a share this application just connected is on a network filesystem whatever
+mount point the operating system chose. The heuristic is for paths nobody can vouch
+for.
+
+### Getting to the share is part of the storage story
+
+"Put the register on a network share" was advice nobody could act on while the
+application could only open a path somebody else had mounted, and the symptom of that
+not having happened was "is the share mounted?". So the share can now be **connected
+from inside the application** — as the signed-in user (the default, and on Windows the
+whole mechanism), as a guest, or as a named account whose password is typed and
+dropped. See [`smb-share-hosting.md`](smb-share-hosting.md).
+
 ### Cloud-sync folders are the worst case, and are now called out
 
 A `--diagnose` report from a real installation showed the database living in
@@ -151,6 +166,7 @@ Two operators on the same share will collide eventually. Planned policy:
 | 2 | Location-aware pragmas | Done | WAL vs rollback journal, tested |
 | 2b | Cloud-sync detection: safe pragmas plus a visible warning | Done | found by a `--diagnose` report from a real installation |
 | 2c | Cloud-sync hosting: `Location::CloudSync` + single-writer lock | Done | [spec](cloud-sync-hosting.md) — the installation that prompted 2b needed the folder to *work*, not just to be warned about |
+| 2d | Connect the SMB share from the application: anonymous, named account, or the signed-in user | In progress | [spec](smb-share-hosting.md) — the mechanism and all three platform backends are done and tested; the chooser card is Todo. This is what makes "use a real share" actionable rather than advice |
 | 3 | Backup (`VACUUM INTO`) + `integrity_check` | Done | Settings screen |
 | 4 | Multi-operator concurrency policy | Todo | busy retry + optimistic `updated_at` — **Wave 2**, tracked in the roadmap under that wave |
 | 5 | Per-step run rows instead of a JSON blob | **Done** | schema **v5**: `bootstrap_run_steps`, backfilled in Rust, blob column dropped |

@@ -1,5 +1,6 @@
 //! Behaviour tests for the paperwork half of a hand-over: generate the
-//! consignment term, then file the signed copy against the distribution.
+//! consignment term, export it as the PDF that gets signed, then file the
+//! signed copy against the distribution.
 
 use yk_dist_manager::device::DeviceInfo;
 use yk_dist_manager::domain::{
@@ -8,7 +9,7 @@ use yk_dist_manager::domain::{
 };
 use yk_dist_manager::store::{Store, StoreConfig};
 use yk_dist_manager::term::{
-    TermContext, TermTemplate, choose_template, edit_audit_entry, render_term,
+    TermContext, TermTemplate, choose_template, edit_audit_entry, render_term, render_term_pdf,
 };
 
 struct World {
@@ -544,4 +545,129 @@ fn scenario_optional_holder_fields_are_filled_in_not_blanked_by_a_later_edit() {
     assert_eq!(stored[0].identification_number, "123.456.789-00");
     assert_eq!(stored[0].phone, "+55 21 99999-0000");
     assert_eq!(stored[0].address, "Rua A, 1");
+}
+
+#[test]
+fn scenario_the_term_is_exported_as_the_pdf_the_holder_signs() {
+    // Given: a hand-over, and the term wording on record.
+    let world = World::new();
+    world.store.seed_builtin_terms().unwrap();
+    let (key, holder, record) = world.handed_over();
+    let templates = world.store.term_templates().unwrap();
+    let template = choose_template(&templates, "consignment", "pt-BR").expect("template");
+    let ctx = TermContext::from_records(
+        &holder,
+        &key,
+        Some(&record),
+        "org-standard 1 — FIDO2 PIN",
+        "Transport secret, holder must change it on first use",
+        "felipe",
+        "Example Organisation",
+    );
+
+    // When: the operator exports it as a PDF.
+    let bytes = render_term_pdf(template, &ctx, "D:20260811093000-03'00'").unwrap();
+
+    // Then: it is a file a viewer opens, and it says the same things the text
+    // said — the name, the identification number, the serial, the reference.
+    let file = String::from_utf8_lossy(&bytes).to_string();
+    assert!(bytes.starts_with(b"%PDF-1.7\n"));
+    assert!(bytes.ends_with(b"%%EOF\n"));
+    assert!(file.contains("Ana Silva"));
+    assert!(file.contains("123.456.789-00"));
+    assert!(file.contains("20423633"));
+    assert!(file.contains("TERM-2026-001"));
+
+    // And every page names the wording it came from, so a signed sheet in a
+    // filing cabinet is traceable back to this template version.
+    assert!(file.contains("consignment@1 \\(pt-BR\\) \\267 #20423633 \\267 TERM-2026-001"));
+
+    // And nothing personal leaked into the metadata, which travels with the file.
+    let metadata = file.split("/Type /Page").next().unwrap();
+    assert!(!metadata.contains("Ana Silva"));
+    assert!(!metadata.contains("123.456.789-00"));
+}
+
+#[test]
+fn scenario_an_edited_wording_is_the_one_the_pdf_footer_names() {
+    // Given: the operator has edited the pt-BR wording, so version 2 is on record.
+    let world = World::new();
+    world.store.seed_builtin_terms().unwrap();
+    let (key, holder, record) = world.handed_over();
+    let mut edited = TermTemplate::consignment_pt_br();
+    edited
+        .body
+        .push_str("\n7. CLÁUSULA LOCAL\n\nTexto da unidade.\n");
+    world.store.save_term_template_version(&edited).unwrap();
+
+    // When: a term is generated for this hand-over.
+    let templates = world.store.term_templates().unwrap();
+    let template = choose_template(&templates, "consignment", "pt-BR").unwrap();
+    let ctx = TermContext::from_records(
+        &holder,
+        &key,
+        Some(&record),
+        "org-standard 1",
+        "custody",
+        "felipe",
+        "Example Organisation",
+    );
+    let bytes = render_term_pdf(template, &ctx, "").unwrap();
+    let file = String::from_utf8_lossy(&bytes).to_string();
+
+    // Then: the new clause is on the page, and the footer says version 2 — the
+    // version somebody may already have signed is still 1, and still readable.
+    assert_eq!(template.version, "2");
+    assert!(file.contains("CL\\301USULA LOCAL"));
+    assert!(file.contains("consignment@2 \\(pt-BR\\)"));
+    assert!(
+        choose_template(&templates, "consignment", "pt-BR").map(|t| t.version.as_str())
+            == Some("2")
+    );
+}
+
+#[test]
+fn scenario_a_term_in_a_language_the_pdf_font_cannot_set_is_reported_not_silently_mangled() {
+    // Given: a unit adds a term in a language CP1252 has no glyphs for.
+    let world = World::new();
+    world.store.seed_builtin_terms().unwrap();
+    let (key, holder, record) = world.handed_over();
+    let japanese = TermTemplate {
+        id: "consignment".into(),
+        language: "ja".into(),
+        version: "1".into(),
+        title: "セキュリティキー貸与書".into(),
+        body: "氏名: {{holder.name}}\nシリアル: {{key.serial}}\n".into(),
+    };
+    world.store.save_term_template_version(&japanese).unwrap();
+
+    // When: the term is rendered as text, and the PDF is asked what it can set.
+    let templates = world.store.term_templates().unwrap();
+    let template = choose_template(&templates, "consignment", "ja").unwrap();
+    let ctx = TermContext::from_records(
+        &holder,
+        &key,
+        Some(&record),
+        "org-standard 1",
+        "custody",
+        "felipe",
+        "Example Organisation",
+    );
+    let text = render_term(template, &ctx).unwrap();
+
+    // Then: the text output carries the wording correctly...
+    assert!(text.contains("氏名: Ana Silva"));
+
+    // ...and the operator is told, before printing, exactly what the PDF cannot
+    // set, rather than being handed a page of question marks.
+    let missing = yk_dist_manager::pdf::unrepresentable(&text);
+    assert!(missing.contains(&'氏'));
+    assert!(!missing.contains(&'A'), "Latin text is unaffected");
+
+    // The PDF is still produced — a document with the holder's name and the
+    // serial legible beats no document at all.
+    let bytes = render_term_pdf(template, &ctx, "").unwrap();
+    let file = String::from_utf8_lossy(&bytes).to_string();
+    assert!(file.contains("Ana Silva"));
+    assert!(file.contains("20423633"));
 }

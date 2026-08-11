@@ -46,8 +46,10 @@
 | `device` | Talking to hardware behind `YubiKeyBackend` | Know about the database or the GUI |
 | `template` | Templates, variable rendering, the editable draft, and turning a template into a plan | Execute anything, hold a secret value |
 | `versioning` | One answer to "what number does the next edit get?", shared by templates and terms | Know what is being versioned |
+| `pdf` | Setting a monospaced document on A4 pages and writing the PDF: encoding, wrapping, pagination, the cross-reference table | Decide what a document *says* — it is handed lines, and it reads no clock |
 | `store` | The SQLite file: schema, migrations, pragmas, CRUD, audit insertion | Contain business rules that belong in `domain` |
 | `store::cloud` | Making a database in a sync folder (OneDrive, Dropbox, …) strictly sequential: the settle wait, the `<database>.lock` single-writer lock, conflict-copy detection | Pretend to be a distributed lock, or hold anything secret |
+| `store::smb` | Reaching an SMB share: parsing a location, the identity to present, connecting and releasing (`WNetAddConnection2W`, `NetFSMountURLSync`), and reporting a local path | Open a database — it hands back a path and a `StoreConfig`, and `Store` never learns what SMB is. Keep a password anywhere but a zeroed-on-drop `Secret`, or put one in an argument vector |
 | `audit` | The chain: entry shape, hashing, verification, the file sink | Depend on `store` (so `store` can use it, not the reverse) |
 | `logging` | The one logging entry point | Be bypassed by a hand-formatted line |
 | `branding` | The embedded application icon, and refusing a malformed one | Depend on an optional feature — the icon exists in every build |

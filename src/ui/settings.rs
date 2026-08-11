@@ -167,6 +167,22 @@ fn database_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
                 }
                 ui.end_row();
 
+                // Which share, and as whom. The identity belongs on screen while
+                // the register is open: "who am I writing to this file as" is not
+                // something an operator should have to remember from the chooser.
+                if let Some(share) = app.share.as_ref() {
+                    ui.label("Network share");
+                    ui.vertical(|ui| {
+                        ui.add(elegance::Badge::new(
+                            "connected by this application",
+                            elegance::BadgeTone::Ok,
+                        ));
+                        super::mono(ui, &share.target().location());
+                        super::faint(ui, &share.describe());
+                    });
+                    ui.end_row();
+                }
+
                 ui.label("Device transport");
                 super::faint(ui, &app.backend.describe());
                 ui.end_row();
@@ -243,6 +259,20 @@ fn database_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
             }
             if ui.add(Button::new("Create new…").outline()).clicked() {
                 app.db_request = Some(DbRequest::PickNew);
+            }
+            // Only offered when there is a connection this session made: a share
+            // the operator mounted themselves is not this application's to take
+            // down, and the button would be a lie.
+            if app.share.is_some()
+                && ui
+                    .add(Button::new("Close and disconnect the share").outline())
+                    .on_hover_text(
+                        "close the database, then disconnect from the file server — in that \
+                         order",
+                    )
+                    .clicked()
+            {
+                app.db_request = Some(DbRequest::DisconnectShare);
             }
         });
 

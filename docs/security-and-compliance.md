@@ -52,6 +52,18 @@ a panic message.
   them into a template.
 - Command construction uses argv vectors, never a shell string; the native transport passes
   secrets as function parameters instead of command-line arguments.
+- **A share password is the one secret this tool does handle, and it is handled as a
+  transient.** `store::smb::Secret` keeps it as bytes, zeroes them on drop, prints
+  `Secret(********)` from `Debug` — so no `{:?}`, no `tracing` field and no panic message can
+  carry it — and is readable only inside the crate, so no test can assert on one and no
+  widget can echo one. It is typed at the chooser, used for one connection, and cleared from
+  the form in the same call.
+  This is also *why* the SMB backends are native APIs (`WNetAddConnection2W`,
+  `NetFSMountURLSync`) rather than `net use` and `mount_smbfs`: those take the password in an
+  argument vector, which every process on the workstation can read, and the documented
+  alternative is a credentials file — the temporary file this section forbids. The settings
+  file remembers the share and the user name; it has no field a password could occupy, and a
+  test asserts the serialised form.
 
 ### Custody — decided
 
@@ -114,9 +126,17 @@ stated rather than glossed over:
    and a handwritten signature, stored inside the database (the reasoning is in
    `../features/signed-term-documents.md`).
 
+A **generated term** — text or PDF — is personal data the operator deliberately writes to
+a file, at a path they choose, in order to have it signed. It leaves this tool's
+protection at that moment, so it is audited (`term.saved`, with the format and the path)
+and it is the operator's to file or shred. In the PDF, the document *metadata* carries no
+personal data: `/Title` and `/Subject` name the term, the language and the serial, because
+those fields travel with the file into mail clients, previews and search indexes, and the
+body already says everything the document needs to say.
+
 The **lock file** a cloud-hosted database needs is the one place personal data is written
-outside the database: an operator name, a workstation name and a pid, all of which the
-audit trail already records, and no more. It is deleted when the database is closed. It
+outside the database *without the operator asking for it*: an operator name, a workstation
+name and a pid, all of which the audit trail already records, and no more. It is deleted when the database is closed. It
 holds **no secret** — no password, no PIN, no access code — like every other file this
 tool writes. A database in a sync folder is itself an argument for the password: the file
 sits in somebody else's storage, and its sharing settings become its access control.
@@ -258,7 +278,15 @@ everything that does not depend on it, and say plainly what is pending. That is 
    not. Sync conflict copies are detected and reported rather than prevented. Whether the
    register may live in third-party sync storage at all, and under what sharing rules, is
    an *ESI* decision (`../features/cloud-sync-hosting.md`).
-7. **Enforcement of the PIN change is sometimes procedural** — `forcePINChange` needs
+7. **A named account on an SMB share** is a password typed into a desktop application. It is
+   never stored (§2), but the *pattern* may be one the ESI prefers to forbid in favour of the
+   signed-in user plus a share ACL — which is why the signed-in user is the default and the
+   named account has to be chosen. Which share may hold the register, what its ACL must be,
+   and whether guest access is ever acceptable are **ESI** decisions
+   (`../features/smb-share-hosting.md`). Reaching a share as the signed-in domain user is
+   ordinary file access; *selecting* a domain controller or requesting a Kerberos ticket would
+   be an AD integration, and is deliberately not built.
+8. **Enforcement of the PIN change is sometimes procedural** — `forcePINChange` needs
    firmware 5.7+, and PIV has no equivalent at all. Under custody model B those keys rely on
    the hand-over term's instruction. The run records which applied, so the exposure is
    measurable; closing it would mean either a 5.7+ fleet or model A (holder present).

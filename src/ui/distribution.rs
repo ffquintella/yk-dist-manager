@@ -158,9 +158,25 @@ fn term(app: &mut YkDistApp, ui: &mut egui::Ui) {
                         });
                 });
 
+            if let Some(note) = app.term_panel.pdf_note.clone() {
+                ui.add_space(8.0);
+                super::notice(ui, CalloutTone::Warning, &note);
+            }
+
             ui.add_space(10.0);
             ui.horizontal_wrapped(|ui| {
-                if ui.add(Button::new("Save as text…")).clicked() {
+                if ui
+                    .add(Button::new("Export as PDF…").accent(Accent::Blue))
+                    .on_hover_text("the sheet to print, sign and file")
+                    .clicked()
+                {
+                    app.save_term_pdf();
+                }
+                if ui
+                    .add(Button::new("Save as text…").outline())
+                    .on_hover_text("the same document as plain text, for a ticket")
+                    .clicked()
+                {
                     app.save_term();
                 }
                 if ui

@@ -1,11 +1,12 @@
-//! Unit tests for consignment terms: rendering, optional-field omission, and
-//! language selection.
+//! Unit tests for consignment terms: rendering, optional-field omission,
+//! language selection, and the PDF the holder signs.
 
 use yk_dist_manager::device::DeviceInfo;
 use yk_dist_manager::domain::{Holder, SerialSource, YubiKeyRecord};
 use yk_dist_manager::term::{
     BUILTIN_LANGUAGES, DEFAULT_LANGUAGE, MAX_BODY, TermContext, TermError, TermTemplate,
-    choose_template, is_edited, languages_of, latest_in_language, next_version, render_term,
+    choose_template, is_edited, languages_of, latest_in_language, next_version, pdf_footer,
+    pdf_subject, render_term, render_term_parts, render_term_pdf,
 };
 
 /// A template in one language and version, for the version-selection tests.
@@ -471,4 +472,245 @@ fn the_sample_context_fills_every_variable_so_no_preview_line_is_hidden() {
         let text = render_term(&template, &sample).unwrap();
         assert!(text.contains("Ana Exemplo da Silva"));
     }
+}
+
+// ------------------------------------------------------------- the PDF output
+
+#[test]
+fn the_pdf_carries_every_line_the_text_carries() {
+    // The two outputs go through `render_term_parts` for exactly this reason:
+    // the operator reviews the text on screen and signs the PDF, so a document
+    // that said different things in each would be found by a holder, not here.
+    let holder = holder_full();
+    let template = TermTemplate::consignment_pt_br();
+    let context = ctx(&holder);
+
+    let text = render_term(&template, &context).unwrap();
+    let (heading, lines) = render_term_parts(&template, &context).unwrap();
+
+    assert_eq!(text, format!("{heading}\n\n{}\n", lines.join("\n")));
+}
+
+#[test]
+fn a_line_omitted_for_a_missing_optional_field_is_absent_from_the_pdf_too() {
+    let holder = holder_minimal();
+    let (_, lines) = render_term_parts(&TermTemplate::consignment_pt_br(), &ctx(&holder)).unwrap();
+
+    assert!(!lines.iter().any(|line| line.contains("Telefone:")));
+    assert!(lines.iter().any(|line| line.contains("Bruno Costa")));
+}
+
+#[test]
+fn a_pdf_term_cannot_be_issued_without_a_name_or_a_serial() {
+    // The same gate as the text output. A PDF is not a way around it.
+    let mut context = TermContext::sample();
+    context.holder_name.clear();
+
+    assert_eq!(
+        render_term_pdf(&TermTemplate::consignment_en(), &context, "").unwrap_err(),
+        TermError::Incomplete("the holder's name")
+    );
+}
+
+#[test]
+fn the_pdf_is_a_pdf_and_sets_the_holders_name_on_the_page() {
+    let holder = holder_full();
+    let bytes = render_term_pdf(
+        &TermTemplate::consignment_pt_br(),
+        &ctx(&holder),
+        "D:20260811093000-03'00'",
+    )
+    .unwrap();
+    let file = String::from_utf8_lossy(&bytes).to_string();
+
+    assert!(bytes.starts_with(b"%PDF-1.7\n"));
+    assert!(file.contains("Ana Silva"), "the holder is not on the page");
+    assert!(file.contains("20423633"), "the serial is not on the page");
+}
+
+#[test]
+fn the_pdf_footer_names_the_wording_that_produced_the_sheet() {
+    // A signed sheet in a filing cabinet has to be traceable back to the exact
+    // template version in the database — which is the reason the wording is
+    // versioned at all.
+    let holder = holder_full();
+    let mut context = ctx(&holder);
+    context.receipt_ref = "TERM-2026-001".into();
+    let template = TermTemplate::consignment_pt_br();
+
+    assert_eq!(
+        pdf_footer(&template, &context),
+        "consignment@1 (pt-BR) · #20423633 · TERM-2026-001"
+    );
+}
+
+#[test]
+fn a_footer_with_no_term_reference_stops_after_the_serial() {
+    let holder = holder_full();
+    let template = TermTemplate::consignment_en();
+
+    assert_eq!(
+        pdf_footer(&template, &ctx(&holder)),
+        "consignment@1 (en) · #20423633"
+    );
+}
+
+#[test]
+fn a_draft_out_of_the_editor_is_marked_as_one_in_the_footer() {
+    // The editor's draft has no version yet — the database assigns it on save —
+    // so a PDF exported for review must not look like a stored version.
+    let mut template = TermTemplate::consignment_pt_br();
+    template.version = String::new();
+
+    assert!(
+        pdf_footer(&template, &TermContext::sample()).starts_with("consignment@draft (pt-BR)"),
+        "{}",
+        pdf_footer(&template, &TermContext::sample())
+    );
+}
+
+#[test]
+fn the_pdf_metadata_carries_no_personal_data() {
+    // A PDF's metadata travels with the file into mail clients, previews and
+    // search indexes. The body says everything the document needs to say.
+    let holder = holder_full();
+    let subject = pdf_subject(&TermTemplate::consignment_pt_br(), &ctx(&holder));
+
+    assert!(!subject.contains("Ana"));
+    assert!(!subject.contains("123.456.789-00"));
+    assert!(!subject.contains("ana.silva@example.org"));
+    assert_eq!(subject, "consignment (pt-BR) · #20423633");
+}
+
+#[test]
+fn both_shipped_languages_produce_a_pdf() {
+    for template in TermTemplate::builtin() {
+        let bytes = render_term_pdf(&template, &TermContext::sample(), "").unwrap();
+        assert!(
+            bytes.starts_with(b"%PDF-1.7\n") && bytes.ends_with(b"%%EOF\n"),
+            "{} did not produce a PDF",
+            template.language
+        );
+    }
+}
+
+// ------------------------------------------------- columns in a term template
+
+#[test]
+fn a_signature_block_lines_up_whatever_length_the_name_is() {
+    // The shipped wording declares column 41 three times: after the rules, after
+    // the name, after the role. Substituting a name of any other length than the
+    // `{{holder.name}}` placeholder used to slide the second column along with it.
+    for name in [
+        "Ana Silva",
+        "Bruno Costa",
+        "Maria da Conceição Albuquerque Fonseca",
+        "Yu",
+    ] {
+        let holder = Holder::new(name, "h@example.org", "ESI", "").unwrap();
+        let text = render_term(&TermTemplate::consignment_pt_br(), &ctx(&holder)).unwrap();
+
+        let rules = text
+            .lines()
+            .find(|line| line.starts_with("______"))
+            .expect("the rules line");
+        let names = text
+            .lines()
+            .find(|line| line.starts_with(name))
+            .filter(|line| line.contains("felipe"))
+            .expect("the names line");
+        let roles = text
+            .lines()
+            .find(|line| line.starts_with("Portador"))
+            .expect("the roles line");
+
+        let column = |line: &str, of: &str| line.find(of).map(|at| line[..at].chars().count());
+        assert_eq!(
+            column(names, "felipe"),
+            column(rules, " _").map(|at| at + 1),
+            "the operator's column does not match the rule above it, for `{name}`"
+        );
+        assert_eq!(
+            column(names, "felipe"),
+            column(roles, "Responsável"),
+            "the operator's column does not match the role below it, for `{name}`"
+        );
+    }
+}
+
+#[test]
+fn the_english_signature_block_lines_up_too() {
+    let holder = Holder::new("Ana Silva", "h@example.org", "ESI", "").unwrap();
+    let text = render_term(&TermTemplate::consignment_en(), &ctx(&holder)).unwrap();
+
+    let names = text
+        .lines()
+        .find(|line| line.starts_with("Ana Silva") && line.contains("felipe"))
+        .expect("the names line");
+    let roles = text
+        .lines()
+        .find(|line| line.starts_with("Holder"))
+        .expect("the roles line");
+
+    assert_eq!(
+        names.find("felipe").map(|at| names[..at].chars().count()),
+        roles.find("Issuing").map(|at| roles[..at].chars().count())
+    );
+}
+
+#[test]
+fn a_name_too_long_for_its_column_keeps_one_space_rather_than_touching_the_next_field() {
+    // The column cannot be honoured, so it degrades — but two fields must never
+    // be run into one word.
+    let holder = Holder::new(&"A".repeat(60), "h@example.org", "ESI", "").unwrap();
+    let text = render_term(&TermTemplate::consignment_pt_br(), &ctx(&holder)).unwrap();
+
+    let names = text
+        .lines()
+        .find(|line| line.contains("felipe") && line.starts_with('A'))
+        .expect("the names line");
+    assert!(names.contains(&format!("{} felipe", "A".repeat(60))));
+}
+
+#[test]
+fn a_single_space_is_spacing_and_is_never_touched() {
+    // Only a gap of two or more is a column. `{{org}} — {{org.unit}}` must keep
+    // its single spaces exactly.
+    let holder = holder_full();
+    let text = render_term(&TermTemplate::consignment_pt_br(), &ctx(&holder)).unwrap();
+
+    assert!(text.contains("Example Organisation — ESI"), "{text}");
+}
+
+#[test]
+fn the_indentation_of_a_clause_is_left_alone() {
+    // A leading gap comes before any substitution on its line, so nothing has
+    // moved and there is nothing to correct. The clause continuations in the
+    // shipped wording depend on that.
+    let holder = holder_full();
+    let text = render_term(&TermTemplate::consignment_pt_br(), &ctx(&holder)).unwrap();
+
+    assert!(
+        text.contains("\n     equivale à assinatura do portador."),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_column_is_kept_when_the_value_is_shorter_than_the_placeholder_too() {
+    // Padding grows as well as shrinks: a two-character name must not pull the
+    // second column left.
+    let template = TermTemplate {
+        id: "consignment".into(),
+        language: "pt-BR".into(),
+        version: "1".into(),
+        title: "T".into(),
+        // `{{holder.name}}` is 15 characters, so the gap targets column 25.
+        body: "{{holder.name}}          {{operator}}\n0123456789012345678901234 ok\n".into(),
+    };
+    let holder = Holder::new("Yu", "yu@example.org", "ESI", "").unwrap();
+    let text = render_term(&template, &ctx(&holder)).unwrap();
+
+    let line = text.lines().find(|l| l.contains("felipe")).unwrap();
+    assert_eq!(line.find("felipe"), Some(25));
 }

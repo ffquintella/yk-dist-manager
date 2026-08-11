@@ -30,9 +30,9 @@ deployment.
 | State | Count |
 |---|---|
 | Done | 9 |
-| In progress | 13 |
-| Todo | 18 |
-| **Total tracked items** | **40** (across 37 specs — two items share a spec) |
+| In progress | COUNT-IP |
+| Todo | COUNT-TODO |
+| **Total tracked items** | **COUNT-TOTAL** (across 38 specs — two items share a spec) |
 
 > The counts above had drifted (they said 11 in progress against 13 `[/]` rows), as
 > had the test and coverage figures quoted in two places. Both are corrected here.
@@ -54,6 +54,26 @@ could not merge. Two operators sharing that folder now collide with a refusal in
 with two divergent registers of who holds which security token. No schema change. It is
 not an endorsement of the location — see the ESI gate in the spec and in
 [Open questions](#open-questions).
+
+**Also out of turn, unreleased**: **connecting the SMB share from inside the
+application** — [`features/smb-share-hosting.md`](features/smb-share-hosting.md). It
+belongs to Wave 0's storage work, not to Wave 1, and it was taken now because it is the
+missing half of the sentence every storage document here ends with. "Put the register on
+a real network share" was advice nobody could act on: the tool could only open a path
+somebody else had mounted, so the answer to a share that was not mounted was
+`is the share mounted?` — a message that names the problem and offers nothing. That is
+also *why* one installation keeps the register in OneDrive: getting to the unit's share
+was harder than not. So the share is now reachable from the chooser — as the account the
+operator is already signed in with (the default, and on **Windows** the whole mechanism,
+since a UNC path is authenticated by the session's own token), as a **guest**, or as a
+**named account** whose password is typed and dropped. Native APIs, not `net use` /
+`mount_smbfs`, because a password on a command line is readable by every process on the
+workstation. A share the operating system already mounted is used and **not** unmounted
+on close; one this session made is released on every path that stops using the database,
+including quitting. No schema change. On Linux an unprivileged process cannot mount
+CIFS, and the refusal says so and names the alternative rather than failing quietly.
+Which share, and whether a named service account may be used at all, are **ESI**
+decisions this makes possible rather than makes — see the gates in the spec.
 
 Also out of turn, released in v0.6.0: the **Templates screen** — phase 2 of
 [`features/bootstrap-templates.md`](features/bootstrap-templates.md), plus add /
@@ -95,8 +115,10 @@ of the job: choosing or creating the database file, recording serials from a bar
 generating the consignment term in the holder's language, and filing the signed copy
 against the hand-over — and, from the Terms screen, editing that term's wording per
 language. The Templates screen now does the same for the bootstrap procedure itself.
-384 tests pass (plus 2 read-only hardware tests), with 88.25% line coverage of the
-headless core — now enforced by CI rather than reported by it.
+MEASURE-TESTS tests pass (plus 2 read-only hardware tests), with MEASURE-COVERAGE line
+coverage of the headless core — now enforced by CI rather than reported by it. The
+register can also be opened from the unit's **SMB share**, connected by the application
+itself.
 
 ## What stands between here and a closed Wave 0
 
@@ -167,7 +189,8 @@ Everything needed before a single byte is written to a key.
 | `[x]` | `ykman` fallback + parsers | [spec](features/ykman-fallback.md) — argv-only subprocess, typed errors, parsers unit-tested against recorded output of ykman 5.9.2. |
 | `[/]` | Device detection | [spec](features/device-detection.md) — read-on-demand works; hot-plug polling and multi-key selection pending. |
 | `[/]` | Single-file SQLite storage | [spec](features/storage-sqlite-single-file.md) — schema **v5** (per-step run rows), `user_version` migrations (v1→v5 tested), WAL locally / rollback journal on a share, `VACUUM INTO` backup **on a schedule with rotation**, `integrity_check`, and **CSV import** of the spreadsheet this replaces. Concurrency is Wave 2; retention is blocked on ESI. |
-| `[/]` | Cloud-sync hosting (OneDrive) | [spec](features/cloud-sync-hosting.md) — `Location::CloudSync`: waits for the sync client, takes `<database>.lock`, refuses a second workstation by name, releases after the upload, reports sync conflict copies, **snapshots the register at open** before this session can write, and offers a **read-only** open so a second operator can look without taking the lock. Every phase done. Whether the location is *acceptable* is an ESI decision, not this feature's. |
+| `[/]` | SMB share hosting | [spec](features/smb-share-hosting.md) — the application connects the share itself: the signed-in user (the default, and the whole mechanism on Windows), guest, or a named account whose password is typed and never stored. `WNetAddConnection2W` / `NetFSMountURLSync`, never a command line. An already-mounted share is used and left alone; one this session made is released on close and on quit. Reconnecting a share that drops mid-session, and Kerberos on macOS, are Todo. |
+| `[x]` | Cloud-sync hosting (OneDrive) | [spec](features/cloud-sync-hosting.md) — `Location::CloudSync`: waits for the sync client, takes `<database>.lock`, refuses a second workstation by name, releases after the upload, reports sync conflict copies, **snapshots the register at open** before this session can write, and offers a **read-only** open so a second operator can look without taking the lock. Every phase done. Whether the location is *acceptable* is an ESI decision, not this feature's. |
 | `[x]` | Choosing / creating the database file | [spec](features/database-selection.md) — strict `open_existing` vs `create_new` (a typo can no longer create an empty database), recent-database list, native dialogs, switch from Settings. |
 | `[ ]` | Optional database password | [spec](features/db-password-and-encryption.md) — `encrypted-db` feature wires `PRAGMA key`; unlock screen exists. KDF parameters, password change and re-key are Todo. |
 | `[x]` | Logging | [spec](features/logging.md) — one entry point, three levels, G-002 line format, no hand-built log lines. |
@@ -181,15 +204,15 @@ Everything needed before a single byte is written to a key.
 | `[/]` | GUI shell | [spec](features/gui-shell.md) — eight screens, unlock screen, status bar, egui 0.36 `App::ui`, themed with `egui-elegance` (four palettes, the choice persisted) and laid out fluidly (one gutter, full-width cards, columns that split the page, tables that contain their own overflow). Search, keyboard flow and window-state persistence still open. |
 | `[/]` | Bootstrap wizard | [spec](features/gui-bootstrap-wizard.md) — selection (the newest version of each template in use), per-step opt-out, plan review, dry run, and a link to the Templates screen. Execution progress view pending. |
 | `[/]` | Application icon | [spec](features/application-icon.md) — one SVG (a box truck carrying a YubiKey), `make icons` rendering the PNGs, the macOS `.icns` and the RGBA blob the binary embeds; window, dock and bundle icons done. A Windows `.ico` resource and a Linux `hicolor` install wait on there being Windows and Linux packaging. |
-| `[/]` | Testing strategy | [spec](features/testing-strategy.md) — **384 tests** across unit + behaviour suites, mock backend, recorded fixtures, ignored hardware tests; **88.25%** core line coverage. **CI enforces the gate** on every push, with a macOS/Windows/Linux build matrix. Mock write transports and the secret-leak sweep wait on Wave 1. |
+| `[/]` | Testing strategy | [spec](features/testing-strategy.md) — **MEASURE-TESTS tests** across unit + behaviour suites, a mock device backend and a mock share connector, recorded fixtures, ignored hardware tests; **MEASURE-COVERAGE** core line coverage. **CI enforces the gate** on every push, with a macOS/Windows/Linux build matrix. Mock write transports and the secret-leak sweep wait on Wave 1. |
 
 ### Paperwork
 
 | Status | Feature | Notes |
 |---|---|---|
-| `[x]` | Consignment terms | [spec](features/consignment-terms.md) — multilingual templates keyed `(id, language, version)`, pt-BR + en built in, optional fields that omit their own line, generated from the record. A **Terms screen** edits the wording and adds languages: saving stores a new version, and terms are generated from the newest. The **wording needs its owner's review**, which the editor is what makes possible. |
+| `[x]` | Consignment terms | [spec](features/consignment-terms.md) — multilingual templates keyed `(id, language, version)`, pt-BR + en built in, optional fields that omit their own line, generated from the record. A **Terms screen** edits the wording and adds languages: saving stores a new version, and terms are generated from the newest. The **wording needs its owner's review**, which the editor is what makes possible — and, since phase 7, an *Export as PDF…* that sends the reviewer the document rather than a template full of `{{variables}}`. The term now leaves as **text or PDF** from one rendering, so the copy reviewed on screen cannot disagree with the copy that is signed; `crate::pdf` writes the file with **no dependency and no TeX**, and every page names the template version that produced it. |
 | `[x]` | Signed-term upload | [spec](features/signed-term-documents.md) — the scan is filed in the database with a SHA-256, verified on export, with a per-hand-over "none filed" badge. |
-| `[ ]` | Receipts & terms (PDF, signature tracking) | [spec](features/receipts-and-terms.md) — the broader spec: PDF output, a signature state machine, return receipts, batch generation. |
+| `[ ]` | Receipts & terms (signature tracking) | [spec](features/receipts-and-terms.md) — what is left of the broader spec: the sealed-envelope slip, a signature state machine with an age warning, return receipts, batch generation. |
 
 ## Wave 1 — Execute the bootstrap, natively
 
@@ -327,3 +350,10 @@ Decisions that change what gets built, and are not the implementer's to make.
 | 2026-08-10 | The layout is fluid — the page decides width, and a wide table scrolls inside its own card | A card is an `egui::Frame`, so it was as wide as whatever was inside it: the Inventory table filled the window while the Holders form stopped at two 340px columns, and no two screens lined up. Making the *page* horizontally scrollable would have been the other fix, but then every card on a screen becomes as wide as the widest table on it — so the overflow is contained in `ui::table` and the body scrolls vertically only |
 | 2026-08-11 | A database in a cloud-sync folder is opened **one workstation at a time**, enforced by a lock file next to it | Warning about the location changed nothing, because the unit that hit it has nowhere else to put the register. A sync client offers no lock manager and no supported "have you finished?" API, so sequencing has to happen outside the database: wait until the file stops changing, take `<database>.lock`, refuse the second workstation *by name*, and remove the lock only after the upload — releasing it earlier would invite the next operator to start from a file still on its way. The lock is cooperative and says so: it binds workstations running this tool, not a machine that ignores it, which is why sync conflict copies are also detected and reported |
 | 2026-08-11 | A lock is held by a **run**, not by a host and pid, and an abandoned one is broken only by an explicit operator action | Pids are reused, so "same host, same pid" would let a lock left by a dead run be silently adopted — the exact two-writer case the lock prevents. A per-run id makes the question exact. And staleness is deliberately 15 minutes with no automatic break: a sleeping laptop stops renewing without releasing, so only the operator can know the other machine is off rather than mid-hand-over. Taking the lock over names the previous holder in the audit trail |
+| 2026-08-11 | The consignment term is set as a PDF by **code in this repository** — no PDF crate, no TeX, no subprocess | The deployment is a desktop application on a workstation that has nothing else installed, so a document pipeline the operator has to install is a document pipeline that will not be there during a hand-over. Writing the file is affordable because of one restriction: the document is monospaced text in **Courier**, a standard-fourteen font, so nothing is embedded and the font-parsing half of a PDF writer disappears. Courier is also the correct font rather than a concession — the term's clause indentation and its side-by-side signature rules are built out of spaces in the template, and a proportional font would quietly destroy the wording's own alignment. The cost is stated and handled, not hidden: CP1252 covers the Latin-script languages completely, and a character outside it is *reported to the operator before printing* rather than silently turned into `?` |
+| 2026-08-11 | The text output and the PDF come from **one rendering** (`term::render_term_parts`) | The operator reviews the text on screen and the holder signs the PDF. Two substitution paths would eventually disagree, and the disagreement would be found by a holder holding a document that contradicts the register — which is the exact failure this whole feature exists to prevent |
+| 2026-08-11 | Every page of the term names the **template version** that produced it, and the last page always carries at least six rows | The wording is versioned because something gets signed against a version; a signed sheet in a filing cabinet that does not say which one leaves the versioning doing no work. The six-row rule is the same argument applied to the page break: the shipped term is 62 rows against a 61-row page, so the default break put the signature rules on one sheet and the names beneath them on the next. Asking the template to mark the block instead would have made a legal document depend on its author remembering a mechanism, and forgetting would be invisible until a term came back signed |
+| 2026-08-11 | In a term template a gap of **two or more spaces is a column**, kept where the template put it; a single space is spacing and is never touched | The signature block is two columns, and its author counted the spaces so the rule, the name under it and the role under that all begin at column 41. Substitution destroyed that, because a holder is not fifteen characters long like `{{holder.name}}` — so the name stopped sitting under its own rule. The template was never wrong; the renderer was discarding geometry the template had declared. The fix is layout, not logic: line omission stays the only conditional, there is no `{{name\|pad:41}}` (that is the template language this feature refuses to grow), and a gap before the first substitution on a line is untouched, which is what leaves the wrapped clauses' indentation alone. Restructuring the shipped wording into stacked blocks would have avoided the code, but the layout of an institutional document is its owner's decision — and a two-column signature block is the ordinary form, so the next unit to write one would have hit the same bug |
+| 2026-08-11 | The application **connects the SMB share itself**, and the default identity is the operator already signed in | "Put the register on a real network share" was the recommendation in every storage document and the one thing the tool could not help with: it opened paths, so the share had to be mounted by somebody else first, and the answer when it was not was a question. On Windows the correct implementation of "use my credentials" is to make *no* call — a UNC path is authenticated by the session's own token, exactly as Explorer is — so the default costs nothing and needs no password. Guest and a named account exist because a NAS and a service-account share both exist, and an explicit choice is honoured exactly rather than falling back to the signed-in user: connecting as an unexpected identity is a register opened with permissions nobody reviewed, and on a share that is read-only for everyone else it looks like the writes were lost |
+| 2026-08-11 | Reaching a share uses the **native API** (`WNetAddConnection2W`, `NetFSMountURLSync`), never `net use` or `mount_smbfs` | The rule that no secret may persist decides this, not taste. Both CLIs take the password in the URL or the argument vector, where every process on the workstation can read it, and the documented way around that is a credentials file — the temporary file the same rule forbids. `mount_smbfs`'s interactive prompt reads `/dev/tty`, which a windowed application does not have. The API takes a string in this process's memory, which is what a zeroed-on-drop `Secret` can supply. The same reasoning is why Linux gets a *refusal that names `mount.cifs` and `autofs`* rather than a helper that writes a credentials file |
+| 2026-08-11 | A share the operating system already mounted is **used and left alone**; only a connection this session made is taken down | The probe comes before the credential, which means an operator who already has the share is never asked for a password and never has their mount pulled out from under their own work. It also fixes the ordering that matters on close: audit, close the database, *then* disconnect — and the audit entry has to be written while there is still a database to write it to |

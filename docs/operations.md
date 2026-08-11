@@ -92,6 +92,51 @@ new location, because the heuristic can be wrong.
 **On a share:** two operators can use the file, but they are serialised. If someone else is
 writing, you will see a busy message rather than a corruption.
 
+### Connecting the share from the application (SMB)
+
+The share does not have to be mounted before you start. The chooser has an
+**Open from a network share (SMB)** card:
+
+1. **Say where the register is**, including the file inside the share:
+   `smb://fileserver/ti-share/yubikeys/yk-dist-manager.sqlite3`. Windows UNC
+   (`\\fileserver\ti-share\yubikeys\yk-dist-manager.sqlite3`) and
+   `//fileserver/ti-share/…` are accepted too — paste whichever form your platform gave
+   you. A share on its own is refused: it names no register.
+2. **Choose the identity.**
+   - *The account I am signed in with* — the default. On **Windows** this is the whole
+     mechanism: the share is opened with this session's own credentials, exactly as
+     Explorer does, and no password is asked for or sent. On **macOS** it uses the
+     Keychain entry macOS already holds for that server.
+   - *Guest* — for a NAS share that allows anonymous access. Deliberate, and the status
+     line says `guest` for as long as the register is open.
+   - *A named account* — `DOMAIN\user` plus a password. **The password is typed every
+     time.** The share and the user name are remembered so only the password has to be
+     retyped; the password itself is never written to the settings file, the database, a
+     log or the audit trail.
+3. **Connect and open**, or **Connect and create** for a new register. The two stay
+   separate for the same reason they do for a local file: a mistyped file name must be a
+   refusal, not a second empty register that looks like total data loss.
+
+Notes worth knowing at the desk:
+
+- **A share that is already mounted is used as it is** — and is *not* unmounted when you
+  close the register. If you mounted it in Finder for your own work, it stays.
+- **A share this application connected is disconnected when you close the register**, or
+  switch database, or quit. Settings shows which share is held, as whom, and offers
+  *Close and disconnect the share*.
+- If the identity is refused you are told which of three things happened: the user name
+  or password was wrong, the account was accepted but may not use the share, or the
+  server or share name could not be reached. They need three different actions.
+- On Windows, `ERROR_SESSION_CREDENTIAL_CONFLICT` means Windows already has a connection
+  to that server as somebody else. Close it first (`net use \\server\share /delete`), or
+  use the signed-in account.
+- **On Linux** an unprivileged process cannot mount a CIFS share, so the application does
+  not try: ask for it in `/etc/fstab` (`mount.cifs`) or from an `autofs` map, and the
+  application will find and use the mount. It looks in the mount table, and under `/mnt`,
+  `/media` and `/net`.
+- `--diagnose` reports how this build reaches a share, and which shares this workstation
+  has used (never a password — none is stored).
+
 ### In a cloud-sync folder (OneDrive, Dropbox, Google Drive, iCloud)
 
 Not the recommended place, and the place several units actually have. Two things make it
@@ -129,7 +174,8 @@ long to wait before carrying on and saying so, default 15000).
 The lock binds workstations running this tool. It cannot bind a machine that ignores it,
 and neither operator can see anything while offline. It removes the common accident, not
 the risk: a real network share, or a local file with a scheduled backup, is still the
-better home for the register.
+better home for the register — and the share can now be reached from the chooser
+(above), which is what makes that a recommendation somebody can act on.
 
 **With a password:** run a build with `--features encrypted-db`; the app prompts at startup.
 Note that everyone shares the one password — it is confidentiality at rest, not per-operator
@@ -234,7 +280,16 @@ bootstrapped — that is the guard working, not a bug.
    statement, the delivery method and the operator. Optional fields the holder did not
    give (phone, address) take their whole line with them rather than printing an empty
    label.
-4. **Save as text…**, print it, and have it signed.
+4. **Export as PDF…** — the sheet to print and have signed. A4, one page for the
+   built-in wording plus a second for the signatures, and a footer on every page
+   naming the wording that produced it (`consignment@2 (pt-BR) · #20423633 ·
+   TERM-2026-001`), so the signed sheet in the folder is traceable back to the exact
+   template version in the database. **Save as text…** gives the same document as
+   plain text, for a ticket.
+   - If the panel warns that the PDF font cannot set some characters, that is real:
+     the PDF is set in Courier with CP1252, which covers the Latin-script languages
+     but not, say, Japanese. Those characters print as `?` — use the text output for
+     that language, and see the open question in the feature file.
 5. When the signed copy comes back: **Upload signed term…** (or *upload* on the row).
    PDF, PNG, JPEG or TIFF, up to 8 MiB. It is stored **in the database** with a SHA-256,
    so copying the database copies the evidence.
@@ -243,7 +298,10 @@ bootstrapped — that is the guard working, not a bug.
 
 The built-in term wording is a **draft**: it needs review by whoever owns the term at your
 institution, and the data-protection paragraph needs the DPO. Templates are data, so that
-review is an edit rather than a code change.
+review is an edit rather than a code change. To send it for review: **Terms** → the
+language → **Preview** → **Export as PDF…**, which produces the document as it will be
+printed, filled with obviously fictitious values and footed `@draft`. Nothing is stored
+and no hand-over is involved.
 
 ## Runbook: record a return
 
@@ -310,8 +368,13 @@ Restore is a file copy. Afterwards, open the copy and run **Audit → Verify cha
 | "schema version N is newer than this build supports" | Someone upgraded first | Upgrade this workstation; do **not** try to force it open |
 | "database is locked" / busy | Another operator is writing | Wait; if it persists, check for a stale lock or a crashed session |
 | `integrity_check` reports anything but `ok` | Real corruption | Restore the most recent backup, then verify the audit chain |
-| "no database file at …" | The path does not exist (typo, or an unmounted share) | Fix the path or mount the share; use **Create** only if you really want a new, empty database |
+| "no database file at …" | The path does not exist (typo, or an unmounted share) | Fix the path, or connect the share from the SMB card; use **Create** only if you really want a new, empty database |
 | "a file already exists at …" | **Create** was used on an existing file | Use **Open** instead |
+| "… refused …: the user name or password was refused" | Wrong credentials for the share | Retype them; check whether the account needs its domain (`DOMAIN\user`) |
+| "… may not use this share" | The account is valid but has no access | Ask whoever owns the share; nothing on this workstation will fix it |
+| "… the server or the share name is wrong" | Typo, or the wrong network | Check the name, and that this workstation is on the network the server is on |
+| "Windows already has a connection to this server as another user" | An existing mapping conflicts | `net use \\server\share /delete`, or choose the signed-in account |
+| "… has to be mounted by the system on this platform" | Linux: CIFS needs privilege | Have it mounted from `/etc/fstab` or `autofs`, then open it by path |
 
 ## Runbook: no key detected
 

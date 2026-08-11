@@ -37,6 +37,23 @@ pub fn normalise_theme(name: &str) -> &'static str {
         .unwrap_or(DEFAULT_THEME)
 }
 
+/// An SMB share the operator has used, and how they reached it.
+///
+/// **Never a password.** The user name and the access mode are remembered because
+/// retyping them at every hand-over is how a wrong share gets opened; the password
+/// is typed every time, for the same reason the database password is not stored —
+/// this file sits next to the register.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ShareEntry {
+    /// Canonical location, `//server/share/path/to/database.sqlite3`.
+    pub location: String,
+    /// Which identity was used last time.
+    pub access: crate::store::smb::Access,
+    /// `DOMAIN\user` or `user`, when the access mode was a named account.
+    pub user: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppSettings {
@@ -44,6 +61,13 @@ pub struct AppSettings {
     pub last_database: Option<PathBuf>,
     /// Most recently used first. Never contains duplicates.
     pub recent_databases: Vec<PathBuf>,
+    /// SMB shares the operator has opened the register from, most recent first.
+    ///
+    /// Kept apart from `recent_databases`, which holds *local* paths: the path a
+    /// share resolves to is a mount point that changes between workstations and
+    /// between sessions, so remembering the path would remember the wrong thing.
+    /// The share is what is stable.
+    pub recent_shares: Vec<ShareEntry>,
     /// Operator name recorded on hand-overs and audit entries.
     pub operator: String,
     /// Organisation, used in certificate subjects.
@@ -94,6 +118,7 @@ impl AppSettings {
         Self {
             last_database: None,
             recent_databases: Vec::new(),
+            recent_shares: Vec::new(),
             operator: default_operator(),
             org: String::new(),
             theme: DEFAULT_THEME.to_owned(),
@@ -162,11 +187,35 @@ impl AppSettings {
             .collect()
     }
 
+    /// Record an SMB share as the most recently used, with the identity that
+    /// reached it. The password is not a parameter here, and cannot be.
+    pub fn remember_share(&mut self, entry: ShareEntry) {
+        if entry.location.trim().is_empty() {
+            return;
+        }
+        self.recent_shares
+            .retain(|known| known.location != entry.location);
+        self.recent_shares.insert(0, entry);
+        self.recent_shares.truncate(MAX_RECENT);
+    }
+
+    /// Drop a share from the list. The share itself is not touched.
+    pub fn forget_share(&mut self, location: &str) {
+        self.recent_shares
+            .retain(|known| known.location != location);
+    }
+
     fn normalise(&mut self) {
         let mut seen = std::collections::BTreeSet::new();
         self.recent_databases
             .retain(|path| !path.as_os_str().is_empty() && seen.insert(path.clone()));
         self.recent_databases.truncate(MAX_RECENT);
+
+        let mut shares = std::collections::BTreeSet::new();
+        self.recent_shares.retain(|entry| {
+            !entry.location.trim().is_empty() && shares.insert(entry.location.clone())
+        });
+        self.recent_shares.truncate(MAX_RECENT);
         if self.operator.trim().is_empty() {
             self.operator = default_operator();
         }
@@ -240,6 +289,84 @@ mod tests {
         settings.normalise();
         assert_eq!(settings.theme, DEFAULT_THEME);
         assert_eq!(settings.theme(), DEFAULT_THEME);
+    }
+
+    #[test]
+    fn a_remembered_share_keeps_the_identity_and_never_the_password() {
+        let mut settings = AppSettings::default();
+        settings.remember_share(ShareEntry {
+            location: "//fileserver/ti-share/keys.sqlite3".into(),
+            access: crate::store::smb::Access::Named,
+            user: r"FGV\felipe".into(),
+        });
+        settings.remember_share(ShareEntry {
+            location: "//nas/public/keys.sqlite3".into(),
+            access: crate::store::smb::Access::Anonymous,
+            user: String::new(),
+        });
+        // Re-using the first share moves it back to the front without a duplicate.
+        settings.remember_share(ShareEntry {
+            location: "//fileserver/ti-share/keys.sqlite3".into(),
+            access: crate::store::smb::Access::LoggedOnUser,
+            user: String::new(),
+        });
+
+        assert_eq!(settings.recent_shares.len(), 2);
+        assert_eq!(
+            settings.recent_shares[0].location,
+            "//fileserver/ti-share/keys.sqlite3"
+        );
+        // The newer choice wins: the operator switched to the signed-in user.
+        assert_eq!(
+            settings.recent_shares[0].access,
+            crate::store::smb::Access::LoggedOnUser
+        );
+
+        // The serialised form is the contract that matters: there is nowhere in it
+        // for a password to hide.
+        let json = serde_json::to_string_pretty(&settings).unwrap();
+        assert!(json.contains("recent_shares"), "{json}");
+        assert!(json.contains("logged-on-user"), "{json}");
+        assert!(!json.to_lowercase().contains("password"), "{json}");
+        assert!(!json.to_lowercase().contains("secret"), "{json}");
+
+        settings.forget_share("//fileserver/ti-share/keys.sqlite3");
+        assert_eq!(settings.recent_shares.len(), 1);
+    }
+
+    #[test]
+    fn a_hand_edited_share_list_is_normalised_rather_than_trusted() {
+        let raw = r#"{
+            "recent_shares": [
+                {"location": "//nas/public/keys.sqlite3", "access": "anonymous", "user": ""},
+                {"location": "//nas/public/keys.sqlite3", "access": "named", "user": "felipe"},
+                {"location": "  ", "access": "logged-on-user", "user": ""}
+            ]
+        }"#;
+        let mut settings: AppSettings = serde_json::from_str(raw).unwrap();
+        settings.normalise();
+        assert_eq!(settings.recent_shares.len(), 1);
+        assert_eq!(
+            settings.recent_shares[0].access,
+            crate::store::smb::Access::Anonymous,
+            "the first entry wins, as it does for databases"
+        );
+
+        // A file written before shares existed still loads, with none.
+        let old: AppSettings = serde_json::from_str("{\"operator\": \"felipe\"}").unwrap();
+        assert!(old.recent_shares.is_empty());
+    }
+
+    #[test]
+    fn the_share_list_never_exceeds_its_cap() {
+        let mut settings = AppSettings::default();
+        for n in 0..(MAX_RECENT + 3) {
+            settings.remember_share(ShareEntry {
+                location: format!("//nas/share-{n}/keys.sqlite3"),
+                ..ShareEntry::default()
+            });
+        }
+        assert_eq!(settings.recent_shares.len(), MAX_RECENT);
     }
 
     #[test]

@@ -6524,6 +6524,8 @@ name = "yk-dist-manager"
 version = "0.6.0"
 dependencies = [
  "chrono",
+ "core-foundation 0.10.1",
+ "core-foundation-sys 0.8.7",
  "ctap-hid-fido2",
  "eframe",
  "egui",
@@ -6544,6 +6546,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "windows-sys 0.61.2",
  "yubikey",
 ]
 

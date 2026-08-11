@@ -17,7 +17,13 @@
 //! 4. **Append-only audit.** The `audit` table rejects `UPDATE` and `DELETE`
 //!    through `BEFORE` triggers, so immutability is a database restriction and
 //!    not an application convention (NRM §5.3.1).
-//! 5. **Cloud-sync folder.** A database under OneDrive (or Dropbox, or Google
+//! 5. **The share can be connected from here.** "Put it on a network share" was
+//!    advice nobody could act on while the application could only open a path that
+//!    somebody else had mounted. [`smb`] connects the share itself — as the
+//!    signed-in user, as a guest, or as a named account whose password is typed and
+//!    dropped — and hands back a local path this module then treats as any other
+//!    share. See `features/smb-share-hosting.md`.
+//! 6. **Cloud-sync folder.** A database under OneDrive (or Dropbox, or Google
 //!    Drive) cannot rely on SQLite's locks at all, because the other workstation
 //!    is not sharing a file system with this one — it is receiving whole-file
 //!    copies, minutes late. Such a database is made strictly sequential instead,
@@ -28,6 +34,7 @@
 pub mod backup;
 pub mod cloud;
 pub mod import;
+pub mod smb;
 
 use std::path::{Path, PathBuf};
 
@@ -267,6 +274,18 @@ impl StoreConfig {
 
     pub fn with_password(mut self, password: Option<String>) -> Self {
         self.password = password.filter(|p| !p.is_empty());
+        self
+    }
+
+    /// State the location instead of letting [`Location::detect`] guess it.
+    ///
+    /// [`Location::detect`] reads a *path*, which is all there is to go on when an
+    /// operator typed one. A caller that **knows** — [`smb::ShareConnection`] has
+    /// just connected an SMB share, so the file is on a network filesystem whatever
+    /// mount point the operating system happened to choose — should say so, because
+    /// the journal mode has to follow the fact and not the spelling.
+    pub fn with_location(mut self, location: Location) -> Self {
+        self.location = location;
         self
     }
 

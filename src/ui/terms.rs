@@ -204,7 +204,9 @@ fn editor(app: &mut YkDistApp, ui: &mut egui::Ui) {
             ui,
             "Use {{variables}} from the list below. A line whose variable is empty is dropped \
              from the document, so optional details need no conditional — and a line with no \
-             variable is always printed.",
+             variable is always printed. Two or more spaces make a column: whatever follows \
+             them stays at that position however long the value before it turns out to be, \
+             which is what keeps a signature block aligned.",
         );
 
         ui.add_space(10.0);
@@ -310,6 +312,7 @@ fn preview(app: &mut YkDistApp, ui: &mut egui::Ui) {
         return;
     };
     let mut close = false;
+    let mut export = false;
 
     super::titled_card(ui, "Preview — sample data, nothing recorded", |ui| {
         // The rendered term keeps its own line breaks: it scrolls both ways
@@ -327,6 +330,15 @@ fn preview(app: &mut YkDistApp, ui: &mut egui::Ui) {
             });
         ui.add_space(8.0);
         ui.horizontal_wrapped(|ui| {
+            if ui
+                .add(Button::new("Export as PDF…").accent(Accent::Blue))
+                .on_hover_text(
+                    "the document as it will be printed — for the review the wording needs",
+                )
+                .clicked()
+            {
+                export = true;
+            }
             if ui.add(Button::new("Close preview").outline()).clicked() {
                 close = true;
             }
@@ -338,6 +350,9 @@ fn preview(app: &mut YkDistApp, ui: &mut egui::Ui) {
         });
     });
 
+    if export {
+        app.save_term_preview_pdf();
+    }
     if close {
         app.term_editor.preview = None;
     }

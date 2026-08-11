@@ -60,6 +60,23 @@ image = { version = "0.25", optional = true, default-features = false, features 
 nokhwa = { version = "0.10", optional = true, features = ["input-native"] }
 egui-elegance = "0.15"
 
+# Connecting an SMB share so the database can live on one (`store::smb`). Both are
+# native OS APIs rather than `net use` / `mount_smbfs`, for one reason: they take the
+# password in this process's memory, while a command line puts it in an argument
+# vector every other process can read.
+[target.'cfg(windows)'.dependencies]
+# `WNetAddConnection2W` / `WNetCancelConnection2W`.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_WNet",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# `NetFSMountURLSync` needs CoreFoundation strings, URLs and arrays. Both crates
+# are already in the dependency graph through the window layer.
+core-foundation = "0.10"
+core-foundation-sys = "0.8"
+
 [features]
 default = ["file-dialog", "camera"]
 # Choose or create the database file through a native dialog. Without it the
