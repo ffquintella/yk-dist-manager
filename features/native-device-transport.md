@@ -73,7 +73,7 @@ session.
 | # | Phase | State | Notes |
 |---|---|---|---|
 | 1 | PIV identification over PC/SC | Done | serial + firmware, hardware-verified |
-| 2 | FIDO2 transport (`get_info`, PIN, credential) | **In progress** | [`src/device/native_fido.rs`](../src/device/native_fido.rs) — implemented and **read-verified against a real 5.7.4 key**; the write half needs a manual procedure against a dedicated test key |
+| 2 | FIDO2 transport (`get_info`, PIN, credential) | **Done** | [`src/device/native_fido.rs`](../src/device/native_fido.rs) — **hardware-verified on a 5.7.4 key**, reads and writes, including the resident credential `ykman` cannot create |
 | 3 | PIV write operations (PIN/PUK/mgmt key, keygen, cert import, attest) | Todo | `features/step-piv-*.md` |
 | 4 | OTP slot HID config frames | Todo | `features/step-otp-access-code.md` |
 | 5 | Management applet APDU (form factor, capabilities, FIPS) | Todo | removes the last read-only dependency on `ykman` |

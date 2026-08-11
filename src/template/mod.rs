@@ -573,16 +573,14 @@ impl BootstrapTemplate {
             .steps
             .iter()
             .position(|s| s.enabled && s.kind == StepKind::Fido2ForcePinChange)
-        {
-            if let Some(later) = self.steps[marker + 1..]
+            && let Some(later) = self.steps[marker + 1..]
                 .iter()
                 .find(|s| s.enabled && s.kind.needs_fido2_pin())
-            {
-                return Err(TemplateError::PinLockedBeforeUse {
-                    marker: self.steps[marker].id.clone(),
-                    later: later.id.clone(),
-                });
-            }
+        {
+            return Err(TemplateError::PinLockedBeforeUse {
+                marker: self.steps[marker].id.clone(),
+                later: later.id.clone(),
+            });
         }
 
         Ok(())

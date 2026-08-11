@@ -86,8 +86,8 @@ PIN used to authorise creation.
 | # | Phase | State | Notes |
 |---|---|---|---|
 | 1 | Plan entry, native-only, no fallback | Done | asserted by test |
-| 2 | `get_info` read: PIN state, remaining credential slots, supported algorithms | Todo | refuse when full |
-| 3 | `make_credential` with `rk=true`, UV, algorithm choice | Todo | needs the PIN from the previous step |
+| 2 | `get_info` read: PIN state, remaining credential slots, supported algorithms | **Done** | the slot count is read; refusing when full is still Todo |
+| 3 | `make_credential` with `rk=true`, UV, algorithm choice | **Done** | **hardware-verified** — the step `ykman` cannot perform at all, and therefore the whole case for the native transport |
 | 4 | Record credential id + RP id on the run | Todo | evidence, non-secret |
 | 5 | List / delete credentials from the GUI | Todo | `ykman` can do this; native is nicer |
 | 6 | Enterprise attestation option | Todo | needs an RP that verifies it |
@@ -125,3 +125,18 @@ PIN used to authorise creation.
 - `src/template/plan.rs`
 - `docs/yubikey-reference.md`
 - [CTAP 2.1 `authenticatorMakeCredential`](https://fidoalliance.org/specs/fido-v2.1-ps-20210615/fido-client-to-authenticator-protocol-v2.1-ps-20210615.html#authenticatorMakeCredential)
+
+### Hardware verification (2026-08-11)
+
+`make_credential` with `rk=true` and user verification, against a YubiKey 5C NFC
+(firmware 5.7.4, serial 36668917), produced credential `9acee661...f665` for
+`example.org` with ES256. Two touches were required — one for the PIN token, one
+for the credential itself.
+
+This is the operation `ykman` cannot perform in any version: it lists and deletes
+resident credentials but cannot create one. Until this ran, the native transport
+was an argument; it is now a demonstrated capability.
+
+Ordering, learned here: the credential must be created **before** the key is
+marked with `forcePINChange`, because the mark takes the PIN out of use. See
+`features/step-fido2-pin.md`.

@@ -133,7 +133,7 @@ key and recorded in the phase notes.
 | 2 | Dry-run recording | Done | `bootstrap.dry_run` audited |
 | 3 | Executor skeleton: sequencing, status persistence, abort policy | **Done** | [`src/bootstrap/`](../src/bootstrap/); 10 scenarios against `MockWriter` |
 | 4 | Secret input: prompt, generate, show-once, zeroise | **Done** | [`src/secret.rs`](../src/secret.rs) — `features/secrets-custody.md` phase 3 |
-| 5 | FIDO2 steps live | **In progress** | the transport exists (`device::native_fido`) and its state read is hardware-verified; the write operations are unverified until a manual run against a dedicated test key |
+| 5 | FIDO2 steps live | **Done** | `device::native_fido`; every operation hardware-verified on a 5.7.4 key, including `make_credential`. See `features/step-fido2-pin.md` |
 | 6 | PIV steps live | Todo | same, behind `native-piv`. The **certificate import** additionally waits on the CA decision |
 | 7 | OTP step live | Todo | same, behind `native-otp` |
 | 8 | Verification step reading the key back | **Done** | reads all three applets and stores the end state as the step's detail |

@@ -83,31 +83,18 @@ fn main() {
         Err(e) => println!("   -> refused: {e}\n      (expected below firmware 5.7)"),
     }
 
-    // ------------------------------------------------------ forcePINChange
-    // The mechanism custody model B depends on. This is the step that decides
-    // whether the enforcement is `enforced-by-firmware` or only
-    // `instructed-on-handover`.
-    println!("\n3. force_pin_change  <- the model B enforcement");
-    match fido.force_pin_change(serial, &pin) {
-        Ok(()) => {
-            let state = fido.fido2_state(serial).expect("read back");
-            println!(
-                "   -> force_pin_change_set={} {}",
-                state.force_pin_change_set,
-                if state.force_pin_change_set {
-                    "OK — enforcement is enforced-by-firmware on this key"
-                } else {
-                    "SET BUT NOT REPORTED — investigate before relying on it"
-                }
-            );
-        }
-        Err(e) => println!("   -> refused: {e}\n      (expected below firmware 5.7)"),
-    }
-
     // ------------------------------------------------- resident credential
     // The step `ykman` cannot perform at all, and therefore the one this whole
     // transport exists for.
-    println!("\n4. make_credential (resident)  — TOUCH THE KEY WHEN IT BLINKS");
+    //
+    // **Before** the forced change, and that ordering is the whole point. The
+    // first version of this procedure had it the other way round and failed here
+    // with "PIN not accepted" — which is how the same bug was found in the
+    // shipped template. A key marked `forcePINChange` refuses its PIN for
+    // everything except changing it, so a credential cannot be created after the
+    // mark. `BootstrapTemplate::validate` now refuses that ordering; this
+    // procedure has to obey the same rule it proved.
+    println!("\n3. make_credential (resident)  — TOUCH THE KEY WHEN IT BLINKS");
     let request = CredentialRequest {
         relying_party: "example.org".into(),
         relying_party_name: "Example Org".into(),
@@ -122,6 +109,26 @@ fn main() {
             evidence.credential_id_hex, evidence.relying_party, evidence.algorithm
         ),
         Err(e) => println!("   -> FAILED: {e}"),
+    }
+
+    // ------------------------------------------------------ forcePINChange
+    // The mechanism custody model B depends on, and necessarily the **last**
+    // FIDO2 step: it takes the PIN out of use until the holder replaces it.
+    println!("\n4. force_pin_change  <- the model B enforcement, and it must be last");
+    match fido.force_pin_change(serial, &pin) {
+        Ok(()) => {
+            let state = fido.fido2_state(serial).expect("read back");
+            println!(
+                "   -> force_pin_change_set={} {}",
+                state.force_pin_change_set,
+                if state.force_pin_change_set {
+                    "OK — enforcement is enforced-by-firmware on this key"
+                } else {
+                    "SET BUT NOT REPORTED — investigate before relying on it"
+                }
+            );
+        }
+        Err(e) => println!("   -> refused: {e}\n      (expected below firmware 5.7)"),
     }
 
     // ----------------------------------------------------------------- after

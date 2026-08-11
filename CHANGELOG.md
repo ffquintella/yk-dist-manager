@@ -35,16 +35,26 @@ Maintenance instructions (see AGENTS.md §5):
   encoding cannot set, rather than printing `?` in a document that still looks
   valid.
 - **The native FIDO2 transport** ([`features/native-device-transport.md`](features/native-device-transport.md)
-  phase 2), behind `native-fido`. This is the transport the native argument was
-  always about: `ykman` can list and delete resident credentials but **cannot
-  create one**, and creating the initial discoverable credential is a required
-  step. The applet state read is verified against a real YubiKey 5.7.4; the write
-  operations are implemented and **not yet verified**, because setting a PIN can
-  only be undone by a reset that destroys every credential on the key, so that
-  verification is a manual procedure against a dedicated test key. Two read-only
-  hardware tests were added, including one asserting the transport refuses a
-  serial it was not opened for — HID exposes no serial, so that guard is what
-  stands between a run and writing a PIN to the wrong key.
+  phase 2), behind `native-fido`, **verified against real hardware**. This is the
+  transport the native argument was always about: `ykman` can list and delete
+  resident credentials but **cannot create one**, and creating the initial
+  discoverable credential is a required step of the standard procedure. Every
+  operation — `set_pin`, `set_min_pin_length`, `make_credential` with `rk=true`,
+  and `force_pin_change` — ran against a YubiKey 5C NFC (firmware 5.7.4) through
+  `examples/verify_fido2_write.rs`, the manual procedure that exists because no
+  *test* may write to a key. The credential the transport created is recorded in
+  `features/step-fido2-credentials.md`. Until that ran, the native transport was
+  an argument; it is now a demonstrated capability.
+
+  The run also settled a question the specs had left open: **`forcePINChange` is
+  genuinely enforced by the firmware on 5.7+**, so custody model B's enforcement
+  is `enforced-by-firmware` on such a key rather than only
+  `instructed-on-handover`. The specs had assumed a 5.4.3 reference key, where
+  only the procedural path exists.
+
+  Two read-only hardware tests were added alongside, including one asserting the
+  transport refuses a serial it was not opened for — HID exposes no serial, so
+  that guard is what stands between a run and writing a PIN to the wrong key.
 
 - **The bootstrap executor** ([`features/bootstrap-engine.md`](features/bootstrap-engine.md)
   phases 3, 8, 9, 10). A plan is now applied step by step, with the evidence

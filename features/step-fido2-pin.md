@@ -70,11 +70,11 @@ function parameter, and the value is zeroised after use.
 |---|---|---|---|
 | 1 | Plan entry with a secret placeholder | Done | |
 | 2 | `fido2-force-pin-change` step in both built-in templates, with the firmware gate on the step | Done | custody model B made visible in the plan |
-| 3 | Read `get_info`: is a PIN already set, how many retries remain | Todo | never burn a retry to find out |
-| 4 | Set PIN over CTAP2 (`setPIN`) | Todo | |
-| 5 | Change PIN (`changePIN`) for an already-configured key | Todo | requires the current PIN |
-| 6 | `forcePINChange` executed, with the pre-5.7 procedural fallback recorded | Todo | **the mechanism model B depends on** |
-| 7 | `setMinPINLength` gated on firmware 5.7+ | Todo | irreversible; confirm explicitly |
+| 3 | Read `get_info`: is a PIN already set, how many retries remain | **Done** | hardware-verified; the retry count is read rather than burned |
+| 4 | Set PIN over CTAP2 (`setPIN`) | **Done** | hardware-verified — see below |
+| 5 | Change PIN (`changePIN`) for an already-configured key | Todo | implemented, not yet verified: needs a key whose current PIN is known |
+| 6 | `forcePINChange` executed, with the pre-5.7 procedural fallback recorded | **Done** | hardware-verified on 5.7.4; **must be the last FIDO2 step** |
+| 7 | `setMinPINLength` gated on firmware 5.7+ | **Done** | hardware-verified; irreversible, so the confirmation gate covers it |
 | 8 | Retry-count display before and after, in the wizard | Todo | with a hard warning near zero |
 
 ## Audit events
@@ -112,3 +112,29 @@ function parameter, and the value is zeroised after use.
 - `src/template/plan.rs`, `src/domain/bootstrap.rs`
 - `docs/yubikey-reference.md`
 - [CTAP 2.1 `authenticatorClientPIN`](https://fidoalliance.org/specs/fido-v2.1-ps-20210615/fido-client-to-authenticator-protocol-v2.1-ps-20210615.html#authenticatorClientPIN)
+
+### Hardware verification (2026-08-11)
+
+Run against a **YubiKey 5C NFC, firmware 5.7.4, serial 36668917**, a dedicated
+test key, with `examples/verify_fido2_write.rs` — the manual procedure
+`features/testing-strategy.md` requires, since no *test* may write to a key. The
+applet was reset to factory state before and after.
+
+| Operation | Result |
+|---|---|
+| `set_pin` | `pin_set` -> true |
+| `set_min_pin_length(8)` | `min_pin_length` -> `Some(8)` |
+| `make_credential` (rk=true, UV) | credential `9acee661...f665` created for `example.org`, ES256 |
+| `force_pin_change` | `force_pin_change_set` -> true |
+
+Two things this settled that no mock could:
+
+1. **`forcePINChange` really is enforced by the firmware on 5.7+.** Custody model
+   B's enforcement is `enforced-by-firmware` on such a key, not merely
+   `instructed-on-handover`. The specs had assumed a 5.4.3 reference key, where
+   only the procedural path exists.
+2. **The forced change has to be the *last* FIDO2 step.** A key marked that way
+   refuses its PIN for everything except changing it, so the credential step
+   failed with "PIN not accepted" until the order was corrected. The shipped
+   standard procedure had the wrong order and could never have completed. See
+   `features/bootstrap-engine.md` ordering rule 5.
