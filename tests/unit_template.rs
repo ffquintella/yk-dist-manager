@@ -701,10 +701,16 @@ fn forcing_the_pin_change_before_a_step_that_needs_the_pin_is_refused() {
 
 #[test]
 fn an_edited_builtin_version_is_no_longer_the_builtin() {
-    // Version 2 of `org-standard` is the unit's own procedure: seeding will not
-    // re-create it, so it is removable like any other.
-    let mut edited = BootstrapTemplate::org_standard();
-    edited.version = "2".into();
+    // A version *beyond* the one this build ships is the unit's own procedure:
+    // seeding will not re-create it, so it is removable like any other.
+    //
+    // Derived from the built-in's own version rather than written as a literal,
+    // because the built-in's version moves — it went to 2 when the FIDO2 step
+    // ordering was corrected, and this test used to assert on that number.
+    let builtin = BootstrapTemplate::org_standard();
+    let beyond = builtin.version.parse::<u32>().expect("a numeric version") + 1;
+    let mut edited = builtin;
+    edited.version = beyond.to_string();
     assert!(!edited.is_builtin());
     assert!(stored(edited, 0, false).removal_refusal().is_none());
 }

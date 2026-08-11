@@ -40,6 +40,80 @@ fn run_of(template: &BootstrapTemplate) -> BootstrapRun {
 }
 
 #[test]
+fn scenario_a_register_holding_the_broken_procedure_is_offered_the_corrected_one() {
+    // A real failure, seen on an installation: the database was seeded by a build
+    // whose `org-standard v1` marked the key for a forced PIN change *before*
+    // creating the resident credential — an ordering that cannot complete on
+    // hardware, because the mark takes the PIN out of use. Seeding deliberately
+    // never overwrites a stored (id, version), so correcting the constructor
+    // alone left the broken procedure in place and the operator met the refusal
+    // in the editor.
+    let store = Store::open_in_memory().unwrap();
+
+    // Given a register already holding the broken v1, as an older build wrote it
+    let mut broken = BootstrapTemplate::org_standard();
+    broken.version = "1".into();
+    let marker = broken
+        .steps
+        .iter()
+        .position(|s| s.kind == StepKind::Fido2ForcePinChange)
+        .unwrap();
+    let step = broken.steps.remove(marker);
+    let credential = broken
+        .steps
+        .iter()
+        .position(|s| s.kind == StepKind::Fido2Credential)
+        .unwrap();
+    broken.steps.insert(credential, step);
+    assert!(
+        broken.validate().is_err(),
+        "the fixture has to be the broken ordering, or this proves nothing"
+    );
+    store.upsert_template(&broken).unwrap();
+
+    // When the application seeds its built-ins, as it does on every open
+    store.seed_builtin_templates().unwrap();
+
+    // Then the broken version is still on record — a run may have recorded it,
+    // and rewriting what a version *said* would rewrite what a key was told to
+    // have applied to it
+    let versions = store.template_versions("org-standard").unwrap();
+    assert!(versions.contains(&"1".to_string()), "{versions:?}");
+
+    // And the corrected version is there beside it
+    assert!(versions.contains(&"2".to_string()), "{versions:?}");
+
+    // And the wizard is offered the corrected one
+    let offered = latest_per_id(&store.templates().unwrap());
+    let standard = offered
+        .iter()
+        .find(|t| t.id == "org-standard")
+        .expect("the standard procedure is offered");
+    assert_eq!(standard.version, "2");
+    assert!(
+        standard.validate().is_ok(),
+        "what the wizard offers must be a procedure that can actually complete"
+    );
+
+    let ordering: Vec<&str> = standard
+        .steps
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.kind,
+                StepKind::Fido2Credential | StepKind::Fido2ForcePinChange
+            )
+        })
+        .map(|s| s.id.as_str())
+        .collect();
+    assert_eq!(
+        ordering,
+        vec!["fido2-credential", "fido2-force-pin-change"],
+        "the credential must be created before the PIN is taken out of use"
+    );
+}
+
+#[test]
 fn scenario_a_unit_adds_its_own_template_and_the_wizard_offers_it() {
     // Given a database with the templates this build ships
     let store = Store::open_in_memory().unwrap();

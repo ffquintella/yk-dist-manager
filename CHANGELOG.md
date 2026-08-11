@@ -117,6 +117,14 @@ Maintenance instructions (see AGENTS.md §5):
 
 ### Fixed
 
+- **The standard procedure ships as `org-standard` v2, so a register seeded by an
+  older build gets the corrected ordering.** Fixing the constructor was not
+  enough: seeding deliberately never overwrites a stored `(id, version)`, so a
+  database written by an earlier build kept the broken v1 and the operator met
+  the refusal in the template editor. v2 is added beside it. v1 stays on
+  record — a run may have recorded it, and rewriting what a version *said* would
+  rewrite what a key was told to have applied to it — and the wizard offers v2,
+  because it takes the newest version that is not retired.
 - **The standard bootstrap procedure could never have completed on a real key.**
   It marked the key with `forcePINChange` at step 3 and then tried to create the
   resident credential at step 5 — but a key marked that way refuses its PIN for

@@ -221,3 +221,21 @@ chain still verifies.
   `retire_template`, `delete_template`, `seed_builtin_templates`)
 - `src/versioning.rs` — the numbering shared with the consignment terms
 - `docs/bootstrap-procedure.md`, `docs/gui.md`, `features/bootstrap-engine.md`
+
+## `org-standard` is at version 2 (2026-08-11)
+
+v1's FIDO2 steps were ordered `pin -> min-pin-length -> force-pin-change -> …
+-> credential`, which cannot complete on hardware: a key marked
+`forcePINChange` refuses its PIN for everything except changing it, so the
+credential step is handed a PIN the authenticator rejects. Found on a 5.7.4 key.
+
+The correction is **v2**, not an edit to v1, and that follows from this feature's
+own rule: seeding asks whether `(id, version)` exists, never whether it is
+correct, precisely so that what a run recorded stays what it recorded. An
+installation seeded by the older build therefore keeps v1 — broken, on record,
+and explainable — and gets v2 beside it on the next open. `latest_per_id` means
+the wizard offers v2.
+
+This is the same shape as the `org-standard` rename in v0.5.0: a built-in is
+corrected by *adding*, never by rewriting the id or version a run referred to.
+Covered by `scenario_a_register_holding_the_broken_procedure_is_offered_the_corrected_one`.

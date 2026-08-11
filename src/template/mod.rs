@@ -603,7 +603,22 @@ impl BootstrapTemplate {
         Self {
             id: "org-standard".into(),
             name: "Organisation standard bootstrap".into(),
-            version: "1".into(),
+            // **Version 2**, and the bump is the fix rather than an increment.
+            //
+            // Version 1 shipped with `fido2-force-pin-change` ahead of
+            // `fido2-credential`, an ordering that cannot complete on real
+            // hardware: the mark takes the PIN out of use, so the credential step
+            // is handed a PIN the authenticator refuses. `validate()` now catches
+            // it, which is what an operator opening v1 in the editor sees.
+            //
+            // It is a new version rather than a correction to v1 because seeding
+            // deliberately never overwrites a stored `(id, version)` — a run
+            // recorded "org-standard v1", and rewriting what that version *said*
+            // would rewrite what a key was told to have applied to it. So v1
+            // stays on record, broken and explainable, and the wizard offers v2
+            // because `latest_per_id` takes the newest version that is not
+            // retired.
+            version: "2".into(),
             description: "The standard procedure for {{org}}: FIDO2 PIN (transport, forced \
                           change on first use), OTP slot access code, initial on-key FIDO2 \
                           credential, and a PIV signing certificate carrying the holder's \
