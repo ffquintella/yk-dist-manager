@@ -29,10 +29,10 @@ deployment.
 
 | State | Count |
 |---|---|
-| Done | 9 |
-| In progress | COUNT-IP |
-| Todo | COUNT-TODO |
-| **Total tracked items** | **COUNT-TOTAL** (across 38 specs — two items share a spec) |
+| Done | 10 |
+| In progress | 13 |
+| Todo | 18 |
+| **Total tracked items** | **41** (across 38 specs — two items share a spec) |
 
 > The counts above had drifted (they said 11 in progress against 13 `[/]` rows), as
 > had the test and coverage figures quoted in two places. Both are corrected here.
@@ -115,7 +115,7 @@ of the job: choosing or creating the database file, recording serials from a bar
 generating the consignment term in the holder's language, and filing the signed copy
 against the hand-over — and, from the Terms screen, editing that term's wording per
 language. The Templates screen now does the same for the bootstrap procedure itself.
-MEASURE-TESTS tests pass (plus 2 read-only hardware tests), with MEASURE-COVERAGE line
+503 tests pass (plus 2 read-only hardware tests), with **88.16%** (region 86.83%) line
 coverage of the headless core — now enforced by CI rather than reported by it. The
 register can also be opened from the unit's **SMB share**, connected by the application
 itself.
@@ -204,7 +204,7 @@ Everything needed before a single byte is written to a key.
 | `[/]` | GUI shell | [spec](features/gui-shell.md) — eight screens, unlock screen, status bar, egui 0.36 `App::ui`, themed with `egui-elegance` (four palettes, the choice persisted) and laid out fluidly (one gutter, full-width cards, columns that split the page, tables that contain their own overflow). Search, keyboard flow and window-state persistence still open. |
 | `[/]` | Bootstrap wizard | [spec](features/gui-bootstrap-wizard.md) — selection (the newest version of each template in use), per-step opt-out, plan review, dry run, and a link to the Templates screen. Execution progress view pending. |
 | `[/]` | Application icon | [spec](features/application-icon.md) — one SVG (a box truck carrying a YubiKey), `make icons` rendering the PNGs, the macOS `.icns` and the RGBA blob the binary embeds; window, dock and bundle icons done. A Windows `.ico` resource and a Linux `hicolor` install wait on there being Windows and Linux packaging. |
-| `[/]` | Testing strategy | [spec](features/testing-strategy.md) — **MEASURE-TESTS tests** across unit + behaviour suites, a mock device backend and a mock share connector, recorded fixtures, ignored hardware tests; **MEASURE-COVERAGE** core line coverage. **CI enforces the gate** on every push, with a macOS/Windows/Linux build matrix. Mock write transports and the secret-leak sweep wait on Wave 1. |
+| `[/]` | Testing strategy | [spec](features/testing-strategy.md) — **503 tests** across unit + behaviour suites, a mock device backend and a mock share connector, recorded fixtures, ignored hardware tests; **88.16%** core line coverage. **CI enforces the gate** on every push, with a macOS/Windows/Linux build matrix. Mock write transports and the secret-leak sweep wait on Wave 1. |
 
 ### Paperwork
 

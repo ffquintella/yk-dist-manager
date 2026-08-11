@@ -18,7 +18,7 @@ whole even though every part passes.
 
 **Suites in place, and CI now enforces the gate.**
 
-- **MEASURE-TESTS tests** pass on the default features (`cargo test`); one fewer
+- **503 tests** pass on the default features (`cargo test`); one fewer
   with `--all-features`, the difference being a test that only exists when
   `encrypted-db` is *off*. Plus 2 hardware tests, ignored by default.
 - **CI runs on every push and pull request**
@@ -33,17 +33,17 @@ whole even though every part passes.
 - `cargo check --no-default-features` is part of the pre-commit sweep, because the
   no-camera build is a supported configuration
   (`make check-all`).
-- Core line coverage **MEASURE-COVERAGE**, above the 80% floor.
+- Core line coverage **88.16%** (region 86.83%), above the 80% floor.
 - Unit suites: `unit_domain.rs` (15), `unit_template.rs` (50), `unit_audit.rs` (17),
-  `unit_ykman_parse.rs` (8), `unit_store.rs` (31), `unit_device_backends.rs` (9),
+  `unit_ykman_parse.rs` (8), `unit_store.rs` (30), `unit_device_backends.rs` (9),
   `unit_records.rs` (16), `unit_logging_format.rs` (6), `unit_term.rs` (45),
   `unit_pdf.rs` (41), `unit_settings.rs` (3), `unit_store_cloud.rs` (14 — the
   cloud-sync single-writer lock), `unit_store_smb.rs` (16 — reaching an SMB share),
-  plus in-module tests across `logging`, `domain`, `custody`, `document`, `scan`,
+  plus 146 in-module tests across `logging`, `domain`, `custody`, `document`, `scan`,
   `rxing_decoder`, `diagnostics`, `settings`, `pdf`, `store::backup`,
   `store::import` and `store::smb`.
 - Behaviour suites: `behaviour_distribution.rs` (10 scenarios),
-  `behaviour_bootstrap.rs` (10), `behaviour_storage.rs` (14),
+  `behaviour_bootstrap.rs` (10), `behaviour_storage.rs` (25),
   `behaviour_templates.rs` (13), `behaviour_terms_and_documents.rs` (18),
   `behaviour_smb_share.rs` (6 — a register on a share), plus the two suites that
   drive `YkDistApp` and therefore own their binary's environment, one scenario each:
