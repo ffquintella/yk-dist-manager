@@ -6531,6 +6531,7 @@ dependencies = [
  "egui",
  "egui-elegance",
  "gethostname",
+ "getrandom 0.3.4",
  "hex",
  "hidapi",
  "image",
@@ -6548,6 +6549,7 @@ dependencies = [
  "uuid",
  "windows-sys 0.61.2",
  "yubikey",
+ "zeroize",
 ]
 
 [[package]]

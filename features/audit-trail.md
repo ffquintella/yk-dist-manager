@@ -129,7 +129,7 @@ accountability and is never rewritten. The two never share a mechanism.
 |---|---|---|---|
 | 1 | Chain + DB triggers + verification + GUI | Done | 6 unit + 1 behaviour test |
 | 2 | Segregated append-only mirror | **Done** | `StoreConfig::with_audit_mirror`; entries copied **verbatim**, divergence is an alert. *Whether* segregation is required here is still the ESI's call |
-| 3 | Full event coverage for Wave 1 executor steps | Todo | **blocked on the executor** (`features/bootstrap-engine.md`, Wave 1) |
+| 3 | Full event coverage for Wave 1 executor steps | **Done** | `bootstrap.started` / `.step.done` / `.step.failed` / `.step.skipped` / `.finished` / `.aborted` / `.resumed` / `.incomplete`, plus `secret.generated` and `secret.change_enforcement` |
 | 4 | Audit export for the ESI (signed, with a verification note) | Todo | **Wave 2**, with `features/reports-and-export.md` |
 | 5 | External chain-head witness | Todo | periodic head publication; makes a rebuild detectable even without the mirror |
 | 6 | Audit screen: filter by event, actor, serial, date range | **Done** | `audit::AuditFilter` + `Store::audit_entries_matching`; the limit applies *after* the filter |

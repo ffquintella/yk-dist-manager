@@ -17,6 +17,63 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+### Added
+
+- **The bootstrap executor** ([`features/bootstrap-engine.md`](features/bootstrap-engine.md)
+  phases 3, 8, 9, 10). A plan is now applied step by step, with the evidence
+  recorded as it goes. **Nothing in this build can write to a key** — `MockWriter`
+  is the only implementation of the write traits — which is the intended state
+  until the native transports land and are verified against hardware.
+  - **The confirmation is a type, not a flag.** `Executor::run` takes a
+    `Confirmation` that can only be built by naming the serial and step count
+    actually shown, and re-checks it against the request. A stale confirmation —
+    the operator agreed to six steps, then changed the template — does not
+    authorise the new plan. "No confirmation, no writes" is now a signature
+    rather than a rule to remember.
+  - **Status is persisted before each write, not after the run.** An interruption
+    leaves an accurate record instead of an optimistic one; schema v5's per-step
+    rows are what make that cheap.
+  - **A required step's failure aborts; an optional one is recorded and the run
+    continues.** The difference between "the key is unusable" and "the key works,
+    minus the OTP slot".
+  - **Already-applied is a skip, not an overwrite.** Every step reads its applet's
+    state first. Under model B the holder is *told* to change the transport PIN,
+    so a second run that blindly set one would replace a PIN the holder chose,
+    and they would not know.
+  - **Resume, not restart.** An interrupted run continues from the first step that
+    is not `Done`.
+  - **A run that cannot be recorded does not touch the key.** A configured key
+    with no record of what was applied is the failure this tool exists to
+    prevent, so an unreachable register stops the run before the first write.
+- **The secrets a bootstrap sets** ([`features/secrets-custody.md`](features/secrets-custody.md)
+  phase 3). `crate::secret` produces them from the OS CSPRNG, shows them once and
+  wipes them. `Secret` has no `Clone`, no `Serialize` and no `Display`, and its
+  `Debug` prints `<redacted>` — so a panic message, a stray `dbg!` or a
+  mis-pointed `tracing` field prints the redaction rather than the value.
+  Generated PINs use rejection sampling, because `byte % 10` would make the
+  digits 0–5 about 1.02× likelier than 6–9. A behaviour scenario greps every
+  persisted record and audit entry of a complete run against every value it
+  generated.
+- **Per-applet write traits and a mock** ([`features/testing-strategy.md`](features/testing-strategy.md)
+  phase 7), kept apart from the read-only `YubiKeyBackend` so a screen holding
+  only a reader cannot write to a key by accident. The mock records that a call
+  *carried* a secret and never which, so the leak sweep needs no exception for it.
+- **Audit coverage for every executor outcome**
+  ([`features/audit-trail.md`](features/audit-trail.md) phase 3):
+  `bootstrap.started`, `.step.done`, `.step.failed`, `.step.skipped`,
+  `.finished`, `.aborted`, `.resumed`, `.incomplete`, plus `secret.generated`
+  (kind and length, never the value) and `secret.change_enforcement`.
+
+### Fixed
+
+- **A run missing a required step is no longer reported as `Completed`.**
+  `settle()` counts a skip as neither failure nor pending, so a required step
+  that was skipped produced a run claiming success. That is not hypothetical:
+  `piv-cert-import` is required by the standard procedure and skips on every run
+  today, because the issuing CA is an open question — so a key with no signing
+  certificate would have been recorded as a completed bootstrap. The executor now
+  emits `bootstrap.incomplete` naming the steps, and the run is not `Completed`.
+
 ## [0.7.0] - 2026-08-11
 
 Reaching the register where it actually lives, and handing the holder a document

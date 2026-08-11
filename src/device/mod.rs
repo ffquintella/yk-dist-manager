@@ -19,6 +19,7 @@
 pub mod mock;
 #[cfg(feature = "native-piv")]
 pub mod native;
+pub mod write;
 pub mod ykman;
 
 pub use mock::MockBackend;

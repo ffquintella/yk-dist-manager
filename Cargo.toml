@@ -26,6 +26,17 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 sha2 = "0.10"
 hex = "0.4"
 
+# The secrets a bootstrap sets (`crate::secret`). Both are load-bearing for
+# AGENTS.md §2 rather than conveniences:
+#
+# * `zeroize` wipes the buffer on drop, so a PIN does not linger in freed memory
+#   for the rest of the process's life. Doing this by hand is exactly the kind of
+#   code a compiler is entitled to optimise away.
+# * `getrandom` is the OS CSPRNG. `features/secrets-custody.md` is explicit that a
+#   seeded PRNG is not acceptable here: these values protect a signing key.
+zeroize = { version = "1", features = ["derive"] }
+getrandom = "0.3"
+
 # The workstation name written into the single-writer lock file that guards a
 # database hosted in a cloud-sync folder (`store::cloud`). One syscall wrapper,
 # already in the dependency graph, and the alternative was a hand-rolled

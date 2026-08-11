@@ -15,6 +15,7 @@
 //! | [`store`] | Persistence: one SQLite file, optionally password-protected |
 //! | [`settings`] | Which database to open, and the recent ones |
 //! | [`scan`] | Reading a serial from a barcode (label or camera) |
+//! | [`secret`] | The secrets a bootstrap sets: generated, shown once, wiped |
 //! | [`term`] | Consignment terms: multilingual templates and rendering |
 //! | [`pdf`] | The PDF a term is printed and signed on, written without a dependency |
 //! | [`versioning`] | "What number does the next edit get?", shared by both |
@@ -29,6 +30,7 @@
 
 pub mod app;
 pub mod audit;
+pub mod bootstrap;
 pub mod branding;
 pub mod device;
 pub mod diagnostics;
@@ -37,6 +39,7 @@ pub mod logging;
 pub mod paths;
 pub mod pdf;
 pub mod scan;
+pub mod secret;
 pub mod settings;
 pub mod status;
 pub mod store;

@@ -115,10 +115,15 @@ of the job: choosing or creating the database file, recording serials from a bar
 generating the consignment term in the holder's language, and filing the signed copy
 against the hand-over — and, from the Terms screen, editing that term's wording per
 language. The Templates screen now does the same for the bootstrap procedure itself.
-503 tests pass (plus 2 read-only hardware tests), with **88.16%** (region 86.83%) line
+535 tests pass (plus 2 read-only hardware tests), with **88.25%** (region 86.84%) line
 coverage of the headless core — now enforced by CI rather than reported by it. The
 register can also be opened from the unit's **SMB share**, connected by the application
 itself.
+
+**Wave 1 has started.** The bootstrap executor exists and is proven against mock
+transports; the secret machinery it needs exists. Nothing in this build can write to a
+key — `MockWriter` is the only implementation of the write traits — which is the
+intended state until the native transports land and are verified against hardware.
 
 ## What stands between here and a closed Wave 0
 
@@ -204,7 +209,7 @@ Everything needed before a single byte is written to a key.
 | `[/]` | GUI shell | [spec](features/gui-shell.md) — eight screens, unlock screen, status bar, egui 0.36 `App::ui`, themed with `egui-elegance` (four palettes, the choice persisted) and laid out fluidly (one gutter, full-width cards, columns that split the page, tables that contain their own overflow). Search, keyboard flow and window-state persistence still open. |
 | `[/]` | Bootstrap wizard | [spec](features/gui-bootstrap-wizard.md) — selection (the newest version of each template in use), per-step opt-out, plan review, dry run, and a link to the Templates screen. Execution progress view pending. |
 | `[/]` | Application icon | [spec](features/application-icon.md) — one SVG (a box truck carrying a YubiKey), `make icons` rendering the PNGs, the macOS `.icns` and the RGBA blob the binary embeds; window, dock and bundle icons done. A Windows `.ico` resource and a Linux `hicolor` install wait on there being Windows and Linux packaging. |
-| `[/]` | Testing strategy | [spec](features/testing-strategy.md) — **503 tests** across unit + behaviour suites, a mock device backend and a mock share connector, recorded fixtures, ignored hardware tests; **88.16%** core line coverage. **CI enforces the gate** on every push, with a macOS/Windows/Linux build matrix. Mock write transports and the secret-leak sweep wait on Wave 1. |
+| `[/]` | Testing strategy | [spec](features/testing-strategy.md) — **535 tests** across unit + behaviour suites, a mock device backend and a mock share connector, recorded fixtures, ignored hardware tests; **88.25%** core line coverage. **CI enforces the gate** on every push, with a macOS/Windows/Linux build matrix. Mock write transports and the secret-leak sweep wait on Wave 1. |
 
 ### Paperwork
 
@@ -220,14 +225,14 @@ The point of the tool: apply the template to a key, safely, with evidence.
 
 | Status | Feature | Notes |
 |---|---|---|
-| `[ ]` | Bootstrap executor | [spec](features/bootstrap-engine.md) — run the plan step by step with per-step results, abort-on-required-failure, idempotency, resume, and no secret in any record. |
+| `[/]` | Bootstrap executor | [spec](features/bootstrap-engine.md) — **the engine is built and proven against mocks**: sequencing, per-step persistence, abort-on-required-failure, idempotency, resume, an unforgeable confirmation gate, and a sweep asserting no secret reaches any record. What is missing is a transport that talks to hardware, and the GUI wiring — no code path in this build can write to a key. |
 | `[ ]` | Step: FIDO2 PIN | [spec](features/step-fido2-pin.md) — set/change the PIN over CTAP2, minimum length policy (fw 5.7+), retry accounting, and `forcePINChange` so the holder must replace the transport PIN (custody model B). |
 | `[ ]` | Step: initial FIDO2 credential | [spec](features/step-fido2-credentials.md) — `authenticatorMakeCredential` with `rk=true` so the credential is resident on the key. `ykman` cannot do this at all. |
 | `[ ]` | Step: OTP slot access code | [spec](features/step-otp-access-code.md) — the 6-byte code that write-protects a slot, plus optional slot programming. Needs the HID config frame (no crate covers it). |
 | `[ ]` | Step: PIV PIN / PUK / management key | [spec](features/step-piv-pin-puk-management-key.md) — leave no factory default; prefer a PIN-protected random management key so nothing needs custody. |
 | `[ ]` | Step: PIV signing certificate | [spec](features/step-piv-signing-certificate.md) — on-device key in slot 9c, CSR **with `rfc822Name` SAN**, issued certificate imported, attestation stored. The SAN is why this step goes native. |
 | `[ ]` | CA integration | [spec](features/ca-integration.md) — internal CA for pilots, BastionVault PKI, and an enterprise CA profile; SAN and EKU requirements per option. |
-| `[/]` | Secrets custody | [spec](features/secrets-custody.md) — **model B decided (2026-08-10)**: transport secret + forced change, nothing retained. `CustodyModel` fixes the vocabulary in code and the standard template carries the forced-change step; the prompt / generate / show-once / zeroise machinery is still Todo. |
+| `[/]` | Secrets custody | [spec](features/secrets-custody.md) — **model B decided (2026-08-10)**: transport secret + forced change, nothing retained. `CustodyModel` fixes the vocabulary, the standard template carries the forced-change step, and **the generate / show-once / zeroise machinery is built** (`crate::secret`: no `Clone`, no `Serialize`, `Debug` prints `<redacted>`, OS CSPRNG with unbiased digits). The sealed-envelope slip and the custody report are still Todo. |
 
 ## Wave 2 — Operations at scale
 

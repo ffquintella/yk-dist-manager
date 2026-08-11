@@ -45,8 +45,21 @@ What is in place:
 - Secrets in a plan remain `Arg::Secret` placeholders; a dry run records
   `no-secret-set`.
 
-Still to build: the prompt / generate / show-once / zeroise path, the sealed-envelope
-slip, and the custody report.
+- `crate::secret` — the generate / show-once / zeroise path. `Secret` has no
+  `Clone`, no `Serialize` and no `Display`; its `Debug` prints `<redacted>`, so a
+  panic message, a stray `dbg!` or a mis-pointed `tracing` field prints the
+  redaction rather than the value. Values come from the OS CSPRNG with rejection
+  sampling, so the digits of a generated PIN are not biased towards 0–5 the way
+  `byte % 10` would make them. `ShowOnce` is wiped by `dismiss()` and by `Drop`,
+  and offers no second look.
+- The executor audits `secret.generated` (kind and length, never the value) and
+  `secret.change_enforcement` (`enforced-by-firmware` for FIDO2 where the
+  firmware has it, `instructed-on-handover` for PIV always).
+- A behaviour scenario greps every persisted record and audit entry of a complete
+  mock run against every value it generated — the blunt instrument that catches
+  leakage through a field nobody thought about.
+
+Still to build: the sealed-envelope slip, and the custody report.
 
 ## Design
 
@@ -131,8 +144,8 @@ distributing by courier or post.
 |---|---|---|---|
 | 1 | Decide the model | **Done (2026-08-10)** | model B — transport secret + forced change, nothing retained |
 | 2 | Typed custody vocabulary on the run | Done | `CustodyModel` + `ChangeEnforcement`; stored in the existing `custody` column, so no migration. A dedicated column arrives with schema v2 if reporting needs one |
-| 3 | Secret input: prompt, generate, show-once, zeroise, redacted `Debug` | Todo | with `zeroize`; the remaining core of this feature |
-| 4 | `forcePINChange` in the FIDO2 step | **In progress** | the step exists in both templates and is planned; the executor call is Wave 1 |
+| 3 | Secret input: prompt, generate, show-once, zeroise, redacted `Debug` | **Done** | [`src/secret.rs`](../src/secret.rs) — `zeroize` + the OS CSPRNG, `ShowOnce` wiped on dismissal and on drop |
+| 4 | `forcePINChange` in the FIDO2 step | **In progress** | the executor calls it and audits the enforcement; the CTAP transport behind it is bootstrap-engine phase 5 |
 | 5 | Sealed-envelope slip rendering | Todo | required by B for any non-desk hand-over |
 | 6 | Optional external escrow (BastionVault KV), reference-only in the database | Todo | never the value here |
 | 7 | Custody report: which keys hold which model, and where the change was only *instructed* | Todo | `features/reports-and-export.md` |

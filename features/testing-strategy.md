@@ -18,7 +18,7 @@ whole even though every part passes.
 
 **Suites in place, and CI now enforces the gate.**
 
-- **503 tests** pass on the default features (`cargo test`); one fewer
+- **535 tests** pass on the default features (`cargo test`); one fewer
   with `--all-features`, the difference being a test that only exists when
   `encrypted-db` is *off*. Plus 2 hardware tests, ignored by default.
 - **CI runs on every push and pull request**
@@ -33,7 +33,7 @@ whole even though every part passes.
 - `cargo check --no-default-features` is part of the pre-commit sweep, because the
   no-camera build is a supported configuration
   (`make check-all`).
-- Core line coverage **88.16%** (region 86.83%), above the 80% floor.
+- Core line coverage **88.25%** (region 86.84%), above the 80% floor.
 - Unit suites: `unit_domain.rs` (15), `unit_template.rs` (50), `unit_audit.rs` (17),
   `unit_ykman_parse.rs` (8), `unit_store.rs` (30), `unit_device_backends.rs` (9),
   `unit_records.rs` (16), `unit_logging_format.rs` (6), `unit_term.rs` (45),
@@ -45,13 +45,17 @@ whole even though every part passes.
 - Behaviour suites: `behaviour_distribution.rs` (10 scenarios),
   `behaviour_bootstrap.rs` (10), `behaviour_storage.rs` (25),
   `behaviour_templates.rs` (13), `behaviour_terms_and_documents.rs` (18),
+  `behaviour_executor.rs` (10 — a bootstrap run against mock write transports),
   `behaviour_smb_share.rs` (6 — a register on a share), plus the two suites that
   drive `YkDistApp` and therefore own their binary's environment, one scenario each:
   `behaviour_app_cloud_lock.rs` and `behaviour_app_smb_share.rs` (see their module
   docs).
-- **Two mockable seams**, for the same reason: `device::MockBackend` means no test
-  needs a key, and `store::smb::MockConnector` (behind `app.share_connector`) means
-  no test needs a file server, a network or a credential that exists anywhere.
+- **Three mockable seams**, for the same reason: `device::MockBackend` means no test
+  needs a key to *read*, `device::write::MockWriter` means none needs one to
+  *write* — it is the only implementation of the write traits in the build, so no
+  test can reach hardware even by mistake — and `store::smb::MockConnector` (behind
+  `app.share_connector`) means none needs a file server, a network or a credential
+  that exists anywhere.
 - Two files are platform-gated and therefore only compiled where they run —
   `store/smb/macos.rs` and `store/smb/windows.rs`. The parts that can be tested
   anywhere were deliberately moved out of them (`store::smb::mounts` parses the mount
@@ -104,9 +108,14 @@ A category of its own, because it is the failure that matters most:
 - `no_plan_output_can_leak_a_secret` — no rendered plan output contains a
   secret-looking literal, and every secret argument renders as `<PLACEHOLDER>`.
 - `scenario_the_plan_never_shows_a_pin`.
-- Planned (with `features/secrets-custody.md` Phase 3): run a mock bootstrap with known
-  generated secrets, then grep every persisted record, the log sink and the audit sink
-  for those values and fail if any appears.
+- `a_secrets_debug_output_never_contains_its_value` — the backstop for a panic
+  message, a stray `dbg!` or a mis-pointed `tracing` field.
+- `the_mock_records_that_a_secret_was_supplied_and_never_which` — so the sweep
+  below needs no exception for the test double itself.
+- `scenario_no_secret_reaches_the_run_record_or_the_audit_trail` — the blunt
+  instrument: run a whole mock bootstrap, then grep every persisted snapshot, every
+  step detail and every audit entry against every value the run generated. Extends
+  to the log sink once the executor is wired to the GUI.
 
 ### Coverage
 
@@ -137,8 +146,8 @@ make coverage-html    # browsable report
 | 4 | Ignored, read-only hardware tests | Done | verified against a real 5 NFC |
 | 5 | CI: fmt + clippy + test + `llvm-cov` with the 80% gate | **Done** | [`.github/workflows/ci.yml`](../.github/workflows/ci.yml); `make coverage-core` now passes `--fail-under-lines`, so it gates instead of reporting |
 | 6 | Decide on Cucumber for stakeholder-readable scenarios | Todo | only if someone outside the team needs to read them |
-| 7 | Mock write transports for the executor's steps | Todo | **blocked on the executor** (Wave 1) |
-| 8 | Secret-leak sweep over every sink | Todo | **blocked on `features/secrets-custody.md` phase 3** — there is no generated secret to sweep for until the prompt/generate machinery exists |
+| 7 | Mock write transports for the executor's steps | **Done** | `device::write::MockWriter` — records that a call carried a secret, never which |
+| 8 | Secret-leak sweep over every sink | **Done** for the engine | `scenario_no_secret_reaches_the_run_record_or_the_audit_trail` greps every persisted snapshot and audit entry of a full mock run against every value it generated. Extends to the log sink once the executor is wired to the GUI |
 | 9 | Property tests for the audit chain and the RFC 4514 escaper | Todo | `proptest`; the escaper is exactly the kind of code that benefits |
 | 10 | Cross-platform CI (macOS / Windows / Linux), including the native features | **Done** | the matrix compiles `native-device` on all three; it cannot *run* the hardware tests — see below |
 

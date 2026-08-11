@@ -84,7 +84,7 @@ confirmation — that trains people to click through.
 | 1 | Selection, per-step opt-out, plan review, dry run | Done | |
 | 2 | Live run view with per-step status and touch prompts | Todo | needs the executor |
 | 3 | Secret prompt / generate / show-once panels | Todo | `features/secrets-custody.md` |
-| 4 | Single pre-flight confirmation naming what is irreversible | Todo | gate for enabling execution |
+| 4 | Single pre-flight confirmation naming what is irreversible | **In progress** | the *gate* exists in the engine — `bootstrap::Confirmation` cannot be forged and is re-checked against the plan, and `bootstrap::irreversible_steps` supplies what the dialog must list. The dialog itself is not painted yet, and the wizard does not call the executor |
 | 5 | Resume a suspended run (unplugged key, awaiting CA) | Todo | `features/ca-integration.md` |
 | 6 | Post-run summary with the evidence, and "attach to a hand-over" in one click | Todo | closes the loop with the distribution screen |
 | 7 | Pre-flight checks: firmware gates, applications enabled, key already configured | Todo | shown as skips/warnings before the run, not failures during it |

@@ -22,7 +22,35 @@ some steps go native and some still fall back to `ykman`.
 
 ## Current state
 
-**Planner shipped; executor not started.** `src/template/plan.rs`:
+**Planner and executor shipped; the transports behind them are not.**
+
+`src/bootstrap/` runs a plan step by step against the write traits in
+`src/device/write.rs`. What is proven, by ten scenarios against `MockWriter`:
+sequencing, per-step persistence, the abort policy, idempotency, resume, the
+confirmation gate, and that no secret reaches any record. What is **not** there
+is a transport that talks to hardware — `MockWriter` is the only implementation
+in the build, so no code path can currently write to a key.
+
+Three decisions in the executor worth knowing about:
+
+- **The confirmation is a type, not a flag.** `Executor::run` takes a
+  `Confirmation`, which can only be built by naming the serial and step count
+  that were shown, and which is re-checked against the request. A stale
+  confirmation — the operator agreed to six steps, then changed the template —
+  does not authorise the new plan.
+- **A run that cannot be recorded does not touch the key.** The `RunRecorder`
+  failure path returns before the first write. A configured key with no record of
+  what was applied is the failure this whole tool exists to prevent, so the
+  register being unreachable stops the run rather than being worked around.
+- **A required step that was *skipped* means the run is not `Completed`.**
+  `settle()` counts a skip as neither failure nor pending, so it would report
+  `Completed`. That is not hypothetical: `piv-cert-import` is required by the
+  standard procedure and skips on every run today, because the issuing CA is
+  undecided. A key recorded as a completed bootstrap with no signing certificate
+  on it is the wrong claim, so the executor emits `bootstrap.incomplete` naming
+  the steps and marks the run failed.
+
+`src/template/plan.rs` (unchanged):
 
 - `plan(template, ctx) -> Vec<PlannedCommand>`; every command carries the step id,
   kind, rendered description, an optional `NativeOp`, an optional `ykman` argv, and
@@ -87,14 +115,14 @@ key and recorded in the phase notes.
 |---|---|---|---|
 | 1 | Planner with transports and secret placeholders | Done | 19 template tests |
 | 2 | Dry-run recording | Done | `bootstrap.dry_run` audited |
-| 3 | Executor skeleton: sequencing, status persistence, abort policy | Todo | against mock write traits |
-| 4 | Secret input: prompt, generate, show-once, zeroise | Todo | model B is decided, so this is unblocked — `features/secrets-custody.md` |
-| 5 | FIDO2 steps live | Todo | `features/step-fido2-pin.md`, `features/step-fido2-credentials.md` |
-| 6 | PIV steps live | Todo | `features/step-piv-*.md` |
-| 7 | OTP step live | Todo | `features/step-otp-access-code.md` |
-| 8 | Verification step reading the key back | Todo | end state stored as evidence |
-| 9 | Resume an interrupted run | Todo | |
-| 10 | Idempotency detection ("already applied") | Todo | |
+| 3 | Executor skeleton: sequencing, status persistence, abort policy | **Done** | [`src/bootstrap/`](../src/bootstrap/); 10 scenarios against `MockWriter` |
+| 4 | Secret input: prompt, generate, show-once, zeroise | **Done** | [`src/secret.rs`](../src/secret.rs) — `features/secrets-custody.md` phase 3 |
+| 5 | FIDO2 steps live | Todo | the step logic and its idempotency check are written; what is missing is the transport behind `native-fido` |
+| 6 | PIV steps live | Todo | same, behind `native-piv`. The **certificate import** additionally waits on the CA decision |
+| 7 | OTP step live | Todo | same, behind `native-otp` |
+| 8 | Verification step reading the key back | **Done** | reads all three applets and stores the end state as the step's detail |
+| 9 | Resume an interrupted run | **Done** | `Executor::resume` continues from the first non-`Done` step |
+| 10 | Idempotency detection ("already applied") | **Done** | every step reads its applet's state first and skips rather than overwriting |
 
 ## Audit events
 
@@ -107,6 +135,8 @@ key and recorded in the phase notes.
 | `bootstrap.step.skipped` | A step was skipped, with why (unsupported firmware, deselected, already applied) |
 | `bootstrap.finished` | Run settled, with the final status and the tally |
 | `bootstrap.aborted` | A required step failed, or the operator stopped the run |
+| `bootstrap.resumed` | An interrupted run was continued, naming the step it resumed from |
+| `bootstrap.incomplete` | The run finished with a required step skipped — the key is not ready to hand over |
 
 ## Tests
 
