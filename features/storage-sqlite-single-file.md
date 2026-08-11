@@ -33,8 +33,30 @@ the record of who holds which security token.
 - Timestamps stored as RFC 3339 UTC strings, parsed explicitly, so the format does
   not depend on a crate feature.
 
-Not yet done: multi-operator concurrency policy, retention/archival, and the
-password work tracked in `features/db-password-and-encryption.md`.
+**Schema v5** turns a bootstrap run's steps into rows (`bootstrap_run_steps`)
+instead of a JSON blob in `bootstrap_runs.steps`. Three reasons: step-level
+reporting becomes a `GROUP BY` rather than a parse of every run; the Wave 1
+executor writes one step outcome at a time, and a blob has to be rewritten whole
+each time, so an interrupted run loses the steps that had already succeeded; and
+the column stores the same readable strings as the rest of the schema
+(`fido2-pin`, `done`) rather than serde's variant names. The backfill is Rust,
+not SQL, so the mapping is `StepKind::slug` itself; a blob that cannot be parsed
+leaves that run with no step rows and a loud log line, rather than refusing to
+open the register.
+
+**Backups are taken by the tool**, not just recommended to the operator
+([`store::backup`](../src/store/backup.rs)): `VACUUM INTO` on a schedule
+(daily by default), keeping the newest N (7 by default), with pruning that only
+ever deletes a filename it can parse as one of ours. A cloud-hosted register
+also gets one at open, before this session can write — see
+[`cloud-sync-hosting.md`](cloud-sync-hosting.md) phase 7.
+
+**The spreadsheet this tool replaces can be imported**
+([`store::import`](../src/store/import.rs)): preview first, always, then apply.
+
+Not yet done: multi-operator concurrency policy (Wave 2), retention/archival
+(blocked on ESI), and the password work tracked in
+`features/db-password-and-encryption.md`.
 
 ## Design
 
@@ -130,11 +152,11 @@ Two operators on the same share will collide eventually. Planned policy:
 | 2b | Cloud-sync detection: safe pragmas plus a visible warning | Done | found by a `--diagnose` report from a real installation |
 | 2c | Cloud-sync hosting: `Location::CloudSync` + single-writer lock | Done | [spec](cloud-sync-hosting.md) — the installation that prompted 2b needed the folder to *work*, not just to be warned about |
 | 3 | Backup (`VACUUM INTO`) + `integrity_check` | Done | Settings screen |
-| 4 | Multi-operator concurrency policy | Todo | busy retry + optimistic `updated_at` |
-| 5 | Per-step run rows instead of a JSON blob | Todo | needed for step-level reporting |
-| 6 | Scheduled/automatic backup with rotation | Todo | daily copy next to the file, keep N |
-| 7 | Archival and retention | Todo | blocked on the ESI retention decision |
-| 8 | Import from the spreadsheet this replaces | Todo | CSV mapping + dry-run preview |
+| 4 | Multi-operator concurrency policy | Todo | busy retry + optimistic `updated_at` — **Wave 2**, tracked in the roadmap under that wave |
+| 5 | Per-step run rows instead of a JSON blob | **Done** | schema **v5**: `bootstrap_run_steps`, backfilled in Rust, blob column dropped |
+| 6 | Scheduled/automatic backup with rotation | **Done** | [`store::backup`](../src/store/backup.rs) — daily by default, keep 7, pruning only names it can parse |
+| 7 | Archival and retention | Todo | **blocked on the ESI retention decision** (open question 3) |
+| 8 | Import from the spreadsheet this replaces | **Done** | [`store::import`](../src/store/import.rs) — column mapping, preview, then apply |
 
 ## Audit events
 

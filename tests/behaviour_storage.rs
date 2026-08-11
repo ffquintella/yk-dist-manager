@@ -365,3 +365,514 @@ fn scenario_asking_for_a_password_without_the_feature_says_so() {
         "the error must name the feature to enable, got: {err}"
     );
 }
+
+#[test]
+fn scenario_the_register_is_copied_on_a_schedule_and_old_copies_are_rotated_away() {
+    use chrono::{Duration, Utc};
+    use yk_dist_manager::store::BackupPolicy;
+
+    // Given a register with a backup policy of "every day, keep three"
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("keys.sqlite3");
+    let policy = BackupPolicy {
+        every: Duration::days(1),
+        keep: 3,
+        before_first_write: false,
+    };
+    let store = Store::create_new(&StoreConfig::new(&path).with_backup_policy(policy)).unwrap();
+    store.upsert_key(&sample_key(20_423_633)).unwrap();
+
+    // When five days pass, with the application opened once a day
+    let day_one = Utc::now();
+    for day in 0..5 {
+        store.backup_if_due(day_one + Duration::days(day)).unwrap();
+    }
+
+    // Then three copies survive — the newest three, not the first three
+    let mut backups: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains(".backup."))
+        .collect();
+    backups.sort();
+    assert_eq!(
+        backups.len(),
+        3,
+        "rotation kept exactly `keep` copies: {backups:?}"
+    );
+
+    // And every survivor is a usable register in its own right, which is the
+    // only property that makes a backup worth having
+    for name in &backups {
+        let copy = Store::open_existing(&StoreConfig::new(dir.path().join(name))).unwrap();
+        assert_eq!(copy.keys().unwrap().len(), 1);
+        copy.verify_audit().unwrap();
+    }
+
+    // And a second check on the same day does not pile up another copy
+    store.backup_if_due(day_one + Duration::days(4)).unwrap();
+    let after = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().contains(".backup."))
+        .count();
+    assert_eq!(
+        after, 3,
+        "the schedule, not the number of launches, decides"
+    );
+}
+
+#[test]
+fn scenario_a_cloud_hosted_register_is_copied_before_the_session_can_write_to_it() {
+    use yk_dist_manager::store::cloud::SyncPolicy;
+
+    // Given a register in a sync folder, where a clash is resolved by keeping
+    // both copies and the losing side has no other copy
+    let dir = tempfile::tempdir().unwrap();
+    let synced = dir.path().join("OneDrive - Contoso");
+    std::fs::create_dir_all(&synced).unwrap();
+    let path = synced.join("keys.sqlite3");
+
+    {
+        // The first session takes no snapshot of its own, so what the second
+        // session finds is unambiguously the second session's doing. (Two opens
+        // inside one second would otherwise share a filename, the stamp having
+        // second resolution.)
+        let store = Store::create_new(
+            &StoreConfig::new(&path)
+                .with_sync_policy(SyncPolicy::immediate())
+                .with_backup_policy(yk_dist_manager::store::BackupPolicy {
+                    before_first_write: false,
+                    ..Default::default()
+                })
+                .with_operator("ana"),
+        )
+        .unwrap();
+        store.upsert_key(&sample_key(20_423_633)).unwrap();
+        store.close();
+    }
+
+    let copies = || -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(&synced)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.to_string_lossy().contains(".backup."))
+            .collect()
+    };
+
+    // When a second session opens it — the moment before it could overwrite
+    // anything the other workstation had done
+    let before = copies();
+    let store = Store::open_existing(
+        &StoreConfig::new(&path)
+            .with_sync_policy(SyncPolicy::immediate())
+            .with_operator("bruno"),
+    )
+    .unwrap();
+
+    // Then the state it found is already on disk as a copy
+    let after = copies();
+    assert!(
+        after.len() > before.len(),
+        "opening a cloud-hosted register must snapshot it before this session writes"
+    );
+
+    // And that copy is the register as it stood, openable on its own
+    let snapshot = after
+        .iter()
+        .find(|p| !before.contains(p))
+        .expect("the new copy");
+    let copy = Store::open_existing(&StoreConfig::new(snapshot)).unwrap();
+    assert_eq!(copy.keys().unwrap()[0].serial, 20_423_633);
+    store.close();
+}
+
+#[test]
+fn scenario_a_unit_imports_the_spreadsheet_this_tool_replaces() {
+    use yk_dist_manager::store::import;
+
+    // Given the register a unit actually keeps: a spreadsheet, edited by hand
+    // for years, with a decorated serial and one row that is simply wrong
+    let dir = tempfile::tempdir().unwrap();
+    let csv = dir.path().join("registro.csv");
+    std::fs::write(
+        &csv,
+        "Número de Série;Nome;E-mail;Unidade;Observações\n\
+         20423633;Ana Silva;ana@example.org;ESI;chaveiro\n\
+         '20423634;Bruno Costa;bruno@example.org;ESI;\n\
+         SEM-NUMERO;Carla Dias;carla@example.org;ESI;perdida\n",
+    )
+    .unwrap();
+
+    let store = Store::create_new(&StoreConfig::new(dir.path().join("keys.sqlite3"))).unwrap();
+
+    // When the operator previews the import
+    let plan = import::plan(&csv, &store.existing_for_import().unwrap()).unwrap();
+
+    // Then they are told exactly what it would do, before anything is written
+    assert_eq!(
+        plan.summary(),
+        "3 rows: 2 new keys, 2 new holders, 1 refused"
+    );
+    assert!(store.keys().unwrap().is_empty(), "a preview writes nothing");
+    let refusal = plan.refusals().next().unwrap();
+    assert_eq!(refusal.line, 4, "the line the spreadsheet shows");
+
+    // And the column they use for their own notes is named as unrecognised
+    // rather than silently dropped — `Observações` is recognised, so nothing
+    // should be reported here
+    assert!(
+        plan.ignored_columns.is_empty(),
+        "{:?}",
+        plan.ignored_columns
+    );
+
+    // When they accept it
+    let outcome = store.apply_import(&plan).unwrap();
+
+    // Then the register holds the two good rows, and says where they came from
+    assert_eq!(outcome.keys_added, 2);
+    assert_eq!(outcome.holders_added, 2);
+    assert_eq!(outcome.refused, 1);
+
+    let keys = store.keys().unwrap();
+    assert_eq!(keys.len(), 2);
+    assert!(
+        keys.iter()
+            .all(|k| k.serial_source == yk_dist_manager::domain::SerialSource::ManualEntry),
+        "a serial from a spreadsheet is a claim, not a device read"
+    );
+    assert!(
+        keys.iter().any(|k| k.serial == 20_423_634),
+        "a serial a spreadsheet decorated with a leading apostrophe still reads"
+    );
+    assert_eq!(store.holders().unwrap().len(), 2);
+
+    // And importing the same file again changes nothing, because both natural
+    // keys are unique — an operator who clicks twice does not double the register
+    let plan = import::plan(&csv, &store.existing_for_import().unwrap()).unwrap();
+    assert_eq!(plan.new_keys(), 0, "the second pass has nothing new");
+    let outcome = store.apply_import(&plan).unwrap();
+    assert_eq!(outcome.keys_refreshed, 2);
+    assert_eq!(store.keys().unwrap().len(), 2);
+}
+
+#[test]
+fn scenario_an_import_never_downgrades_a_serial_read_from_the_hardware() {
+    use yk_dist_manager::store::import;
+
+    // Given a key whose serial was read from the device
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::create_new(&StoreConfig::new(dir.path().join("keys.sqlite3"))).unwrap();
+    store.upsert_key(&sample_key(20_423_633)).unwrap();
+
+    // When a spreadsheet claiming the same key is imported
+    let csv = dir.path().join("register.csv");
+    std::fs::write(&csv, "Serial,Model\n20423633,Something Else\n").unwrap();
+    let plan = import::plan(&csv, &store.existing_for_import().unwrap()).unwrap();
+    store.apply_import(&plan).unwrap();
+
+    // Then the provenance stays `device`: a typed claim must never outrank a key
+    // somebody actually held, or a mis-typed serial could bind a certificate to
+    // the wrong hardware
+    let key = store.key_by_serial(20_423_633).unwrap().unwrap();
+    assert_eq!(
+        key.serial_source,
+        yk_dist_manager::domain::SerialSource::Device
+    );
+}
+
+#[test]
+fn scenario_a_second_operator_can_look_at_a_locked_register_without_taking_it() {
+    use yk_dist_manager::store::StoreError;
+    use yk_dist_manager::store::cloud::SyncPolicy;
+
+    // Given a register in a sync folder that Ana has open, and therefore locked
+    let dir = tempfile::tempdir().unwrap();
+    let synced = dir.path().join("OneDrive - Contoso");
+    std::fs::create_dir_all(&synced).unwrap();
+    let path = synced.join("keys.sqlite3");
+    let config = || StoreConfig::new(&path).with_sync_policy(SyncPolicy::immediate());
+
+    let ana = Store::create_new(&config().with_operator("ana")).unwrap();
+    ana.upsert_key(&sample_key(20_423_633)).unwrap();
+    ana.insert_holder(&Holder::new("Ana", "ana@example.org", "ESI", "").unwrap())
+        .unwrap();
+
+    // When Bruno, who only wants to know who holds serial 20423633, opens it for
+    // reading
+    let bruno = Store::open_read_only(&config().with_operator("bruno")).unwrap();
+
+    // Then he can read the register
+    assert!(bruno.is_read_only());
+    assert_eq!(bruno.keys().unwrap().len(), 1);
+    assert_eq!(bruno.holders().unwrap().len(), 1);
+    assert!(
+        bruno.describe().contains("READ ONLY"),
+        "the status line has to say so: {}",
+        bruno.describe()
+    );
+
+    // And Ana's lock is untouched — a reader sequences nothing, so it takes
+    // nothing
+    assert!(bruno.lease().is_none());
+    assert_eq!(
+        yk_dist_manager::store::cloud::read_holder(&yk_dist_manager::store::cloud::lock_path(
+            &path
+        ))
+        .unwrap()
+        .operator,
+        "ana",
+        "a read-only open must not disturb the workstation that has it"
+    );
+
+    // And nothing he does can change the register, because the refusal comes
+    // from the database and not from a check this code might forget
+    let refused = bruno.upsert_key(&sample_key(20_423_634));
+    assert!(
+        matches!(refused, Err(StoreError::ReadOnly)),
+        "a write must be refused with the reason, got: {refused:?}"
+    );
+    assert!(matches!(
+        bruno.append_audit("bruno", "key.added", "serial:2", ""),
+        Err(StoreError::ReadOnly)
+    ));
+    assert!(matches!(
+        bruno.set_key_notes(20_423_633, "spare"),
+        Err(StoreError::ReadOnly)
+    ));
+
+    // And Ana's register is exactly as she left it
+    assert_eq!(ana.keys().unwrap().len(), 1);
+    ana.close();
+}
+
+#[test]
+fn scenario_a_register_needing_a_migration_will_not_open_read_only() {
+    // Migrating is a write. Opening an old file read-only would mean reading
+    // rows with a schema they do not have — so it is refused, naming both
+    // versions, instead of quietly misreading the register.
+    use yk_dist_manager::store::StoreError;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("legacy.sqlite3");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE keys (id TEXT PRIMARY KEY);")
+            .unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+    }
+
+    match Store::open_read_only(&StoreConfig::new(&path)) {
+        Err(StoreError::MigrationNeedsWriteAccess { found, supported }) => {
+            assert_eq!(found, 1);
+            assert!(supported >= 5);
+        }
+        Err(other) => panic!("expected a refusal naming both versions, got: {other}"),
+        Ok(_) => panic!("a register needing a migration must not open read-only"),
+    }
+}
+
+#[test]
+fn scenario_the_audit_trail_is_mirrored_to_segregated_storage_and_divergence_is_reported() {
+    use yk_dist_manager::audit::MirrorStatus;
+
+    // Given a register whose audit trail is mirrored to a second location — the
+    // norm wants audit data apart from operational data, and the deployment
+    // wants one file, so the mirror is how both are answered
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("keys.sqlite3");
+    let mirror_path = dir.path().join("segregated").join("audit.jsonl");
+    let config = || StoreConfig::new(&path).with_audit_mirror(Some(mirror_path.clone()));
+
+    {
+        let store = Store::create_new(&config()).unwrap();
+
+        // When work is recorded
+        store.upsert_key(&sample_key(20_423_633)).unwrap();
+        store
+            .append_audit("ana", "key.added", "serial:20423633", "")
+            .unwrap();
+        store
+            .append_audit("ana", "key.distributed", "serial:20423633", "holder=ana")
+            .unwrap();
+
+        // Then both copies agree
+        assert_eq!(
+            store.mirror_status(),
+            MirrorStatus::InSync { entries: 2 },
+            "every entry reaches the segregated copy"
+        );
+        assert!(mirror_path.is_file(), "the mirror is a file of its own");
+    }
+
+    // When somebody rebuilds the chain in the database — dropping the trigger,
+    // rewriting the entry *and recomputing its hash*, so the trail still
+    // verifies against itself. This is the tamper worth defending against: a
+    // sloppy edit is caught by `verify_audit` alone, and needs no mirror.
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let (at, actor, event, target, prev_hash): (String, String, String, String, String) = conn
+            .query_row(
+                "SELECT at, actor, event, target, prev_hash FROM audit WHERE seq = 2",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+
+        let mut rebuilt = yk_dist_manager::audit::AuditEntry {
+            seq: 2,
+            at: chrono::DateTime::parse_from_rfc3339(&at)
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+            actor,
+            event,
+            target,
+            details: "holder=bruno".into(),
+            prev_hash,
+            hash: String::new(),
+        };
+        rebuilt.hash = rebuilt.compute_hash();
+
+        conn.execute_batch("DROP TRIGGER audit_no_update;").unwrap();
+        conn.execute(
+            "UPDATE audit SET details = ?1, hash = ?2 WHERE seq = 3 - 1",
+            rusqlite::params![rebuilt.details, rebuilt.hash],
+        )
+        .unwrap();
+    }
+
+    // Then the database's own trail still verifies — the rebuild was consistent,
+    // which is precisely why the trigger and the hash chain are not enough
+    let store = Store::open_existing(&config()).unwrap();
+    assert_eq!(
+        *store.chain_status(),
+        yk_dist_manager::store::ChainStatus::Verified { entries: 2 },
+        "a rebuilt chain verifies against itself; that is the point"
+    );
+
+    // And the mirror catches it, naming the entry
+    match store.mirror_status() {
+        MirrorStatus::Diverged { seq } => assert_eq!(seq, 2),
+        other => panic!("expected a divergence, got: {other:?}"),
+    }
+    assert!(store.mirror_status().is_alert());
+    assert!(
+        store.mirror_status().describe().contains("DIVERGED"),
+        "{}",
+        store.mirror_status().describe()
+    );
+}
+
+#[test]
+fn scenario_an_edit_that_forgets_the_hash_is_caught_without_any_mirror() {
+    // The other half: most tampering is not careful. An entry edited in place
+    // breaks its own hash, and the chain verification finds it at open with no
+    // second copy involved.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("keys.sqlite3");
+    {
+        let store = Store::create_new(&StoreConfig::new(&path)).unwrap();
+        store
+            .append_audit("ana", "key.distributed", "serial:20423633", "holder=ana")
+            .unwrap();
+    }
+
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "DROP TRIGGER audit_no_update;
+         UPDATE audit SET details = 'holder=bruno' WHERE seq = 1;",
+    )
+    .unwrap();
+    drop(conn);
+
+    let store = Store::open_existing(&StoreConfig::new(&path)).unwrap();
+    assert!(
+        store.chain_status().is_broken(),
+        "a broken chain is found at open, not when somebody happens to press Verify"
+    );
+}
+
+#[test]
+fn scenario_a_healthy_register_reports_its_chain_verified_at_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("keys.sqlite3");
+    {
+        let store = Store::create_new(&StoreConfig::new(&path)).unwrap();
+        store
+            .append_audit("ana", "key.added", "serial:20423633", "")
+            .unwrap();
+    }
+
+    let store = Store::open_existing(&StoreConfig::new(&path)).unwrap();
+    assert_eq!(
+        *store.chain_status(),
+        yk_dist_manager::store::ChainStatus::Verified { entries: 1 }
+    );
+    assert_eq!(
+        store.mirror_status(),
+        yk_dist_manager::audit::MirrorStatus::NotConfigured,
+        "no mirror is normal until the ESI decides one is required"
+    );
+}
+
+#[test]
+fn scenario_the_audit_screen_can_answer_a_question_about_one_key() {
+    use yk_dist_manager::audit::AuditFilter;
+
+    // Given a trail with two keys and two operators in it
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::create_new(&StoreConfig::new(dir.path().join("keys.sqlite3"))).unwrap();
+    for (actor, event, target) in [
+        ("ana", "key.added", "serial:20423633"),
+        ("ana", "key.distributed", "serial:20423633"),
+        ("bruno", "key.added", "serial:20423634"),
+        ("bruno", "template.changed", "org-standard v2"),
+    ] {
+        store.append_audit(actor, event, target, "").unwrap();
+    }
+
+    // When an auditor asks what happened to one key
+    let filter = AuditFilter {
+        target: "20423633".into(),
+        ..Default::default()
+    };
+    let matched = store.audit_entries_matching(&filter, 500).unwrap();
+
+    // Then they get that key's history and nothing else
+    assert_eq!(matched.len(), 2);
+    assert!(matched.iter().all(|e| e.target.contains("20423633")));
+
+    // And the limit applies after the filter, so a key whose events are old is
+    // still found rather than falling off the end of the newest N
+    let narrow = store.audit_entries_matching(&filter, 1).unwrap();
+    assert_eq!(narrow.len(), 1);
+}
+
+#[test]
+fn scenario_a_local_register_is_not_copied_just_for_being_opened() {
+    // The pre-write snapshot answers a failure that only happens behind a sync
+    // client. A local file with SQLite's own locking does not need it, and a
+    // copy per launch would be a surprise on a workstation's disk.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("keys.sqlite3");
+    let store = Store::create_new(&StoreConfig::new(&path)).unwrap();
+    store.close();
+
+    let copies = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().contains(".backup."))
+        .count();
+    assert_eq!(copies, 0);
+}

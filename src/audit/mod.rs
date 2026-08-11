@@ -156,6 +156,49 @@ impl AuditLog {
         Ok(entry)
     }
 
+    /// Append an entry that was built and hashed somewhere else, verbatim.
+    ///
+    /// This is what makes the log usable as a **mirror** of the database's
+    /// chain rather than a second chain about the same events. Re-deriving the
+    /// entry here would give it this machine's clock and this file's sequence,
+    /// so its hash would differ from the database's for every entry — and the
+    /// comparison that catches a rebuilt chain
+    /// ([`compare_with_mirror`]) would be comparing two things that were never
+    /// meant to be equal.
+    ///
+    /// Nothing is recomputed and nothing is checked: the caller owns the chain,
+    /// and a mirror that "corrected" what it was given would destroy the very
+    /// evidence it exists to preserve.
+    pub fn append_existing(&mut self, entry: &AuditEntry) -> Result<(), AuditError> {
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent).map_err(|source| AuditError::Io {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .map_err(|source| AuditError::Io {
+                path: self.path.clone(),
+                source,
+            })?;
+
+        let line = serde_json::to_string(entry).expect("audit entry is serialisable");
+        writeln!(file, "{line}")
+            .and_then(|_| file.flush())
+            .map_err(|source| AuditError::Io {
+                path: self.path.clone(),
+                source,
+            })?;
+
+        self.last_hash = entry.hash.clone();
+        self.next_seq = entry.seq + 1;
+        Ok(())
+    }
+
     /// Every entry, oldest first.
     pub fn entries(&self) -> Result<Vec<AuditEntry>, AuditError> {
         read_all(&self.path)
@@ -195,6 +238,174 @@ fn read_all(path: &Path) -> Result<Vec<AuditEntry>, AuditError> {
         entries.push(entry);
     }
     Ok(entries)
+}
+
+/// Which entries the Audit screen should show.
+///
+/// A flat list of the newest 500 entries answers "what happened recently" and
+/// nothing else. The questions an audit actually asks are "everything that
+/// touched serial 20423633", "everything Ana did", "every template change in
+/// June" — so the filter is part of the feature, not a convenience.
+///
+/// Lives here rather than in the paint code because it is the part worth
+/// testing: `src/ui/` is outside the coverage gate precisely because painting is
+/// not tested, and a filter that silently drops entries would be the wrong thing
+/// to leave untested (`AGENTS.md` §4).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AuditFilter {
+    /// Substring of the event name, e.g. `template.` for every template event.
+    pub event: String,
+    /// Substring of the actor.
+    pub actor: String,
+    /// Substring of the target, which is where a serial appears
+    /// (`serial:20423633`).
+    pub target: String,
+    /// Inclusive lower bound.
+    pub from: Option<DateTime<Utc>>,
+    /// Inclusive upper bound.
+    pub until: Option<DateTime<Utc>>,
+}
+
+impl AuditFilter {
+    pub fn is_empty(&self) -> bool {
+        self.event.trim().is_empty()
+            && self.actor.trim().is_empty()
+            && self.target.trim().is_empty()
+            && self.from.is_none()
+            && self.until.is_none()
+    }
+
+    /// Does this entry pass?
+    ///
+    /// Matching is case-insensitive substring, because an operator at a desk
+    /// types `ana` and means `Ana Silva`, and types `20423633` and means
+    /// `serial:20423633`.
+    pub fn matches(&self, entry: &AuditEntry) -> bool {
+        fn contains(haystack: &str, needle: &str) -> bool {
+            needle.trim().is_empty()
+                || haystack
+                    .to_lowercase()
+                    .contains(needle.trim().to_lowercase().as_str())
+        }
+
+        contains(&entry.event, &self.event)
+            && contains(&entry.actor, &self.actor)
+            && contains(&entry.target, &self.target)
+            && self.from.is_none_or(|from| entry.at >= from)
+            && self.until.is_none_or(|until| entry.at <= until)
+    }
+
+    /// Apply to a slice, keeping the order it was given in.
+    pub fn apply<'a>(&self, entries: &'a [AuditEntry]) -> Vec<&'a AuditEntry> {
+        entries.iter().filter(|e| self.matches(e)).collect()
+    }
+
+    /// One line describing what is being shown, so a filtered screen never looks
+    /// like the whole trail.
+    pub fn describe(&self, shown: usize, total: usize) -> String {
+        if self.is_empty() {
+            return format!("{shown} entries");
+        }
+        let mut parts = Vec::new();
+        for (label, value) in [
+            ("event", &self.event),
+            ("actor", &self.actor),
+            ("target", &self.target),
+        ] {
+            if !value.trim().is_empty() {
+                parts.push(format!("{label}~{}", value.trim()));
+            }
+        }
+        if let Some(from) = self.from {
+            parts.push(format!("from {}", from.format("%Y-%m-%d")));
+        }
+        if let Some(until) = self.until {
+            parts.push(format!("until {}", until.format("%Y-%m-%d")));
+        }
+        format!("{shown} of {total} entries — {}", parts.join(", "))
+    }
+}
+
+/// What comparing the database's chain with its mirror found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MirrorStatus {
+    /// No mirror is configured. Not an error: the mirror is optional until the
+    /// ESI decides whether segregated audit storage is required here.
+    NotConfigured,
+    /// Both chains agree, at this many entries.
+    InSync { entries: usize },
+    /// The mirror is behind — which is what a failed append looks like, and is
+    /// worth an alert rather than a silent gap.
+    Behind { database: usize, mirror: usize },
+    /// Same length, different content. This is the interesting one: it means one
+    /// of the two chains was rewritten.
+    Diverged { seq: u64 },
+    /// The mirror could not be read at all.
+    Unreadable { reason: String },
+}
+
+impl MirrorStatus {
+    /// Does this need to be in front of the operator?
+    pub fn is_alert(&self) -> bool {
+        matches!(
+            self,
+            MirrorStatus::Behind { .. }
+                | MirrorStatus::Diverged { .. }
+                | MirrorStatus::Unreadable { .. }
+        )
+    }
+
+    pub fn describe(&self) -> String {
+        match self {
+            MirrorStatus::NotConfigured => "no audit mirror configured".into(),
+            MirrorStatus::InSync { entries } => {
+                format!("audit mirror in sync ({entries} entries)")
+            }
+            MirrorStatus::Behind { database, mirror } => format!(
+                "AUDIT MIRROR BEHIND: the database has {database} entries, the mirror {mirror} — \
+                 entries were not written to the segregated copy"
+            ),
+            MirrorStatus::Diverged { seq } => format!(
+                "AUDIT MIRROR DIVERGED at entry {seq}: the database and the mirror disagree, which \
+                 means one of them was rewritten"
+            ),
+            MirrorStatus::Unreadable { reason } => {
+                format!("AUDIT MIRROR UNREADABLE: {reason}")
+            }
+        }
+    }
+}
+
+/// Compare a database chain with its mirror.
+///
+/// The mirror's value is exactly this comparison: a chain rebuilt in the
+/// database no longer matches a copy on storage the operator cannot rewrite, so
+/// a tamper that defeats the triggers still shows up here. Both chains are
+/// assumed already verified individually — this answers "do they agree", not "is
+/// each one internally consistent".
+pub fn compare_with_mirror(database: &[AuditEntry], mirror: &[AuditEntry]) -> MirrorStatus {
+    // Compare the overlap first: a divergence matters more than a gap, because a
+    // short mirror is a failed write and a differing one is a rewrite.
+    for (a, b) in database.iter().zip(mirror.iter()) {
+        if a.hash != b.hash {
+            return MirrorStatus::Diverged { seq: a.seq };
+        }
+    }
+    match database.len().cmp(&mirror.len()) {
+        std::cmp::Ordering::Equal => MirrorStatus::InSync {
+            entries: database.len(),
+        },
+        std::cmp::Ordering::Greater => MirrorStatus::Behind {
+            database: database.len(),
+            mirror: mirror.len(),
+        },
+        // A mirror ahead of the database means the database lost entries — the
+        // same alert, read from the other side.
+        std::cmp::Ordering::Less => MirrorStatus::Behind {
+            database: database.len(),
+            mirror: mirror.len(),
+        },
+    }
 }
 
 /// Check sequence continuity, `prev_hash` linkage and each entry's own hash.

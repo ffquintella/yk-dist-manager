@@ -1,0 +1,115 @@
+# Continuous integration — features/testing-strategy.md phase 5 and phase 10.
+#
+# What this proves, and what it deliberately does not:
+#
+# * `check` runs the whole pre-commit sweep from AGENTS.md §4 on Linux, plus the
+#   coverage gate with its 80% floor. This is the job that can fail a merge.
+# * `cross-platform` compiles on macOS, Windows and Linux, including the native
+#   hardware features. It does **not** run the hardware tests: a hosted runner
+#   has no PC/SC reader and no USB HID device, so those stay `#[ignore]`d and
+#   what the matrix proves is that the platform-specific transports still build.
+#   `features/testing-strategy.md` records that limitation rather than pretending
+#   the matrix is more than it is.
+#
+# No job ever touches a real key, in line with the hardware policy: "no test
+# writes to a YubiKey. Ever. Not even an ignored one."
+#
+# Nothing here interpolates event data (an issue title, a branch name, a commit
+# message) into a shell command: the only expressions used are `matrix.os` and
+# `runner.os`, both of which come from this file rather than from a contributor.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # A warning in CI is a failure; the working agreement asks for a
+  # warning-free clippy.
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: fmt, clippy, tests, coverage gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy, llvm-tools-preview
+
+      # eframe needs X11/Wayland and GTK-adjacent development headers to link,
+      # even for a build that never opens a window.
+      - name: Install the Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxkbcommon-dev libssl-dev libudev-dev libpcsclite-dev
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      # The no-camera build is a supported configuration, so it has to keep
+      # compiling (`make check-all`).
+      - name: The build without default features
+        run: cargo check --no-default-features --features file-dialog
+
+      - name: Tests
+        run: cargo test --all-features
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      # THE GATE. `make coverage-core` passes --fail-under-lines, so this step
+      # fails the build when the headless core drops below the floor.
+      - name: Coverage of the headless core (floor 80%)
+        run: make coverage-core
+
+  cross-platform:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install the Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxkbcommon-dev libssl-dev libudev-dev libpcsclite-dev
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo check --all-targets
+
+      # PC/SC and USB HID are linked per platform, and they are the parts most
+      # likely to break on a platform nobody develops on. Compiling them here is
+      # the cheapest way to find that out.
+      - name: Build with the native transports
+        run: cargo check --features native-device
+
+      - name: Tests
+        run: cargo test

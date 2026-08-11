@@ -75,8 +75,35 @@ the required fields only leaves the identification number, phone and address int
 | `started_at` | TEXT | |
 | `finished_at` | TEXT | Null while running |
 | `status` | TEXT (JSON enum) | `Planned` \| `Running` \| `Completed` \| `Failed` \| `Aborted` |
-| `steps` | TEXT (JSON) | `Vec<StepOutcome>`; schema v2 moves these to rows |
 | `custody` | TEXT | The custody model: `transport-pin+forced-change` (the decided default), `holder-set`, `escrowed:<external reference>`, or `no-secret-set`. Never a secret value |
+
+## `bootstrap_run_steps` — what each step did (v5)
+
+One row per step of a run, replacing the `bootstrap_runs.steps` JSON blob that v1
+to v4 carried.
+
+| Column | Type | Notes |
+|---|---|---|
+| `run_id` | TEXT → `bootstrap_runs(id)` | PK with `position` |
+| `position` | INTEGER | The template's order; PK with `run_id` |
+| `step_id` | TEXT | The template's step id, e.g. `piv-csr` |
+| `kind` | TEXT | `StepKind::slug` — `fido2-pin`, `piv-keygen`, … |
+| `status` | TEXT | `pending` \| `running` \| `done` \| `failed` \| `skipped` |
+| `started_at`, `finished_at` | TEXT NULL | |
+| `detail` | TEXT | Operator-facing, secret-free |
+
+Indexed on `(kind, status)`, which is the question a report asks: "how many keys
+got a signing certificate?"
+
+Why rows rather than a blob:
+
+* **Step-level reporting** becomes a `GROUP BY` instead of parsing every run.
+* **The executor writes one outcome at a time.** Rewriting a whole blob per step
+  means a run interrupted mid-write loses the steps that had already succeeded —
+  which is exactly the record that matters when a key was half-configured.
+* **The stored spellings match the rest of the schema** (`fido2-pin`, `done`)
+  rather than serde's variant names (`Fido2Pin`, `Done`), so the file stays
+  answerable from a SQL console during an audit.
 
 `StepOutcome`: `step_id`, `kind`, `status`, `started_at`, `finished_at`, `detail`.
 `detail` is operator-facing text and must be secret-free. For a secret-setting step it also
@@ -232,12 +259,20 @@ Shipped so far:
 | v2 | `keys.serial_source` — how a serial was learned |
 | v3 | optional holder fields, `term_templates`, `documents` |
 | v4 | `templates.retired_at` — a procedure can be withdrawn without being deleted |
+| v5 | `bootstrap_run_steps` — per-step rows; drops `bootstrap_runs.steps` |
 
-A test builds a v1 database by hand and opens it with the current build, asserting the
-chain carries it to v4 without touching the rows (`a_v1_database_migrates_forward_keeping_its_rows`).
+A test builds a v1 database by hand — including a run whose steps are a JSON blob
+in serde's old spelling — and opens it with the current build, asserting the chain
+carries it to v5 with every step intact and in order
+(`a_v1_database_migrates_forward_keeping_its_rows`).
 
-Planned: **v5** — per-step rows for `bootstrap_runs` (queryable step outcomes);
-**v6** — a `batches` table for bulk enrolment.
+v5's backfill runs in **Rust, not SQL**: mapping `Fido2Pin` to `fido2-pin` in SQL
+would be a twelve-branch `CASE` hand-kept in step with `StepKind::slug`, and the
+first divergence would be silent. A blob that cannot be parsed leaves that run
+with no step rows and an `error` log line, rather than refusing to open the
+register — covered by `a_run_with_an_unreadable_step_blob_keeps_its_record`.
+
+Planned: **v6** — a `batches` table for bulk enrolment.
 
 ## Personal data summary
 

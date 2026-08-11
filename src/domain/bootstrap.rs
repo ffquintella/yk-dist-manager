@@ -11,7 +11,11 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// The catalogue of things the bootstrap procedure can do to a key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Ordered by [`StepKind::ALL`] — the sequence the standard procedure applies
+/// them in — so a report keyed on the kind comes out in procedure order rather
+/// than alphabetically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum StepKind {
     /// Set or change the FIDO2 PIN (`ykman fido access change-pin`).
     Fido2Pin,
@@ -109,7 +113,7 @@ impl StepKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum StepStatus {
     Pending,
     Running,

@@ -19,6 +19,81 @@ Maintenance instructions (see AGENTS.md §5):
 
 ### Added
 
+- **The audit trail can be mirrored to segregated storage, and a divergence is an
+  alert.** `StoreConfig::with_audit_mirror` points at a second location — ideally
+  a share with an append-only ACL — and every entry is copied there *verbatim*:
+  the same sequence, timestamp and hashes, not a second chain about the same
+  events. That distinction is the feature. The database's triggers stop every
+  ordinary edit, and a chain **rebuilt** consistently still verifies against
+  itself — so the only thing that shows it changed is a copy the operator cannot
+  rewrite. `Store::mirror_status()` compares the two and names the entry where
+  they part. A mirror failure is logged at `error` and surfaced, never `let _ =`,
+  and never fails the mutation: undoing a hand-over because a second file was
+  unreachable would lose the fact being recorded.
+  ([`features/audit-trail.md`](features/audit-trail.md) phase 2)
+- **The audit chain is verified when the register is opened**, not only when
+  somebody presses Verify — a broken chain found by chance is found too late.
+  Bounded at 20 000 entries so a register with a year of history does not delay
+  the first frame; past that the status reports *not checked* rather than
+  implying it passed. ([`features/audit-trail.md`](features/audit-trail.md) phase 7)
+- **The audit trail can be filtered** by event, actor, target and date range.
+  "Everything that touched serial 20423633" and "every template change in June"
+  are the questions an audit actually asks, and a flat list of the newest 500
+  entries answers neither. The row limit applies *after* the filter, so a key
+  whose events are old is still found. A filtered view says that it is filtered,
+  because one that looks like the whole trail is how somebody concludes an event
+  never happened. ([`features/audit-trail.md`](features/audit-trail.md) phase 6)
+- **A second operator can read a locked register instead of being turned away.**
+  `Store::open_read_only` opens with `SQLITE_OPEN_READ_ONLY` and takes no lock, so
+  "who holds serial 20423633?" is answerable while somebody else is mid-hand-over.
+  The refusal to write comes from SQLite rather than from a check in each of the
+  twenty-odd methods that write — the same reasoning as the audit table's
+  triggers, and one that cannot be forgotten by the next mutation added. A
+  register needing a migration will not open this way, because migrating is a
+  write: it is refused, naming both versions, rather than opened and misread.
+  ([`features/cloud-sync-hosting.md`](features/cloud-sync-hosting.md) phase 8)
+- **CI runs on every push and pull request**, and the coverage gate now gates.
+  fmt, clippy with `-D warnings`, the no-default-features build, the full suite,
+  and `cargo llvm-cov` against the 80% floor; a second job compiles on macOS,
+  Windows and Linux including the native PC/SC and HID transports. It cannot
+  *run* the hardware tests — a hosted runner has no reader — and the workflow says
+  so, so a green matrix is not misread as hardware having been exercised.
+  ([`features/testing-strategy.md`](features/testing-strategy.md) phases 5 and 10)
+- **The tool takes its own backups, on a schedule, and rotates them.** Every
+  storage document in this repository ended with "and a scheduled backup is still
+  required", which was advice to an operator rather than something the tool did.
+  Now `store::backup` takes a `VACUUM INTO` copy — daily by default, keeping the
+  newest seven — named `<stem>.<YYYYMMDD-HHMMSS>.backup.sqlite3`, the shape the
+  manual backup in Settings already used and which the sync-conflict detector
+  already knew was ours. Rotation only ever deletes a filename it can parse as
+  one of our backups: the folder next to the register also holds the register,
+  its journal, its lock file and a sync client's conflict copies, and deleting
+  the wrong one of those is unrecoverable.
+  ([`features/storage-sqlite-single-file.md`](features/storage-sqlite-single-file.md) phase 6)
+- **A register in a cloud-sync folder is copied before the session can write to
+  it.** The cheapest answer to a fork that has already happened: if a sync client
+  resolved a clash by keeping both copies, the side this workstation is about to
+  overwrite otherwise has no copy at all. Taken at open rather than at the first
+  write — earlier, and with no bookkeeping to get wrong about whether this
+  session has written yet. A failure is logged loudly and never stops the
+  register opening.
+  ([`features/cloud-sync-hosting.md`](features/cloud-sync-hosting.md) phase 7)
+- **The spreadsheet this tool replaces can be imported.** Preview first, always:
+  `store::import::plan` reads the file, decides what each row would do and returns
+  it as data with nothing written, so the operator sees "12 new keys, 3 already
+  known, 1 refused: `ABC123` is not a serial number" before agreeing to anything.
+  Reads what a spreadsheet actually produces — semicolon separators from a
+  decimal-comma locale, a UTF-8 BOM, accented and spaced headers in Portuguese or
+  English, quoted cells containing the separator, and serials decorated with a
+  leading apostrophe or thousands separators. An imported serial is
+  `manual-entry` provenance, because nobody has touched that key, and it never
+  downgrades one already read from hardware. Distributions are deliberately not
+  imported — a hand-over needs a date, a method and an operator that a
+  spreadsheet rarely records, and inventing them would fabricate custody
+  evidence. A file with no unit column imports its keys and none of its people,
+  said once rather than repeated per row, because a holder's unit reaches the
+  `OU=` of a signing certificate and cannot be guessed.
+  ([`features/storage-sqlite-single-file.md`](features/storage-sqlite-single-file.md) phase 8)
 - **The database can live in a OneDrive folder, and two operators can share it —
   one at a time.** A synchronising folder is the worst place for a SQLite file, and it
   is where a real installation keeps the register, because it is the shared folder that
@@ -55,6 +130,24 @@ Maintenance instructions (see AGENTS.md §5):
 
 ### Changed
 
+- **`make coverage-core` is now actually a gate.** It was labelled "THE GATE" and
+  documented as the 80% floor, but it only printed a summary and exited 0 — so a
+  change that dropped core coverage below the floor passed `make release-check`
+  unnoticed. It now passes `--fail-under-lines`, and the build agrees with
+  AGENTS.md §4 that such a change is not ready.
+- **A bootstrap run's steps are rows, not a JSON blob** (schema **v5**,
+  `bootstrap_run_steps`, with a migration). The blob was the right shape while a
+  run was written once and read back whole, and the wrong one for what comes
+  next: step-level reporting becomes a `GROUP BY` instead of a parse of every
+  run; the Wave 1 executor writes one step outcome at a time, and rewriting a
+  blob per step means an interrupted run loses the steps that had already
+  succeeded; and the rows store the same readable strings as the rest of the
+  schema (`fido2-pin`, `done`) rather than serde's variant names, so the file
+  stays answerable from a SQL console. The backfill runs in Rust rather than SQL
+  so the mapping is `StepKind::slug` itself and cannot drift; a step list that
+  cannot be parsed leaves that run with no steps and an `error` log line, because
+  refusing to open the register over one historical run would trade a partial
+  record for no record.
 - **Closing a database is now a protocol, not a drop.** Every path that stops using one
   — the Close button, switching database, creating another — writes its audit entry
   while the connection is still open, then closes the connection and releases the lock.

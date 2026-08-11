@@ -124,8 +124,8 @@ PIN, no access code, on any path in this feature.
 | 4 | Deliberate take-over of an abandoned lock, audited | Done | 15-minute staleness; refused by default |
 | 5 | Conflict-copy detection and reporting | Done | status line, Settings, audit, `--diagnose` |
 | 6 | GUI: lock state in Settings, refusal card in the chooser, status pill | Done | `db: cloud-sync (locked)` |
-| 7 | Automatic backup before the first write of a session | Todo | pairs with phase 6 of the storage spec; the cheapest answer to a fork that already happened |
-| 8 | Read-only mode instead of a refusal | Todo | a second operator could *look* at the register while another writes; needs a read-only `Store` |
+| 7 | Automatic backup before the first write of a session | **Done** | taken at *open*, which is earlier and needs no "have we written yet?" bookkeeping; [`store::backup`](../src/store/backup.rs) |
+| 8 | Read-only mode instead of a refusal | **Done** | `Store::open_read_only` — `SQLITE_OPEN_READ_ONLY`, no lease taken, writes refused by the database |
 
 ## Audit events
 
@@ -186,8 +186,11 @@ override; `src/diagnostics.rs` covers the report lines.
 - **The password matters more here.** A file in a sync folder is a file in somebody
   else's storage. `features/db-password-and-encryption.md` is Todo, and this feature
   is an argument for finishing it.
-- **Automatic backup (phase 7)** is the only real answer to a fork that has already
-  happened. Currently the operator is told and must compare the copies by hand.
+- **A fork that has already happened** is now survivable rather than only visible:
+  opening a sync-hosted register snapshots it first (phase 7), so the side this
+  workstation is about to overwrite still exists as a file. Comparing the two copies
+  is still the operator's job — an automatic merge of two divergent registers of who
+  holds which security token is not something this tool should attempt.
 
 ## References
 

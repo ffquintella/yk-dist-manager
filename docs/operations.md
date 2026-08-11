@@ -137,6 +137,49 @@ access control.
 
 ---
 
+## Runbook: import the spreadsheet you keep today
+
+Most units already have a register: a spreadsheet with a serial column, a name
+column and an e-mail column. It can be imported rather than retyped.
+
+1. Export it as CSV. A semicolon-separated export from a pt-BR locale is fine, as
+   is a UTF-8 file with a byte-order mark.
+2. **Preview first — always.** The import reads the file and reports what it
+   *would* do without writing anything: "12 new keys, 3 already known, 1 refused:
+   `ABC123` is not a serial number", with the line number a spreadsheet shows.
+3. Read the refusals, fix the spreadsheet, preview again. Importing twice is safe:
+   serials and e-mail addresses are unique, so a second pass refreshes rather than
+   duplicates.
+
+Recognised headers, matched ignoring case, accents and separators:
+
+| Field | Accepted names |
+|---|---|
+| Serial | `serial`, `serial number`, `SN`, `número de série`, `nº série` |
+| Name | `name`, `full name`, `holder`, `nome`, `portador`, `responsável` |
+| E-mail | `email`, `e-mail`, `mail`, `correio` |
+| Unit | `unit`, `department`, `unidade`, `setor`, `lotação` |
+| Model | `model`, `modelo`, `type`, `tipo` |
+| Notes | `notes`, `observação`, `observações` |
+
+Anything else is listed as ignored rather than silently dropped.
+
+Two deliberate limits:
+
+* **A file with no unit column imports its keys and none of its people.** A
+  holder's unit reaches the `OU=` of the signing certificate this tool puts on the
+  key, and a guessed unit means a certificate naming a department the person is
+  not in.
+* **Hand-overs are not imported.** A distribution record needs a date, a delivery
+  method and the operator who performed it, and a spreadsheet rarely has all
+  three. Importing one anyway would fabricate custody evidence. Record who holds
+  what through the Distribution screen, which asks for the facts a hand-over
+  needs.
+
+An imported serial is marked **manual entry** — nobody has held that key, so it is
+a claim, not a fact. Reading the key later upgrades the provenance, and an import
+never downgrades a serial already read from hardware.
+
 ## Runbook: receive a shipment
 
 For getting serials in without unboxing every key:
@@ -228,13 +271,32 @@ Treat it as a possible credential compromise, not an inventory problem.
 
 ## Runbook: backup
 
-**Settings → Backup next to the database** runs `VACUUM INTO`, producing a consistent copy
-even while others are connected. The copy is a complete, standalone database.
+**The application takes backups itself**, and has done since the automatic-backup
+work landed. `VACUUM INTO` produces a consistent copy even while others are
+connected, and the copy is a complete, standalone database.
 
-Recommended: a backup before any upgrade that changes the schema, before a password change,
-and on whatever periodic schedule the unit's share backup already provides. An encrypted
-database's backup needs the same password — do not lose the password and keep the backups
-thinking you are covered.
+| | Default | Where |
+|---|---|---|
+| How often | daily | `BackupPolicy::every` |
+| How many kept | 7 | `BackupPolicy::keep` |
+| Extra copy before a session writes | on, for cloud-sync folders only | `BackupPolicy::before_first_write` |
+
+Copies are named `<stem>.<YYYYMMDD-HHMMSS>.backup.sqlite3` next to the register.
+Rotation deletes **only** filenames it can parse as one of ours: the same folder
+holds the register, its journal, its lock file and any conflict copies a sync
+client left, and deleting the wrong one of those is unrecoverable.
+
+A register in a **cloud-sync folder** is also copied when it is opened, before
+this session can write anything. If a sync client has already resolved a clash by
+keeping both copies, the side this workstation is about to overwrite would
+otherwise have no copy at all. Comparing two divergent registers is still a human
+job — the tool will not merge them.
+
+**Settings → Backup next to the database** still takes one on demand.
+
+Recommended in addition: a backup before any upgrade that changes the schema, and
+before a password change. An encrypted database's backup needs the same password —
+do not lose the password and keep the backups thinking you are covered.
 
 Restore is a file copy. Afterwards, open the copy and run **Audit → Verify chain** plus
 **Settings → Integrity check**.

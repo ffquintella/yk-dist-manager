@@ -387,7 +387,19 @@ fn a_v1_database_migrates_forward_keeping_its_rows() {
                  'YubiKey 5 NFC', '5.4.3', 'Keychain (USB-A)', 0, '[\"FIDO2\"]', 'in_stock',
                  '', '', '2026-08-01T10:00:00+00:00', '2026-08-01T10:00:00+00:00');
              INSERT INTO holders VALUES ('22222222-2222-2222-2222-222222222222', 'Ana Silva',
-                 'ana@example.org', 'ESI', '', 1, '2026-08-01T10:00:00+00:00');",
+                 'ana@example.org', 'ESI', '', 1, '2026-08-01T10:00:00+00:00');
+             -- A run whose steps are a JSON blob, which is what v5 turns into
+             -- rows. Written in serde's spelling (`Fido2Pin`, `Done`) because
+             -- that is what the old build actually stored.
+             INSERT INTO bootstrap_runs VALUES ('33333333-3333-3333-3333-333333333333',
+                 20423633, '22222222-2222-2222-2222-222222222222', 'org-standard', '1',
+                 'operator', '2026-08-01T10:00:00+00:00', '2026-08-01T10:05:00+00:00',
+                 '\"Completed\"',
+                 '[{\"step_id\":\"fido2-pin\",\"kind\":\"Fido2Pin\",\"status\":\"Done\",
+                    \"started_at\":null,\"finished_at\":null,\"detail\":\"transport PIN set\"},
+                   {\"step_id\":\"piv-keygen\",\"kind\":\"PivKeygen\",\"status\":\"Skipped\",
+                    \"started_at\":null,\"finished_at\":null,\"detail\":\"deselected\"}]',
+                 'sealed-envelope');",
         )
         .unwrap();
         conn.pragma_update(None, "user_version", 1).unwrap();
@@ -416,6 +428,94 @@ fn a_v1_database_migrates_forward_keeping_its_rows() {
     let catalogue = store.template_catalogue().unwrap();
     assert!(!catalogue.is_empty(), "templates carried through v4");
     assert!(catalogue.iter().all(|stored| !stored.is_retired()));
+
+    // v5 moved the step blob into rows. The run must read back with exactly the
+    // steps it recorded, in the order it recorded them — this is the evidence of
+    // what was applied to a key, so a migration that reordered or lost a step
+    // would be rewriting history.
+    let runs = store.runs().unwrap();
+    assert_eq!(runs.len(), 1);
+    let steps = &runs[0].steps;
+    assert_eq!(steps.len(), 2, "both steps survived the blob-to-rows move");
+    assert_eq!(steps[0].step_id, "fido2-pin");
+    assert_eq!(steps[0].kind, yk_dist_manager::domain::StepKind::Fido2Pin);
+    assert_eq!(steps[0].status, yk_dist_manager::domain::StepStatus::Done);
+    assert_eq!(steps[0].detail, "transport PIN set");
+    assert_eq!(steps[1].step_id, "piv-keygen");
+    assert_eq!(
+        steps[1].status,
+        yk_dist_manager::domain::StepStatus::Skipped,
+        "a deselected step is still part of the record"
+    );
+    assert_eq!(runs[0].custody, "sealed-envelope");
+
+    // And the step rows are now queryable as rows, which is the point of v5.
+    let tally = store.step_outcome_tally().unwrap();
+    assert_eq!(
+        tally.get(&(
+            yk_dist_manager::domain::StepKind::Fido2Pin,
+            yk_dist_manager::domain::StepStatus::Done
+        )),
+        Some(&1)
+    );
+}
+
+#[test]
+fn a_run_with_an_unreadable_step_blob_keeps_its_record() {
+    // Given a v4 database whose run carries a step list this build cannot parse
+    // — a truncated write, or a blob from a build that spelled a kind
+    // differently. The register must still open: losing the step detail of one
+    // historical run is bad, and refusing to open the register of who holds
+    // which security token is worse.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("damaged.sqlite3");
+
+    {
+        let conn = rusqlite_open(&path);
+        conn.execute_batch(
+            // The tables the v2..v4 migrations alter have to be present for the
+            // chain to reach v5 at all; only `bootstrap_runs` carries the fixture.
+            "CREATE TABLE keys (
+                 id TEXT PRIMARY KEY, serial INTEGER NOT NULL UNIQUE, model TEXT NOT NULL,
+                 firmware TEXT NOT NULL, form_factor TEXT NOT NULL DEFAULT '',
+                 fips INTEGER NOT NULL DEFAULT 0, applications TEXT NOT NULL DEFAULT '[]',
+                 status TEXT NOT NULL, batch TEXT NOT NULL DEFAULT '',
+                 notes TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+                 updated_at TEXT NOT NULL);
+             CREATE TABLE holders (
+                 id TEXT PRIMARY KEY, full_name TEXT NOT NULL, email TEXT NOT NULL UNIQUE,
+                 unit TEXT NOT NULL DEFAULT '', registration TEXT NOT NULL DEFAULT '',
+                 active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
+             CREATE TABLE templates (
+                 id TEXT NOT NULL, version TEXT NOT NULL, name TEXT NOT NULL,
+                 body TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (id, version));
+             CREATE TABLE bootstrap_runs (
+                 id TEXT PRIMARY KEY, key_serial INTEGER NOT NULL, holder_id TEXT,
+                 template_id TEXT NOT NULL, template_version TEXT NOT NULL,
+                 operator TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT,
+                 status TEXT NOT NULL, steps TEXT NOT NULL DEFAULT '[]',
+                 custody TEXT NOT NULL DEFAULT '');
+             INSERT INTO bootstrap_runs VALUES ('44444444-4444-4444-4444-444444444444',
+                 20423633, NULL, 'org-standard', '1', 'operator',
+                 '2026-08-01T10:00:00+00:00', NULL, '\"Planned\"',
+                 'this is not json', '');",
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+    }
+
+    // When the register is opened by this build.
+    let store = Store::open_existing(&StoreConfig::new(&path)).unwrap();
+
+    // Then the run is still there, with the facts that did survive.
+    let runs = store.runs().unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].template_id, "org-standard");
+    assert_eq!(runs[0].operator, "operator");
+    assert!(
+        runs[0].steps.is_empty(),
+        "the step list could not be recovered, and is empty rather than invented"
+    );
 }
 
 #[test]

@@ -16,15 +16,23 @@ whole even though every part passes.
 
 ## Current state
 
-**Suites in place; CI and the coverage gate are not.**
+**Suites in place, and CI now enforces the gate.**
 
-- **333 tests** pass on the default features (`cargo test`); 332 with
-  `--all-features`, the difference being one test that only exists when
-  `encrypted-db` is *off*. Plus 2 hardware tests, ignored by default.
+- **384 tests** pass on the default features (`cargo test`), plus 2 hardware
+  tests ignored by default.
+- **CI runs on every push and pull request**
+  ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)): fmt, clippy with
+  `-D warnings`, the no-default-features build, the full test suite, and the
+  coverage gate. A second job compiles on macOS, Windows and Linux including
+  `native-device`.
+- `make coverage-core` was labelled "THE GATE" but only *printed* a number and
+  exited 0, so a change that dropped below the floor passed `make release-check`.
+  It now passes `--fail-under-lines`, and the build agrees with `AGENTS.md` §4
+  that such a change "is not ready".
 - `cargo check --no-default-features` is part of the pre-commit sweep, because the
   no-camera build is a supported configuration
   (`make check-all`).
-- Core line coverage **87.79%** (region 85.32%), above the 80% floor.
+- Core line coverage **88.25%** (region 86.14%), above the 80% floor.
 - Unit suites: `unit_domain.rs`, `unit_template.rs` (50), `unit_audit.rs`,
   `unit_ykman_parse.rs`, `unit_store.rs` (29), `unit_device_backends.rs`,
   `unit_records.rs`, `unit_logging_format.rs`, `unit_term.rs` (30),
@@ -112,12 +120,12 @@ make coverage-html    # browsable report
 | 2 | Behaviour suites for distribution, bootstrap, storage | Done | 28 scenarios |
 | 3 | Mock device backend + recorded fixtures | Done | `MockBackend`, `tests/fixtures/` |
 | 4 | Ignored, read-only hardware tests | Done | verified against a real 5 NFC |
-| 5 | CI: fmt + clippy + test + `llvm-cov` with the 80% gate | Todo | GitHub Actions; fail the build under the floor |
+| 5 | CI: fmt + clippy + test + `llvm-cov` with the 80% gate | **Done** | [`.github/workflows/ci.yml`](../.github/workflows/ci.yml); `make coverage-core` now passes `--fail-under-lines`, so it gates instead of reporting |
 | 6 | Decide on Cucumber for stakeholder-readable scenarios | Todo | only if someone outside the team needs to read them |
-| 7 | Mock write transports for the executor's steps | Todo | prerequisite for Wave 1 tests |
-| 8 | Secret-leak sweep over every sink | Todo | with `features/secrets-custody.md` |
+| 7 | Mock write transports for the executor's steps | Todo | **blocked on the executor** (Wave 1) |
+| 8 | Secret-leak sweep over every sink | Todo | **blocked on `features/secrets-custody.md` phase 3** — there is no generated secret to sweep for until the prompt/generate machinery exists |
 | 9 | Property tests for the audit chain and the RFC 4514 escaper | Todo | `proptest`; the escaper is exactly the kind of code that benefits |
-| 10 | Cross-platform CI (macOS / Windows / Linux), including the native features | Todo | PC/SC and HID behave differently per platform |
+| 10 | Cross-platform CI (macOS / Windows / Linux), including the native features | **Done** | the matrix compiles `native-device` on all three; it cannot *run* the hardware tests — see below |
 
 ## Commands
 
@@ -134,7 +142,9 @@ make coverage                    # whole crate, for context
 ## Open questions and gates
 
 - CI runner access for the native features: PC/SC on a hosted runner has no reader, so
-  those tests stay `#[ignore]`d there and the matrix only proves compilation.
+  those tests stay `#[ignore]`d there and the matrix only proves compilation. This is
+  stated in the workflow file itself rather than left for someone to discover — a green
+  matrix must not be read as "the hardware transports were exercised".
 - Whether a self-hosted runner with a real key is worth it for a nightly hardware run.
   It would be the only way to catch a firmware-behaviour regression automatically.
 

@@ -37,8 +37,40 @@ prioritise cheap inserts.
 - `YkDistApp::record` logs at `error` and shows `AUDIT FAILURE: …` in the status
   bar when an append fails. Never `let _ = `.
 
-Not yet done: the segregated mirror, an external chain-head witness, export, and
-coverage of the events that Wave 1+ features introduce.
+**The segregated mirror is wired up.** `StoreConfig::with_audit_mirror` points at
+a second location — ideally a different share with an append-only ACL — and every
+entry is copied there **verbatim** by `AuditLog::append_existing`: the same
+sequence, timestamp and hashes, not a second chain about the same events. That
+distinction is the whole feature. A mirror that re-derived each entry would get
+this machine's clock and its own sequence, so its hashes would differ from the
+database's for every entry and the two could never be compared.
+
+`Store::mirror_status()` compares them, and the case it catches is the one the
+triggers and the hash chain cannot: a chain **rebuilt** consistently in the
+database still verifies against itself, and only a copy on storage the operator
+cannot rewrite shows that it changed. A sloppy edit — content changed, hash not
+recomputed — is caught by verification alone and needs no mirror. Both are
+covered by a scenario.
+
+A mirror failure never fails the mutation: undoing a hand-over because a second
+file could not be written would lose the fact being recorded. It is logged at
+`error` and surfaced through `mirror_status()`.
+
+**The chain is verified at open** (`Store::chain_status()`), not only when
+somebody presses the button, bounded at 20 000 entries so a register with a year
+of history does not delay the first frame — past that the status says *not
+checked* rather than implying it passed.
+
+**The Audit screen can be filtered** by event, actor, target and date range
+(`audit::AuditFilter`). The filter lives in the audit module rather than the paint
+code because it is the part worth testing, and `src/ui/` is outside the coverage
+gate. The row limit applies *after* the filter, so "everything about serial
+20423633" does not come back empty because the newest 500 entries concern another
+key. A filtered list says so, because one that looks like the whole trail is how
+somebody concludes an event never happened.
+
+Not yet done: an external chain-head witness, export, and coverage of the events
+the Wave 1 executor introduces.
 
 ## Design
 
@@ -96,12 +128,12 @@ accountability and is never rewritten. The two never share a mechanism.
 | # | Phase | State | Notes |
 |---|---|---|---|
 | 1 | Chain + DB triggers + verification + GUI | Done | 6 unit + 1 behaviour test |
-| 2 | Segregated append-only mirror | Todo | second path (ideally a different share with append-only ACL); divergence is an alert |
-| 3 | Full event coverage for Wave 1 executor steps | Todo | one entry per step outcome |
-| 4 | Audit export for the ESI (signed, with a verification note) | Todo | `features/reports-and-export.md` |
-| 5 | External chain-head witness | Todo | periodic head publication; makes a rebuild detectable |
-| 6 | Audit screen: filter by event, actor, serial, date range | Todo | currently a flat 500-entry list |
-| 7 | Verification on open, not just on demand | Todo | warn at startup if the chain is broken |
+| 2 | Segregated append-only mirror | **Done** | `StoreConfig::with_audit_mirror`; entries copied **verbatim**, divergence is an alert. *Whether* segregation is required here is still the ESI's call |
+| 3 | Full event coverage for Wave 1 executor steps | Todo | **blocked on the executor** (`features/bootstrap-engine.md`, Wave 1) |
+| 4 | Audit export for the ESI (signed, with a verification note) | Todo | **Wave 2**, with `features/reports-and-export.md` |
+| 5 | External chain-head witness | Todo | periodic head publication; makes a rebuild detectable even without the mirror |
+| 6 | Audit screen: filter by event, actor, serial, date range | **Done** | `audit::AuditFilter` + `Store::audit_entries_matching`; the limit applies *after* the filter |
+| 7 | Verification on open, not just on demand | **Done** | `Store::chain_status()`, checked at open up to 20 000 entries |
 
 ## Audit events emitted by this feature itself
 

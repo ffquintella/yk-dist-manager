@@ -69,7 +69,12 @@ test-all: ## Tests with every feature enabled
 	cargo test --all-features
 
 coverage-core: ## THE GATE: coverage of the headless core (floor: $(COVERAGE_FLOOR)%)
+	# --fail-under-lines is what makes this a gate rather than a report. Without
+	# it the target printed a number and exited 0, so a change that dropped
+	# coverage below the floor passed `make release-check` (AGENTS.md §4 says
+	# such a change "is not ready" — now the build agrees).
 	cargo llvm-cov --all-features --workspace --summary-only \
+		--fail-under-lines $(COVERAGE_FLOOR) \
 		--ignore-filename-regex '(src/ui/|src/app\.rs|src/main\.rs)'
 
 coverage: ## Whole-crate coverage, including untested egui paint code

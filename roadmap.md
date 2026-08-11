@@ -30,9 +30,12 @@ deployment.
 | State | Count |
 |---|---|
 | Done | 9 |
-| In progress | 11 |
-| Todo | 20 |
+| In progress | 13 |
+| Todo | 18 |
 | **Total tracked items** | **40** (across 37 specs — two items share a spec) |
+
+> The counts above had drifted (they said 11 in progress against 13 `[/]` rows), as
+> had the test and coverage figures quoted in two places. Both are corrected here.
 
 Released: **v0.5.0**. Current wave: **Wave 1 — native execution.**
 
@@ -92,8 +95,50 @@ of the job: choosing or creating the database file, recording serials from a bar
 generating the consignment term in the holder's language, and filing the signed copy
 against the hand-over — and, from the Terms screen, editing that term's wording per
 language. The Templates screen now does the same for the bootstrap procedure itself.
-333 tests pass (plus 2 read-only hardware tests), with 87.79% line coverage of the
-headless core.
+384 tests pass (plus 2 read-only hardware tests), with 88.25% line coverage of the
+headless core — now enforced by CI rather than reported by it.
+
+## What stands between here and a closed Wave 0
+
+Wave 0 cannot be marked done today, and the reasons are worth stating rather than
+leaving as unticked boxes. Every remaining item falls into one of four groups.
+
+**1. Blocked on Wave 1.** These need the executor, or the native FIDO/OTP
+transports, to exist at all:
+
+| Row | What is waiting |
+|---|---|
+| Bootstrap planner | the executor *is* Wave 1 |
+| Bootstrap wizard | phases 2–7: run view, secret prompts, confirmation, resume, post-run summary, pre-flight |
+| Native device transport | phases 2–4 are the Wave 1 step features |
+| Device detection | phases 4–6: per-applet reads, "already bootstrapped", attestation |
+| Audit trail | phase 3: one entry per executor step outcome |
+| Testing strategy | phase 7: mock write transports; phase 8: the secret-leak sweep has no generated secret to sweep for yet |
+
+**2. Blocked on a decision that is not the implementer's** (AGENTS.md §8):
+
+| Question | Owner | Blocks |
+|---|---|---|
+| Is a cloud-sync folder an acceptable location for this register? | **ESI** | open question 8 |
+| Segregated audit storage — is the mirror sufficient? | **ESI** | audit-trail phase 2 sign-off (the mechanism is built) |
+| Retention period for audit and logs | **ESI** | storage phase 7 |
+| The approved cipher and KDF parameter set | **ESI** | db-password phase 4 |
+| Is the UI English or pt-BR? | undecided | gui-shell phase 9 |
+| May an already-configured key be re-bootstrapped, and by whom? | operational | device-detection phase 5 |
+| The consignment term's wording, and its data-protection paragraph | **owner / DPO** | open question 5 |
+
+**3. Blocked on packaging that does not exist yet.** Application icon phases 5
+(Windows `.ico`) and 6 (Linux `hicolor`) have nothing to attach to until there is
+Windows and Linux packaging (`features/packaging-and-release.md`).
+
+**4. Buildable now, and not yet built.** The honest remainder — no external
+blocker, simply not done: the database password's re-key, throttling,
+encrypt-existing and strength meter; the template applicability rules,
+import/export, signing, diff and retry policy; hot-plug polling and the multi-key
+picker; the GUI's search, sorting, window-state persistence, keyboard flow,
+confirmation dialogs, log panel and accessibility pass; the sealed-envelope slip,
+signature state machine and return receipt; the icon's in-application use; and
+property tests.
 
 Camera scanning is a default feature, and on macOS it needs the bundled application:
 an unbundled build refuses with an explanation rather than aborting (v0.2.2). Two
@@ -121,12 +166,12 @@ Everything needed before a single byte is written to a key.
 | `[/]` | Native device transport | [spec](features/native-device-transport.md) — `yubikey` over PC/SC reads serial + firmware from a real key today (verified against 5 NFC / fw 5.4.3, agrees with `ykman`). FIDO2 and OTP transports are Wave 1. |
 | `[x]` | `ykman` fallback + parsers | [spec](features/ykman-fallback.md) — argv-only subprocess, typed errors, parsers unit-tested against recorded output of ykman 5.9.2. |
 | `[/]` | Device detection | [spec](features/device-detection.md) — read-on-demand works; hot-plug polling and multi-key selection pending. |
-| `[/]` | Single-file SQLite storage | [spec](features/storage-sqlite-single-file.md) — schema **v4**, `user_version` migrations (v1→v4 tested), WAL locally / rollback journal on a share, `VACUUM INTO` backup, `integrity_check`. |
-| `[/]` | Cloud-sync hosting (OneDrive) | [spec](features/cloud-sync-hosting.md) — `Location::CloudSync`: waits for the sync client, takes `<database>.lock`, refuses a second workstation by name, releases after the upload, reports sync conflict copies. Automatic backup before the first write, and a read-only second viewer, are Todo. Whether the location is *acceptable* is an ESI decision, not this feature's. |
+| `[/]` | Single-file SQLite storage | [spec](features/storage-sqlite-single-file.md) — schema **v5** (per-step run rows), `user_version` migrations (v1→v5 tested), WAL locally / rollback journal on a share, `VACUUM INTO` backup **on a schedule with rotation**, `integrity_check`, and **CSV import** of the spreadsheet this replaces. Concurrency is Wave 2; retention is blocked on ESI. |
+| `[/]` | Cloud-sync hosting (OneDrive) | [spec](features/cloud-sync-hosting.md) — `Location::CloudSync`: waits for the sync client, takes `<database>.lock`, refuses a second workstation by name, releases after the upload, reports sync conflict copies, **snapshots the register at open** before this session can write, and offers a **read-only** open so a second operator can look without taking the lock. Every phase done. Whether the location is *acceptable* is an ESI decision, not this feature's. |
 | `[x]` | Choosing / creating the database file | [spec](features/database-selection.md) — strict `open_existing` vs `create_new` (a typo can no longer create an empty database), recent-database list, native dialogs, switch from Settings. |
 | `[ ]` | Optional database password | [spec](features/db-password-and-encryption.md) — `encrypted-db` feature wires `PRAGMA key`; unlock screen exists. KDF parameters, password change and re-key are Todo. |
 | `[x]` | Logging | [spec](features/logging.md) — one entry point, three levels, G-002 line format, no hand-built log lines. |
-| `[/]` | Audit trail | [spec](features/audit-trail.md) — SHA-256 chain, `UPDATE`/`DELETE` refused by trigger, chain verification in the GUI. Segregated storage still open (see gates). |
+| `[/]` | Audit trail | [spec](features/audit-trail.md) — SHA-256 chain, `UPDATE`/`DELETE` refused by trigger, **verification at open**, a **segregated mirror** whose divergence is an alert, and **filtering** by event, actor, target and date. Executor events wait on Wave 1; whether the mirror satisfies segregation is the ESI's call. |
 | `[x]` | Key inventory | [spec](features/key-inventory.md) — serial, model, firmware, form factor, FIPS flag, applications, lifecycle with guarded transitions, serial provenance (verified / scanned / typed), an editable **observation** per key, and confirmed **removal** of an intake mistake (refused once a hand-over or a run refers to the serial). |
 | `[x]` | Serial from a barcode | [spec](features/serial-scanning.md) — camera decoding via `rxing` + `nokhwa`, a USB-wedge/typed path that needs no features, and provenance that only ever improves. |
 | `[x]` | Holder registry | [spec](features/holder-registry.md) — minimal personal data, validated e-mail, RFC 4514 subject derivation, plus optional identification number, phone and address. |
@@ -136,7 +181,7 @@ Everything needed before a single byte is written to a key.
 | `[/]` | GUI shell | [spec](features/gui-shell.md) — eight screens, unlock screen, status bar, egui 0.36 `App::ui`, themed with `egui-elegance` (four palettes, the choice persisted) and laid out fluidly (one gutter, full-width cards, columns that split the page, tables that contain their own overflow). Search, keyboard flow and window-state persistence still open. |
 | `[/]` | Bootstrap wizard | [spec](features/gui-bootstrap-wizard.md) — selection (the newest version of each template in use), per-step opt-out, plan review, dry run, and a link to the Templates screen. Execution progress view pending. |
 | `[/]` | Application icon | [spec](features/application-icon.md) — one SVG (a box truck carrying a YubiKey), `make icons` rendering the PNGs, the macOS `.icns` and the RGBA blob the binary embeds; window, dock and bundle icons done. A Windows `.ico` resource and a Linux `hicolor` install wait on there being Windows and Linux packaging. |
-| `[/]` | Testing strategy | [spec](features/testing-strategy.md) — 329 tests across unit + behaviour suites, mock backend, recorded fixtures, ignored hardware tests; 87.43% core line coverage. The gate is not yet enforced in CI. |
+| `[/]` | Testing strategy | [spec](features/testing-strategy.md) — **384 tests** across unit + behaviour suites, mock backend, recorded fixtures, ignored hardware tests; **88.25%** core line coverage. **CI enforces the gate** on every push, with a macOS/Windows/Linux build matrix. Mock write transports and the secret-leak sweep wait on Wave 1. |
 
 ### Paperwork
 

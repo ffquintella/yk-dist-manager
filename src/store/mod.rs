@@ -25,7 +25,9 @@
 //!    `<database>.lock`, refuse a second workstation by name, and release only
 //!    after the upload. See `features/cloud-sync-hosting.md`.
 
+pub mod backup;
 pub mod cloud;
+pub mod import;
 
 use std::path::{Path, PathBuf};
 
@@ -33,24 +35,35 @@ use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
 
+pub use backup::{BackupPolicy, Outcome as BackupOutcome};
 pub use cloud::{LeaseError, LeaseHolder, Renewal, Settled, SyncLease, SyncPolicy};
 
-use crate::audit::{AuditEntry, GENESIS};
+use crate::audit::{self, AuditEntry, GENESIS};
 use crate::domain::{AttachedDocument, DocumentKind};
 use crate::domain::{
-    BootstrapRun, DeliveryMethod, DistributionRecord, Holder, KeyStatus, SerialSource, StepOutcome,
-    YubiKeyRecord,
+    BootstrapRun, DeliveryMethod, DistributionRecord, Holder, KeyStatus, SerialSource, StepKind,
+    StepOutcome, StepStatus, YubiKeyRecord,
 };
 use crate::template::{BootstrapTemplate, StoredTemplate};
 use crate::term::TermTemplate;
 
 /// Current schema version, tracked in `PRAGMA user_version`.
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
     #[error("database error: {0}")]
-    Sqlite(#[from] rusqlite::Error),
+    Sqlite(rusqlite::Error),
+    #[error(
+        "this register is open for reading only — another workstation holds the single-writer \
+         lock. Close it there, or take the lock over, before recording anything"
+    )]
+    ReadOnly,
+    #[error(
+        "this register is at schema v{found} and this build needs v{supported}; migrating it \
+         needs write access, so it cannot be opened read-only"
+    )]
+    MigrationNeedsWriteAccess { found: i64, supported: i64 },
     #[error("database is encrypted or corrupt — a password is required")]
     PasswordRequired,
     #[error(
@@ -93,6 +106,30 @@ pub enum StoreError {
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;
+
+/// Turn SQLite's own refusal to write a read-only connection into the message an
+/// operator can act on.
+///
+/// Written by hand rather than derived with `#[from]` so this one translation
+/// happens on **every** path. That matters: read-only mode is enforced by the
+/// connection flag, not by a check in each of the twenty-odd methods that write
+/// — the same reasoning as the audit table's triggers, where immutability is a
+/// property of the database rather than a promise from the application. A guard
+/// per method could be forgotten by the next mutation added; a connection opened
+/// without write permission cannot be.
+impl From<rusqlite::Error> for StoreError {
+    fn from(error: rusqlite::Error) -> Self {
+        match &error {
+            rusqlite::Error::SqliteFailure(e, _)
+                if e.code == rusqlite::ErrorCode::ReadOnly
+                    || e.code == rusqlite::ErrorCode::CannotOpen =>
+            {
+                StoreError::ReadOnly
+            }
+            _ => StoreError::Sqlite(error),
+        }
+    }
+}
 
 /// Where the database file lives, which decides the locking strategy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,6 +237,15 @@ pub struct StoreConfig {
     pub operator: String,
     /// How long to wait for the sync client, before opening and after closing.
     pub sync: SyncPolicy,
+    /// How often to copy the register, and how many copies to keep.
+    pub backup: BackupPolicy,
+    /// Where the segregated append-only copy of the audit trail is written.
+    ///
+    /// `None` means no mirror, which is the default and is not an error: whether
+    /// segregated audit storage is *required* here is an ESI decision that the
+    /// roadmap records as open. The mechanism exists so that the answer "yes"
+    /// costs a settings change rather than a release.
+    pub audit_mirror: Option<PathBuf>,
 }
 
 impl StoreConfig {
@@ -214,6 +260,8 @@ impl StoreConfig {
             take_over_stale_lease: false,
             operator: cloud::local_operator(),
             sync: SyncPolicy::from_env(),
+            backup: BackupPolicy::default(),
+            audit_mirror: None,
         }
     }
 
@@ -234,6 +282,18 @@ impl StoreConfig {
     /// How patiently to wait for the sync client.
     pub fn with_sync_policy(mut self, sync: SyncPolicy) -> Self {
         self.sync = sync;
+        self
+    }
+
+    /// How often to copy the register, and how many copies to keep.
+    pub fn with_backup_policy(mut self, backup: BackupPolicy) -> Self {
+        self.backup = backup;
+        self
+    }
+
+    /// Mirror every audit entry to a second, append-only location.
+    pub fn with_audit_mirror(mut self, path: Option<PathBuf>) -> Self {
+        self.audit_mirror = path;
         self
     }
 
@@ -269,6 +329,34 @@ pub struct Store {
     /// client's whole-file, minutes-late copying can support.
     lease: Option<SyncLease>,
     sync: SyncPolicy,
+    backup: BackupPolicy,
+    /// Opened with `SQLITE_OPEN_READ_ONLY`; nothing can be recorded.
+    read_only: bool,
+    /// The segregated append-only copy of the trail, when one is configured.
+    ///
+    /// `RefCell` because appending advances the log's chain head, and every
+    /// `Store` mutation takes `&self` — the alternative would be `&mut self` on
+    /// every method that writes an audit entry, which is all of them.
+    mirror: Option<std::cell::RefCell<crate::audit::AuditLog>>,
+    /// Whether the chain verified when this register was opened.
+    chain_status: ChainStatus,
+}
+
+/// The result of verifying the audit chain when the register was opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChainStatus {
+    /// Verified, with the number of entries checked.
+    Verified { entries: usize },
+    /// The chain is broken. Carries the reason, which names the entry.
+    Broken { reason: String },
+    /// Not checked — a read-only look, or a register too large to verify at open.
+    NotChecked,
+}
+
+impl ChainStatus {
+    pub fn is_broken(&self) -> bool {
+        matches!(self, ChainStatus::Broken { .. })
+    }
 }
 
 impl Store {
@@ -337,6 +425,87 @@ impl Store {
         Ok(store)
     }
 
+    /// Open a register for **reading only**, taking no lock.
+    ///
+    /// The second half of the cloud-sync answer: until now a workstation that
+    /// found the lock held could do nothing at all, and "who has serial 20423633?"
+    /// is a question worth answering while somebody else is mid-hand-over. This
+    /// opens the file with `SQLITE_OPEN_READ_ONLY`, so the refusal to write comes
+    /// from SQLite rather than from a check this code could forget to make, and
+    /// takes no lease — there is nothing to sequence when nothing is written.
+    ///
+    /// Two things are deliberately refused rather than worked around:
+    ///
+    /// * **A migration.** Bringing an old file up to the current schema is a
+    ///   write. A read-only session says so and names the version, instead of
+    ///   opening a file whose rows it would misread.
+    /// * **The journal-mode pragma.** It writes too, so the pragmas are left as
+    ///   they are; a reader does not need them, having no journal to write.
+    pub fn open_read_only(config: &StoreConfig) -> Result<Self> {
+        use rusqlite::OpenFlags;
+
+        if !config.path.is_file() {
+            return Err(StoreError::Missing(config.path.clone()));
+        }
+
+        let conn = Connection::open_with_flags(
+            &config.path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+
+        if let Some(password) = &config.password {
+            apply_key(&conn, password)?;
+        }
+        match conn.query_row("SELECT count(*) FROM sqlite_master", [], |row| {
+            row.get::<_, i64>(0)
+        }) {
+            Ok(_) => {}
+            Err(rusqlite::Error::SqliteFailure(e, _)) if is_encryption_error(e.extended_code) => {
+                return Err(StoreError::PasswordRequired);
+            }
+            Err(e) => return Err(e.into()),
+        }
+
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if version > SCHEMA_VERSION {
+            return Err(StoreError::SchemaTooNew {
+                found: version,
+                supported: SCHEMA_VERSION,
+            });
+        }
+        if version < SCHEMA_VERSION {
+            return Err(StoreError::MigrationNeedsWriteAccess {
+                found: version,
+                supported: SCHEMA_VERSION,
+            });
+        }
+
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+
+        tracing::info!(
+            event = "db.opened.read_only",
+            path = %config.path.display(),
+            detail = "no single-writer lock taken; nothing can be recorded from this session"
+        );
+
+        Ok(Self {
+            conn,
+            path: config.path.clone(),
+            location: config.location,
+            encrypted: config.password.is_some(),
+            lease: None,
+            sync: config.sync,
+            backup: BackupPolicy::disabled(),
+            read_only: true,
+            // A reader writes no entries, so it mirrors none. It could still
+            // *compare* the two, but the mirror is the writing session's
+            // obligation and opening it here would be a second handle on a file
+            // another workstation is appending to.
+            mirror: None,
+            chain_status: ChainStatus::NotChecked,
+        })
+    }
+
     /// In-memory database, for tests.
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
@@ -366,16 +535,22 @@ impl Store {
             Err(e) => return Err(StoreError::Sqlite(e)),
         }
 
-        let store = Self {
+        let mut store = Self {
             conn,
             path,
             location: config.location,
             encrypted: config.password.is_some(),
             lease,
             sync: config.sync,
+            backup: config.backup,
+            read_only: false,
+            mirror: open_mirror(config.audit_mirror.as_deref()),
+            chain_status: ChainStatus::NotChecked,
         };
         store.apply_pragmas()?;
         store.migrate()?;
+        store.backup_on_open();
+        store.chain_status = store.verify_chain_on_open();
 
         if store.on_cloud_sync() {
             tracing::warn!(
@@ -443,6 +618,11 @@ impl Store {
         self.encrypted
     }
 
+    /// True when this session can read the register but not record anything.
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
     /// One line for the GUI status bar.
     pub fn describe(&self) -> String {
         format!(
@@ -456,6 +636,10 @@ impl Store {
             },
             match &self.lease {
                 Some(_) => " — single-writer lock held",
+                // Read-only is stated before the warning, because it is the
+                // reason there is no lock and it is what the operator needs to
+                // know before they try to record a hand-over.
+                None if self.read_only => " — READ ONLY, nothing can be recorded",
                 None if self.on_cloud_sync() =>
                     " — WARNING: cloud-sync folder, no single-writer lock",
                 None => "",
@@ -555,10 +739,83 @@ impl Store {
         if version < 4 {
             self.conn.execute_batch(MIGRATE_V4)?;
         }
+        if version < 5 {
+            // Three steps, in this order: make the table, move the blob into it,
+            // then drop the blob. A backfill that ran after the drop would have
+            // nothing to read, and one that ran before the create would have
+            // nowhere to write.
+            self.conn.execute_batch(MIGRATE_V5_CREATE)?;
+            self.backfill_run_steps()?;
+            self.conn.execute_batch(MIGRATE_V5_DROP)?;
+        }
 
         self.conn
             .pragma_update(None, "user_version", SCHEMA_VERSION)?;
         tracing::info!(event = "db.migrated", from = version, to = SCHEMA_VERSION);
+        Ok(())
+    }
+
+    /// Turn every `bootstrap_runs.steps` JSON blob into rows (schema v5).
+    ///
+    /// Done in Rust so the enum mapping is [`StepKind::slug`] itself rather than
+    /// a copy of it written in SQL. A blob that cannot be parsed is **not** fatal:
+    /// it is logged and skipped, leaving that run with no step rows. Refusing to
+    /// open the register because one historical run has an unreadable step list
+    /// would trade a partial record for no record at all — and the run row, which
+    /// carries the template, the operator and the outcome, survives either way.
+    fn backfill_run_steps(&self) -> Result<()> {
+        let mut stmt = self.conn.prepare("SELECT id, steps FROM bootstrap_runs")?;
+        let blobs = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let mut moved = 0usize;
+        for (run_id, blob) in blobs {
+            let steps: Vec<StepOutcome> = match serde_json::from_str(&blob) {
+                Ok(steps) => steps,
+                Err(e) => {
+                    tracing::error!(
+                        event = "db.migrate.step_blob_unreadable",
+                        run = %run_id,
+                        reason = %e,
+                        detail = "the run keeps its record; its step list could not be recovered"
+                    );
+                    continue;
+                }
+            };
+            self.write_run_steps(&run_id, &steps)?;
+            moved += steps.len();
+        }
+        tracing::info!(event = "db.migrate.run_steps", steps = moved);
+        Ok(())
+    }
+
+    /// Replace a run's step rows. The delete makes it idempotent, which is what
+    /// lets [`Store::insert_run`] stay an upsert.
+    fn write_run_steps(&self, run_id: &str, steps: &[StepOutcome]) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM bootstrap_run_steps WHERE run_id = ?1",
+            params![run_id],
+        )?;
+        let mut insert = self.conn.prepare(
+            "INSERT INTO bootstrap_run_steps
+                 (run_id, position, step_id, kind, status, started_at, finished_at, detail)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )?;
+        for (position, step) in steps.iter().enumerate() {
+            insert.execute(params![
+                run_id,
+                position as i64,
+                step.step_id,
+                step_kind_str(step.kind),
+                step_status_str(step.status),
+                step.started_at.map(|at| at.to_rfc3339()),
+                step.finished_at.map(|at| at.to_rfc3339()),
+                step.detail,
+            ])?;
+        }
         Ok(())
     }
 
@@ -575,6 +832,103 @@ impl Store {
         self.conn
             .execute("VACUUM INTO ?1", params![target.to_string_lossy()])?;
         Ok(())
+    }
+
+    /// The backup schedule this session is running under.
+    pub fn backup_policy(&self) -> BackupPolicy {
+        self.backup
+    }
+
+    /// Take a backup if the schedule says one is due, and prune the old ones.
+    ///
+    /// `now` is a parameter so the decision is testable without waiting a day;
+    /// callers in the application pass `Utc::now()`.
+    pub fn backup_if_due(&self, now: DateTime<Utc>) -> Result<BackupOutcome> {
+        self.run_backup(now, false)
+    }
+
+    /// Take one whatever the schedule says.
+    pub fn backup_now(&self, now: DateTime<Utc>) -> Result<BackupOutcome> {
+        self.run_backup(now, true)
+    }
+
+    fn run_backup(&self, now: DateTime<Utc>, forced: bool) -> Result<BackupOutcome> {
+        // An in-memory database has nothing to copy and no directory to copy it
+        // into; asking is a programming error rather than an operator one, so it
+        // is a quiet no-op instead of a refusal.
+        if self.path.as_os_str() == ":memory:" {
+            return Ok(BackupOutcome::default());
+        }
+
+        let existing = backup::existing(&self.path);
+        let plan = backup::Plan::decide(&self.path, &existing, &self.backup, now, forced);
+
+        let mut outcome = BackupOutcome::default();
+        if let Some(target) = &plan.take {
+            // The stamp has second resolution, so two opens inside one second
+            // want the same filename — and `VACUUM INTO` refuses to write over
+            // an existing file. A copy of this second is already on disk, which
+            // is what was being asked for, so this is "done" rather than an
+            // error. Reported at debug because it is normal on a quick restart.
+            if target.exists() {
+                tracing::debug!(
+                    event = "db.backup.already_taken",
+                    path = %target.display()
+                );
+            } else {
+                self.backup_to(target)?;
+                outcome.taken = Some(target.clone());
+            }
+        }
+
+        // Pruning failures are logged, not propagated: a backup that was taken
+        // is worth more than a tidy directory, and the alternative is reporting
+        // "backup failed" for a copy that is sitting on disk.
+        for stale in plan.prune {
+            match std::fs::remove_file(&stale) {
+                Ok(()) => outcome.pruned.push(stale),
+                Err(e) => tracing::warn!(
+                    event = "db.backup.prune_failed",
+                    path = %stale.display(),
+                    reason = %e
+                ),
+            }
+        }
+        Ok(outcome)
+    }
+
+    /// The snapshot a cloud-hosted register gets before this session can write.
+    ///
+    /// Taken at open rather than at the first write, which is earlier than
+    /// `features/cloud-sync-hosting.md` phase 7 asks for and strictly safer: by
+    /// the time a write happens the pre-write state is already on disk, and
+    /// there is no bookkeeping to get wrong about whether this session has
+    /// written yet.
+    ///
+    /// Only for [`Location::CloudSync`], because it answers a failure that only
+    /// happens there: a sync client resolved a clash by keeping both copies, and
+    /// whichever side this workstation is about to overwrite has no other copy.
+    /// A failure is logged, never fatal — refusing to open the register because
+    /// a backup could not be written would be a worse outcome than the risk it
+    /// guards.
+    fn backup_on_open(&self) {
+        if self.location != Location::CloudSync || !self.backup.before_first_write {
+            return;
+        }
+        match self.backup_now(Utc::now()) {
+            Ok(outcome) if outcome.did_nothing() => {}
+            Ok(outcome) => tracing::info!(
+                event = "db.backup.before_first_write",
+                detail = outcome.detail()
+            ),
+            Err(e) => tracing::error!(
+                event = "db.backup.before_first_write.failed",
+                path = %self.path.display(),
+                reason = %e,
+                detail = "the register opened, but this session's writes are not protected by a \
+                          pre-write copy"
+            ),
+        }
     }
 
     // ------------------------------------------------------------------ keys
@@ -846,18 +1200,25 @@ impl Store {
 
     // ---------------------------------------------------------- bootstrap runs
 
+    /// Write a run and its steps.
+    ///
+    /// One transaction, because a run row whose step rows did not land would
+    /// claim a procedure ran with nothing to say what it did. The steps are
+    /// replaced wholesale rather than merged: the caller owns the outcome list,
+    /// and a step that vanished from it was deselected, not forgotten.
     pub fn insert_run(&self, run: &BootstrapRun) -> Result<()> {
-        self.conn.execute(
+        let tx = self.conn.unchecked_transaction()?;
+        let id = run.id.to_string();
+        tx.execute(
             "INSERT INTO bootstrap_runs (id, key_serial, holder_id, template_id, template_version,
-                                         operator, started_at, finished_at, status, steps, custody)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                                         operator, started_at, finished_at, status, custody)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(id) DO UPDATE SET
                  finished_at = excluded.finished_at,
                  status = excluded.status,
-                 steps = excluded.steps,
                  custody = excluded.custody",
             params![
-                run.id.to_string(),
+                id,
                 run.key_serial,
                 run.holder_id.map(|id| id.to_string()),
                 run.template_id,
@@ -866,23 +1227,152 @@ impl Store {
                 run.started_at.to_rfc3339(),
                 run.finished_at.map(|at| at.to_rfc3339()),
                 serde_json::to_string(&run.status)?,
-                serde_json::to_string(&run.steps)?,
                 run.custody,
             ],
         )?;
+        self.write_run_steps(&id, &run.steps)?;
+        tx.commit()?;
         Ok(())
     }
 
     pub fn runs(&self) -> Result<Vec<BootstrapRun>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, key_serial, holder_id, template_id, template_version, operator,
-                    started_at, finished_at, status, steps, custody
+                    started_at, finished_at, status, custody
              FROM bootstrap_runs ORDER BY started_at DESC",
         )?;
-        let rows = stmt.query_map([], row_to_run)?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()?
+        let mut runs = stmt
+            .query_map([], row_to_run)?
+            .collect::<rusqlite::Result<Vec<_>>>()?
             .into_iter()
-            .collect::<Result<Vec<_>>>()
+            .collect::<Result<Vec<_>>>()?;
+
+        // One query for every run's steps rather than one per run: the Bootstrap
+        // screen reads this on every refresh, and a query per run would make the
+        // cost of opening the screen grow with the history.
+        let mut by_run = self.all_run_steps()?;
+        for run in &mut runs {
+            run.steps = by_run.remove(&run.id).unwrap_or_default();
+        }
+        Ok(runs)
+    }
+
+    /// Every run's steps, in template order, keyed by run.
+    fn all_run_steps(&self) -> Result<std::collections::HashMap<Uuid, Vec<StepOutcome>>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT run_id, step_id, kind, status, started_at, finished_at, detail
+             FROM bootstrap_run_steps ORDER BY run_id, position",
+        )?;
+        let rows = stmt
+            .query_map([], row_to_run_step)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let mut by_run: std::collections::HashMap<Uuid, Vec<StepOutcome>> =
+            std::collections::HashMap::new();
+        for row in rows {
+            let (run_id, step) = row?;
+            by_run.entry(run_id).or_default().push(step);
+        }
+        Ok(by_run)
+    }
+
+    /// How many runs recorded each `(step kind, status)` pair.
+    ///
+    /// The question this exists to answer is "what has actually been applied to
+    /// the keys we handed out" — which before schema v5 meant parsing every run's
+    /// JSON blob in Rust, and is now an aggregate the database does.
+    pub fn step_outcome_tally(
+        &self,
+    ) -> Result<std::collections::BTreeMap<(StepKind, StepStatus), usize>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT kind, status, count(*) FROM bootstrap_run_steps GROUP BY kind, status",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let mut tally = std::collections::BTreeMap::new();
+        for (kind, status, count) in rows {
+            tally.insert(
+                (step_kind_from(&kind)?, step_status_from(&status)?),
+                count as usize,
+            );
+        }
+        Ok(tally)
+    }
+
+    // ---------------------------------------------------------------- import
+
+    /// What the register already holds, for [`import::plan`] to compare against.
+    ///
+    /// Two sets rather than the full records: the planner only needs to answer
+    /// "is this new?", and loading every key and holder to answer it would make
+    /// previewing a 2000-row spreadsheet quadratic.
+    pub fn existing_for_import(&self) -> Result<import::Existing> {
+        let mut serials = self.conn.prepare("SELECT serial FROM keys")?;
+        let serials = serials
+            .query_map([], |row| row.get::<_, u32>(0))?
+            .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
+
+        let mut emails = self.conn.prepare("SELECT email FROM holders")?;
+        let emails = emails
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
+
+        Ok(import::Existing { serials, emails })
+    }
+
+    /// Apply a plan the operator has seen and accepted.
+    ///
+    /// One transaction: a spreadsheet half-imported is worse than one not
+    /// imported, because the operator cannot tell which half. Refused rows were
+    /// already refused at plan time and are counted, not retried — the operator
+    /// fixes the spreadsheet and imports again, and the rows that did land are
+    /// upserts, so importing twice is safe.
+    ///
+    /// Does **not** write audit entries: the caller does, because it knows the
+    /// operator. See `AGENTS.md` §3.
+    pub fn apply_import(&self, plan: &import::ImportPlan) -> Result<import::ImportOutcome> {
+        use import::RowPlan;
+
+        let tx = self.conn.unchecked_transaction()?;
+        let mut outcome = import::ImportOutcome::default();
+
+        for row in &plan.rows {
+            match &row.plan {
+                RowPlan::Refused { .. } => {
+                    outcome.refused += 1;
+                    continue;
+                }
+                RowPlan::NewKey { .. } => outcome.keys_added += 1,
+                RowPlan::KnownKey { .. } => outcome.keys_refreshed += 1,
+                RowPlan::NewHolder { .. } => outcome.holders_added += 1,
+                RowPlan::KnownHolder { .. } => outcome.holders_refreshed += 1,
+                RowPlan::NewKeyAndHolder { .. } => {
+                    outcome.keys_added += 1;
+                    outcome.holders_added += 1;
+                }
+            }
+
+            // `upsert_key` protects provenance itself: a serial already verified
+            // by a device read is not downgraded to `manual-entry` by a
+            // spreadsheet claiming the same key.
+            if let Some(key) = &row.key {
+                self.upsert_key(key)?;
+            }
+            if let Some(holder) = &row.holder {
+                self.insert_holder(holder)?;
+            }
+        }
+
+        tx.commit()?;
+        Ok(outcome)
     }
 
     // ------------------------------------------------------------- templates
@@ -1283,7 +1773,144 @@ impl Store {
                 entry.hash,
             ],
         )?;
+
+        self.mirror_entry(&entry);
         Ok(entry)
+    }
+
+    /// Write an entry to the segregated mirror, when one is configured.
+    ///
+    /// The database row is the record; the mirror is the second copy that makes
+    /// a rebuilt chain detectable. So a mirror failure must **not** fail the
+    /// mutation — undoing a hand-over because a second file could not be written
+    /// would lose the very fact being recorded. It is instead logged at `error`
+    /// and surfaced through [`Self::mirror_status`], per `AGENTS.md` §3: audit
+    /// failure is loud, never `let _ =`.
+    fn mirror_entry(&self, entry: &AuditEntry) {
+        let Some(mirror) = &self.mirror else {
+            return;
+        };
+        let mut mirror = mirror.borrow_mut();
+        // Verbatim: the mirror is a copy of *this* chain, so its hashes are the
+        // database's hashes. Re-deriving the entry would give it a second
+        // timestamp and a second sequence, and the two chains could then never
+        // be compared.
+        if let Err(e) = mirror.append_existing(entry) {
+            tracing::error!(
+                event = "audit.mirror.append_failed",
+                path = %mirror.path().display(),
+                seq = entry.seq,
+                reason = %e,
+                detail = "the entry is in the database; the segregated copy is now behind"
+            );
+        }
+    }
+
+    /// Compare this register's chain with its segregated mirror.
+    ///
+    /// See `features/audit-trail.md` phase 2. A divergence means one of the two
+    /// was rewritten, which is the case the mirror exists to catch: the database
+    /// triggers stop every ordinary path, and a mirror on storage the operator
+    /// cannot rewrite catches the path that got around them.
+    pub fn mirror_status(&self) -> audit::MirrorStatus {
+        let Some(mirror) = &self.mirror else {
+            return audit::MirrorStatus::NotConfigured;
+        };
+        let database = match self.audit_entries(usize::MAX) {
+            Ok(mut entries) => {
+                entries.reverse(); // `audit_entries` is newest-first.
+                entries
+            }
+            Err(e) => {
+                return audit::MirrorStatus::Unreadable {
+                    reason: e.to_string(),
+                };
+            }
+        };
+        match mirror.borrow().entries() {
+            Ok(entries) => audit::compare_with_mirror(&database, &entries),
+            Err(e) => audit::MirrorStatus::Unreadable {
+                reason: e.to_string(),
+            },
+        }
+    }
+
+    /// Whether the chain verified when the register was opened.
+    ///
+    /// `features/audit-trail.md` phase 7: a broken chain discovered when
+    /// somebody happens to press "Verify" is discovered too late. Checked once
+    /// at open, and carried so the shell can put it in front of the operator.
+    pub fn chain_status(&self) -> &ChainStatus {
+        &self.chain_status
+    }
+
+    /// Verify the chain once, at open.
+    ///
+    /// Bounded by [`Self::VERIFY_ON_OPEN_LIMIT`]: verification reads and re-hashes
+    /// every entry, and a register with a year of history behind a network share
+    /// should not make the application take ten seconds to start. Past the limit
+    /// the check is left to the Audit screen's button, and the status says it was
+    /// not done rather than implying it passed.
+    fn verify_chain_on_open(&self) -> ChainStatus {
+        let count: i64 = match self
+            .conn
+            .query_row("SELECT count(*) FROM audit", [], |row| row.get(0))
+        {
+            Ok(count) => count,
+            Err(e) => {
+                return ChainStatus::Broken {
+                    reason: e.to_string(),
+                };
+            }
+        };
+
+        if count as usize > Self::VERIFY_ON_OPEN_LIMIT {
+            tracing::info!(
+                event = "audit.verify.skipped_at_open",
+                entries = count,
+                limit = Self::VERIFY_ON_OPEN_LIMIT
+            );
+            return ChainStatus::NotChecked;
+        }
+
+        match self.verify_audit() {
+            Ok(entries) => ChainStatus::Verified { entries },
+            Err(e) => {
+                // Loud, per AGENTS.md §3: a broken chain is the one thing this
+                // whole feature exists to detect.
+                tracing::error!(
+                    event = "audit.verify.failed",
+                    path = %self.path.display(),
+                    reason = %e
+                );
+                ChainStatus::Broken {
+                    reason: e.to_string(),
+                }
+            }
+        }
+    }
+
+    /// How many entries are worth re-hashing before showing the first frame.
+    pub const VERIFY_ON_OPEN_LIMIT: usize = 20_000;
+
+    /// Audit entries matching a filter, newest first.
+    ///
+    /// Filtering happens in Rust rather than SQL because [`audit::AuditFilter`]
+    /// is where the rules are tested, and a `LIKE` clause built in two places
+    /// would eventually disagree with itself. `limit` is applied *after* the
+    /// filter, so asking for "everything about serial 20423633" does not return
+    /// nothing because the newest 500 entries happen to be about another key.
+    pub fn audit_entries_matching(
+        &self,
+        filter: &audit::AuditFilter,
+        limit: usize,
+    ) -> Result<Vec<AuditEntry>> {
+        let all = self.audit_entries(usize::MAX)?;
+        Ok(all
+            .into_iter()
+            .filter(|entry| filter.matches(entry))
+            .take(limit)
+            .collect())
     }
 
     /// Audit entries, newest first, capped at `limit`.
@@ -1340,6 +1967,32 @@ fn is_encryption_error(extended_code: i32) -> bool {
 
 type RowResult<T> = rusqlite::Result<Result<T>>;
 
+/// Open the segregated audit mirror, if one is configured.
+///
+/// A mirror that cannot be opened is logged and dropped rather than failing the
+/// register's open: the database's own trail is the record, and refusing to let
+/// an operator work because a second copy is unreachable — a share not mounted,
+/// a permission changed — would stop the hand-over rather than protect it. The
+/// gap is visible through [`Store::mirror_status`].
+fn open_mirror(path: Option<&Path>) -> Option<std::cell::RefCell<crate::audit::AuditLog>> {
+    let path = path?;
+    match crate::audit::AuditLog::open(path) {
+        Ok(log) => {
+            tracing::info!(event = "audit.mirror.opened", path = %path.display());
+            Some(std::cell::RefCell::new(log))
+        }
+        Err(e) => {
+            tracing::error!(
+                event = "audit.mirror.unavailable",
+                path = %path.display(),
+                reason = %e,
+                detail = "entries are being written to the database only"
+            );
+            None
+        }
+    }
+}
+
 fn parse_uuid(column: &'static str, raw: &str) -> Result<Uuid> {
     Uuid::parse_str(raw).map_err(|_| StoreError::Decode {
         column,
@@ -1393,6 +2046,50 @@ pub fn serial_source_from(raw: &str) -> Result<SerialSource> {
         other => {
             return Err(StoreError::Decode {
                 column: "keys.serial_source",
+                value: other.to_owned(),
+            });
+        }
+    })
+}
+
+/// The stored spelling of a step kind — [`StepKind::slug`], which is also the
+/// id the built-in templates give the step, so a run row and the template that
+/// produced it read the same.
+pub fn step_kind_str(kind: StepKind) -> &'static str {
+    kind.slug()
+}
+
+pub fn step_kind_from(raw: &str) -> Result<StepKind> {
+    StepKind::ALL
+        .iter()
+        .copied()
+        .find(|kind| kind.slug() == raw)
+        .ok_or_else(|| StoreError::Decode {
+            column: "bootstrap_run_steps.kind",
+            value: raw.to_owned(),
+        })
+}
+
+pub fn step_status_str(status: StepStatus) -> &'static str {
+    match status {
+        StepStatus::Pending => "pending",
+        StepStatus::Running => "running",
+        StepStatus::Done => "done",
+        StepStatus::Failed => "failed",
+        StepStatus::Skipped => "skipped",
+    }
+}
+
+pub fn step_status_from(raw: &str) -> Result<StepStatus> {
+    Ok(match raw {
+        "pending" => StepStatus::Pending,
+        "running" => StepStatus::Running,
+        "done" => StepStatus::Done,
+        "failed" => StepStatus::Failed,
+        "skipped" => StepStatus::Skipped,
+        other => {
+            return Err(StoreError::Decode {
+                column: "bootstrap_run_steps.status",
                 value: other.to_owned(),
             });
         }
@@ -1525,16 +2222,16 @@ fn row_to_distribution(row: &rusqlite::Row<'_>) -> RowResult<DistributionRecord>
     })())
 }
 
+/// A run without its steps: they are rows of their own since schema v5, and are
+/// attached by [`Store::runs`] in one further query.
 fn row_to_run(row: &rusqlite::Row<'_>) -> RowResult<BootstrapRun> {
     let id: String = row.get(0)?;
     let holder_id: Option<String> = row.get(2)?;
     let started_at: String = row.get(6)?;
     let finished_at: Option<String> = row.get(7)?;
     let status: String = row.get(8)?;
-    let steps: String = row.get(9)?;
 
     Ok((|| {
-        let steps: Vec<StepOutcome> = serde_json::from_str(&steps)?;
         Ok(BootstrapRun {
             id: parse_uuid("bootstrap_runs.id", &id)?,
             key_serial: row_u32(row, 1),
@@ -1551,9 +2248,38 @@ fn row_to_run(row: &rusqlite::Row<'_>) -> RowResult<BootstrapRun> {
                 None => None,
             },
             status: serde_json::from_str(&status)?,
-            steps,
-            custody: row_string(row, 10),
+            steps: Vec::new(),
+            custody: row_string(row, 9),
         })
+    })())
+}
+
+/// One row of `bootstrap_run_steps`, with the run it belongs to.
+fn row_to_run_step(row: &rusqlite::Row<'_>) -> RowResult<(Uuid, StepOutcome)> {
+    let run_id: String = row.get(0)?;
+    let kind: String = row.get(2)?;
+    let status: String = row.get(3)?;
+    let started_at: Option<String> = row.get(4)?;
+    let finished_at: Option<String> = row.get(5)?;
+
+    Ok((|| {
+        Ok((
+            parse_uuid("bootstrap_run_steps.run_id", &run_id)?,
+            StepOutcome {
+                step_id: row_string(row, 1),
+                kind: step_kind_from(&kind)?,
+                status: step_status_from(&status)?,
+                started_at: match started_at {
+                    Some(raw) => Some(parse_time("bootstrap_run_steps.started_at", &raw)?),
+                    None => None,
+                },
+                finished_at: match finished_at {
+                    Some(raw) => Some(parse_time("bootstrap_run_steps.finished_at", &raw)?),
+                    None => None,
+                },
+                detail: row_string(row, 6),
+            },
+        ))
     })())
 }
 
@@ -1773,4 +2499,48 @@ CREATE INDEX IF NOT EXISTS idx_documents_distribution ON documents(distribution_
 /// the default is NULL.
 const MIGRATE_V4: &str = r#"
 ALTER TABLE templates ADD COLUMN retired_at TEXT;
+"#;
+
+/// Schema v5 — a bootstrap run's steps become **rows**, not a JSON blob.
+///
+/// Until now the step outcomes lived in `bootstrap_runs.steps` as serialised
+/// JSON. That was the right shape while a run was written once and read back
+/// whole, and it is the wrong shape for everything Wave 1 needs:
+///
+/// * **Step-level reporting.** "How many keys got a signing certificate this
+///   quarter?" is a `WHERE kind = 'piv-cert-import' AND status = 'done'` over
+///   rows, and a full-table scan plus a JSON parse per run over a blob.
+/// * **The executor writes one step at a time.** A blob has to be rewritten
+///   whole on every step outcome, so a run interrupted mid-write loses the
+///   steps that had already succeeded — exactly the record that matters when a
+///   key was half-configured.
+/// * **The enum names leak the Rust type.** The blob stored serde's variant
+///   names (`Fido2Pin`, `Done`); a column stores the same readable strings the
+///   rest of this schema uses (`fido2-pin`, `done`), which is what makes the
+///   file answerable from a SQL console during an audit.
+///
+/// The backfill is done in Rust rather than in SQL ([`Store::backfill_run_steps`]):
+/// mapping `Fido2Pin` to `fido2-pin` in SQL would mean a twelve-branch `CASE`
+/// hand-kept in step with [`StepKind::slug`], and the first divergence would be
+/// silent. The old column is dropped once its contents are rows, so there is one
+/// source of truth and not two.
+const MIGRATE_V5_CREATE: &str = r#"
+CREATE TABLE IF NOT EXISTS bootstrap_run_steps (
+    run_id      TEXT NOT NULL REFERENCES bootstrap_runs(id),
+    position    INTEGER NOT NULL,
+    step_id     TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    status      TEXT NOT NULL,
+    started_at  TEXT,
+    finished_at TEXT,
+    detail      TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (run_id, position)
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_steps_kind ON bootstrap_run_steps(kind, status);
+"#;
+
+/// The second half of v5, run only once the blob has been turned into rows.
+const MIGRATE_V5_DROP: &str = r#"
+ALTER TABLE bootstrap_runs DROP COLUMN steps;
 "#;
