@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use elegance::{Accent, Button, CalloutTone, Card, Theme};
+use elegance::{Accent, Button, CalloutTone, Theme};
 
 use crate::app::{DbRequest, YkDistApp};
 
@@ -73,7 +73,7 @@ fn recent(app: &mut YkDistApp, ui: &mut egui::Ui) {
     let mut request: Option<DbRequest> = None;
     let mut fill_path: Option<String> = None;
 
-    Card::new().heading("Recent databases").show(ui, |ui| {
+    super::titled_card(ui, "Recent databases", |ui| {
         egui::Grid::new("recent-databases")
             .num_columns(3)
             .spacing([12.0, 8.0])
@@ -139,9 +139,9 @@ fn recent(app: &mut YkDistApp, ui: &mut egui::Ui) {
 }
 
 fn chooser(app: &mut YkDistApp, ui: &mut egui::Ui) {
-    Card::new().heading("Open or create").show(ui, |ui| {
-        let field_width = (ui.available_width() - 8.0).max(240.0);
-
+    super::titled_card(ui, "Open or create", |ui| {
+        // Both fields take the column: a share path is long, and a truncated
+        // path is the kind of thing an operator retypes rather than reads.
         super::capped_input(
             ui,
             &mut app.db_form.path,
@@ -151,7 +151,6 @@ fn chooser(app: &mut YkDistApp, ui: &mut egui::Ui) {
                     .label("Database file")
                     .hint("/Volumes/ti-share/yubikeys/yk-dist-manager.sqlite3")
                     .id_salt("db-path")
-                    .desired_width(field_width)
             },
         );
         ui.add_space(8.0);
@@ -165,7 +164,6 @@ fn chooser(app: &mut YkDistApp, ui: &mut egui::Ui) {
                     .hint("leave empty if the file is not protected")
                     .password(true)
                     .id_salt("db-password")
-                    .desired_width(field_width)
             },
         );
 

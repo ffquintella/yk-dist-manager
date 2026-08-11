@@ -13,7 +13,7 @@
 //!   conditional logic, so a template carries `Telefone: {{holder.phone}}`
 //!   unconditionally, and the preview shows what the holder will read.
 
-use elegance::{Accent, Badge, BadgeTone, Button, CalloutTone, Card, Select};
+use elegance::{Accent, Badge, BadgeTone, Button, CalloutTone, Select};
 
 use crate::app::YkDistApp;
 use crate::term::{self, MAX_BODY, TermContext, TermTemplate};
@@ -85,7 +85,7 @@ fn language_bar(app: &mut YkDistApp, ui: &mut egui::Ui) {
     let mut switch_to: Option<String> = None;
     let mut add_language = false;
 
-    Card::new().show(ui, |ui| {
+    super::card(ui, |ui| {
         ui.horizontal_wrapped(|ui| {
             if ui
                 .add(
@@ -176,7 +176,7 @@ fn editor(app: &mut YkDistApp, ui: &mut egui::Ui) {
     let mut restore = false;
     let mut reload = false;
 
-    Card::new().heading(heading).show(ui, |ui| {
+    super::titled_card(ui, heading, |ui| {
         super::capped_input(
             ui,
             &mut app.term_editor.title,
@@ -186,18 +186,18 @@ fn editor(app: &mut YkDistApp, ui: &mut egui::Ui) {
                     .label("Title")
                     .hint("the heading printed at the top of the document")
                     .id_salt("term-editor-title")
-                    .desired_width(520.0)
                     .dirty(dirty)
             },
         );
 
         ui.add_space(10.0);
+        // No `desired_width`: the editor takes the card, which now takes the
+        // window. An infinite width would have made the card infinite with it.
         super::capped_area(ui, &mut app.term_editor.body, MAX_BODY, |area| {
             area.label("Body")
                 .id_salt("term-editor-body")
                 .rows(24)
                 .monospace(true)
-                .desired_width(f32::INFINITY)
                 .dirty(dirty)
         });
         super::hint(
@@ -287,25 +287,20 @@ fn editor(app: &mut YkDistApp, ui: &mut egui::Ui) {
 
 /// Every variable a term may use, with the value the preview substitutes.
 fn variables(ui: &mut egui::Ui) {
-    Card::new().heading("Variables").show(ui, |ui| {
+    super::titled_card(ui, "Variables", |ui| {
         super::hint(
             ui,
             "Written {{name}}. The right-hand column is what the preview substitutes — the \
                  real term takes these from the holder, the key and the hand-over record.",
         );
         ui.add_space(8.0);
-        egui::Grid::new("term-variables")
-            .striped(true)
-            .num_columns(2)
-            .spacing([18.0, 6.0])
-            .show(ui, |ui| {
-                super::table_header(ui, &["Variable", "Sample value"]);
-                for (name, value) in TermContext::sample().as_map() {
-                    super::mono(ui, &format!("{{{{{name}}}}}"));
-                    super::faint(ui, &value);
-                    ui.end_row();
-                }
-            });
+        super::table(ui, "term-variables", &["Variable", "Sample value"], |ui| {
+            for (name, value) in TermContext::sample().as_map() {
+                super::mono(ui, &format!("{{{{{name}}}}}"));
+                super::faint(ui, &value);
+                ui.end_row();
+            }
+        });
     });
 }
 
@@ -316,30 +311,32 @@ fn preview(app: &mut YkDistApp, ui: &mut egui::Ui) {
     };
     let mut close = false;
 
-    Card::new()
-        .heading("Preview — sample data, nothing recorded")
-        .show(ui, |ui| {
-            egui::ScrollArea::vertical()
-                .max_height(360.0)
-                .id_salt("term-editor-preview")
-                .show(ui, |ui| {
-                    ui.add(
-                        egui::Label::new(egui::RichText::new(&text).monospace().small())
-                            .selectable(true),
-                    );
-                });
-            ui.add_space(8.0);
-            ui.horizontal_wrapped(|ui| {
-                if ui.add(Button::new("Close preview").outline()).clicked() {
-                    close = true;
-                }
-                ui.add_space(6.0);
-                super::faint(
-                    ui,
-                    "The holder's name and identification number here are fictitious.",
+    super::titled_card(ui, "Preview — sample data, nothing recorded", |ui| {
+        // The rendered term keeps its own line breaks: it scrolls both ways
+        // inside the card rather than being wrapped into something the holder
+        // will not read.
+        egui::ScrollArea::both()
+            .max_height(360.0)
+            .auto_shrink([false, true])
+            .id_salt("term-editor-preview")
+            .show(ui, |ui| {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(&text).monospace().small())
+                        .selectable(true),
                 );
             });
+        ui.add_space(8.0);
+        ui.horizontal_wrapped(|ui| {
+            if ui.add(Button::new("Close preview").outline()).clicked() {
+                close = true;
+            }
+            ui.add_space(6.0);
+            super::faint(
+                ui,
+                "The holder's name and identification number here are fictitious.",
+            );
         });
+    });
 
     if close {
         app.term_editor.preview = None;
@@ -370,25 +367,18 @@ fn versions(app: &mut YkDistApp, ui: &mut egui::Ui) {
         .unwrap_or_default();
     stored.sort_by_key(|t| t.version.clone());
 
-    Card::new()
-        .heading(format!("{} — versions on record", language))
-        .show(ui, |ui| {
-            egui::Grid::new("term-versions")
-                .striped(true)
-                .num_columns(3)
-                .spacing([18.0, 6.0])
-                .show(ui, |ui| {
-                    super::table_header(ui, &["Version", "Title", "State"]);
-                    for template in &stored {
-                        super::mono(ui, &template.version);
-                        ui.label(&template.title);
-                        if template.version == in_use {
-                            ui.add(Badge::new("used for new terms", BadgeTone::Ok));
-                        } else {
-                            ui.add(Badge::new("kept for terms signed", BadgeTone::Neutral));
-                        }
-                        ui.end_row();
-                    }
-                });
+    super::titled_card(ui, format!("{language} — versions on record"), |ui| {
+        super::table(ui, "term-versions", &["Version", "Title", "State"], |ui| {
+            for template in &stored {
+                super::mono(ui, &template.version);
+                ui.label(&template.title);
+                if template.version == in_use {
+                    ui.add(Badge::new("used for new terms", BadgeTone::Ok));
+                } else {
+                    ui.add(Badge::new("kept for terms signed", BadgeTone::Neutral));
+                }
+                ui.end_row();
+            }
         });
+    });
 }

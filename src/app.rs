@@ -1454,24 +1454,45 @@ impl eframe::App for YkDistApp {
         self.top_bar(ui);
         self.status_bar(ui);
 
-        egui::CentralPanel::default().show(ui, |ui| {
-            egui::ScrollArea::both().show(ui, |ui| {
-                // Breathing room around the screen body; the panels above and
-                // below supply their own.
-                ui.add_space(14.0);
-                match self.tab {
-                    Tab::Inventory => crate::ui::inventory::show(self, ui),
-                    Tab::Holders => crate::ui::holders::show(self, ui),
-                    Tab::Distribution => crate::ui::distribution::show(self, ui),
-                    Tab::Bootstrap => crate::ui::bootstrap::show(self, ui),
-                    Tab::Terms => crate::ui::terms::show(self, ui),
-                    Tab::Audit => crate::ui::audit::show(self, ui),
-                    Tab::Settings => crate::ui::settings::show(self, ui),
-                }
-                ui.add_space(18.0);
+        // The body scrolls vertically only, and the screen fills the window
+        // width: a table too wide for the window scrolls inside its own card
+        // (`ui::table`) instead of dragging the whole page sideways and leaving
+        // every other card narrower than the one that overflowed.
+        egui::CentralPanel::default()
+            .frame(gutter_frame(egui::Frame::central_panel(ui.style())))
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        // Breathing room around the screen body; the panels
+                        // above and below supply their own.
+                        ui.add_space(14.0);
+                        match self.tab {
+                            Tab::Inventory => crate::ui::inventory::show(self, ui),
+                            Tab::Holders => crate::ui::holders::show(self, ui),
+                            Tab::Distribution => crate::ui::distribution::show(self, ui),
+                            Tab::Bootstrap => crate::ui::bootstrap::show(self, ui),
+                            Tab::Terms => crate::ui::terms::show(self, ui),
+                            Tab::Audit => crate::ui::audit::show(self, ui),
+                            Tab::Settings => crate::ui::settings::show(self, ui),
+                        }
+                        ui.add_space(18.0);
+                    });
             });
-        });
     }
+}
+
+/// Put the shell's [`crate::ui::GUTTER`] on both sides of a panel frame, so the
+/// top bar, the screen body and the status bar share one left margin.
+fn gutter_frame(frame: egui::Frame) -> egui::Frame {
+    // Only the horizontal margin is ours; each panel keeps the vertical padding
+    // egui gives it.
+    let margin = frame.inner_margin;
+    frame.inner_margin(egui::Margin {
+        left: crate::ui::GUTTER,
+        right: crate::ui::GUTTER,
+        ..margin
+    })
 }
 
 impl YkDistApp {
@@ -1479,30 +1500,32 @@ impl YkDistApp {
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         let theme = elegance::Theme::current(ui.ctx());
 
-        egui::Panel::top("tabs").show(ui, |ui| {
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                ui.add(egui::Label::new(
-                    egui::RichText::new("YubiKey Distribution Manager")
-                        .size(theme.typography.heading + 2.0)
-                        .color(theme.palette.text)
-                        .strong(),
-                ));
-                ui.add_space(8.0);
-                ui.add(
-                    elegance::Badge::new(crate::VERSION, elegance::BadgeTone::Neutral)
-                        .preserve_case(),
-                );
-            });
-            ui.add_space(6.0);
+        egui::Panel::top("tabs")
+            .frame(gutter_frame(egui::Frame::side_top_panel(ui.style())))
+            .show(ui, |ui| {
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.add(egui::Label::new(
+                        egui::RichText::new("YubiKey Distribution Manager")
+                            .size(theme.typography.heading + 2.0)
+                            .color(theme.palette.text)
+                            .strong(),
+                    ));
+                    ui.add_space(8.0);
+                    ui.add(
+                        elegance::Badge::new(crate::VERSION, elegance::BadgeTone::Neutral)
+                            .preserve_case(),
+                    );
+                });
+                ui.add_space(6.0);
 
-            let mut index = self.tab.index();
-            ui.add(elegance::TabBar::new(
-                &mut index,
-                Tab::ALL.map(|tab| tab.label()),
-            ));
-            self.tab = Tab::from_index(index);
-        });
+                let mut index = self.tab.index();
+                ui.add(elegance::TabBar::new(
+                    &mut index,
+                    Tab::ALL.map(|tab| tab.label()),
+                ));
+                self.tab = Tab::from_index(index);
+            });
     }
 
     /// Who is operating, where the database lives, and the last outcome.
@@ -1513,41 +1536,43 @@ impl YkDistApp {
         let theme = elegance::Theme::current(ui.ctx());
         let severity = crate::status::classify(&self.status);
 
-        egui::Panel::bottom("status").show(ui, |ui| {
-            ui.add_space(6.0);
-            ui.horizontal_wrapped(|ui| {
-                let mut pill = elegance::StatusPill::new()
-                    .item(format!("operator: {}", self.operator), IndicatorState::On);
-                if let Some(store) = &self.store {
-                    pill = pill.item(
-                        match store.location() {
-                            Location::NetworkShare => "db: network share",
-                            Location::LocalDisk => "db: local",
-                        },
-                        IndicatorState::On,
-                    );
-                }
-                ui.add(pill);
-
-                if !self.status.is_empty() {
-                    ui.add_space(10.0);
-                    // An audit failure is not allowed to look like an ordinary
-                    // outcome (AGENTS.md, "Audit coverage").
-                    let (colour, strong) = match severity {
-                        Severity::Alarm => (theme.palette.danger, true),
-                        Severity::Warning => (theme.palette.warning, false),
-                        Severity::Normal => (theme.palette.text_muted, false),
-                    };
-                    let mut text = egui::RichText::new(&self.status)
-                        .size(theme.typography.small)
-                        .color(colour);
-                    if strong {
-                        text = text.strong();
+        egui::Panel::bottom("status")
+            .frame(gutter_frame(egui::Frame::side_top_panel(ui.style())))
+            .show(ui, |ui| {
+                ui.add_space(6.0);
+                ui.horizontal_wrapped(|ui| {
+                    let mut pill = elegance::StatusPill::new()
+                        .item(format!("operator: {}", self.operator), IndicatorState::On);
+                    if let Some(store) = &self.store {
+                        pill = pill.item(
+                            match store.location() {
+                                Location::NetworkShare => "db: network share",
+                                Location::LocalDisk => "db: local",
+                            },
+                            IndicatorState::On,
+                        );
                     }
-                    ui.add(egui::Label::new(text).selectable(true));
-                }
+                    ui.add(pill);
+
+                    if !self.status.is_empty() {
+                        ui.add_space(10.0);
+                        // An audit failure is not allowed to look like an ordinary
+                        // outcome (AGENTS.md, "Audit coverage").
+                        let (colour, strong) = match severity {
+                            Severity::Alarm => (theme.palette.danger, true),
+                            Severity::Warning => (theme.palette.warning, false),
+                            Severity::Normal => (theme.palette.text_muted, false),
+                        };
+                        let mut text = egui::RichText::new(&self.status)
+                            .size(theme.typography.small)
+                            .color(colour);
+                        if strong {
+                            text = text.strong();
+                        }
+                        ui.add(egui::Label::new(text).selectable(true));
+                    }
+                });
+                ui.add_space(6.0);
             });
-            ui.add_space(6.0);
-        });
     }
 }

@@ -17,6 +17,28 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+### Changed
+
+- **The screens are fluid.** Every card, banner, form and table now spans the
+  window width, with one gutter (18px) shared by the top bar, the screen body and
+  the status bar — so the product name, the screen heading and the status pill sit
+  on the same left margin, and two screens no longer disagree about how wide a
+  card is. Previously a card was as wide as whatever happened to be inside it: the
+  Inventory table was full width, the Holders form stopped at two 340px columns,
+  and the Distribution card at three 360px selects.
+
+  - Form fields take the width of their column instead of a constant, so they grow
+    with the window. Two-column forms (Holders, Distribution, Bootstrap,
+    Settings → Operator) split the page evenly through `ui::form_columns`.
+  - A table wider than the window scrolls sideways **inside its own card**
+    (`ui::table`), instead of widening the page and leaving every other card
+    narrower than the one that overflowed. The body itself now scrolls vertically
+    only. Table spacing and header style are shared, so the seven tables read as
+    one table.
+  - New shared building blocks in `src/ui/mod.rs`: `card`, `titled_card`, `table`,
+    `form_columns`, and the `GUTTER` constant. A refusal (`ui::error_label`) is
+    full width and wraps rather than running off the screen.
+
 ## [0.3.0] - 2026-08-10
 
 ### Added
