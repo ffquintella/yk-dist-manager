@@ -18,24 +18,37 @@ whole even though every part passes.
 
 **Suites in place; CI and the coverage gate are not.**
 
-- **333 tests** pass on the default features (`cargo test`); 332 with
-  `--all-features`, the difference being one test that only exists when
+- **452 tests** pass on the default features (`cargo test`); one fewer with
+  `--all-features`, the difference being a test that only exists when
   `encrypted-db` is *off*. Plus 2 hardware tests, ignored by default.
 - `cargo check --no-default-features` is part of the pre-commit sweep, because the
   no-camera build is a supported configuration
   (`make check-all`).
-- Core line coverage **87.79%** (region 85.32%), above the 80% floor.
-- Unit suites: `unit_domain.rs`, `unit_template.rs` (50), `unit_audit.rs`,
-  `unit_ykman_parse.rs`, `unit_store.rs` (29), `unit_device_backends.rs`,
-  `unit_records.rs`, `unit_logging_format.rs`, `unit_term.rs` (30),
-  `unit_settings.rs` (3), `unit_store_cloud.rs` (14 — the cloud-sync single-writer
-  lock), plus in-module tests for `logging`, `domain`, `custody`, `document` (7),
-  `scan` (13) and `rxing_decoder` (5).
+- Core line coverage **87.78%** (region 86.34%), above the 80% floor.
+- Unit suites: `unit_domain.rs` (15), `unit_template.rs` (50), `unit_audit.rs` (6),
+  `unit_ykman_parse.rs` (8), `unit_store.rs` (29), `unit_device_backends.rs` (9),
+  `unit_records.rs` (16), `unit_logging_format.rs` (6), `unit_term.rs` (45),
+  `unit_pdf.rs` (41), `unit_settings.rs` (3), `unit_store_cloud.rs` (14 — the
+  cloud-sync single-writer lock), `unit_store_smb.rs` (16 — reaching an SMB share),
+  plus 118 in-module tests across `logging`, `domain`, `custody`, `document`, `scan`,
+  `rxing_decoder`, `diagnostics`, `settings`, `pdf` and `store::smb`.
 - Behaviour suites: `behaviour_distribution.rs` (10 scenarios),
   `behaviour_bootstrap.rs` (10), `behaviour_storage.rs` (14),
-  `behaviour_templates.rs` (13), `behaviour_terms_and_documents.rs` (15),
-  `behaviour_app_cloud_lock.rs` (1 — the only test that drives `YkDistApp`, so it
-  owns its binary's environment; see its module docs).
+  `behaviour_templates.rs` (13), `behaviour_terms_and_documents.rs` (18),
+  `behaviour_smb_share.rs` (6 — a register on a share), plus the two suites that
+  drive `YkDistApp` and therefore own their binary's environment, one scenario each:
+  `behaviour_app_cloud_lock.rs` and `behaviour_app_smb_share.rs` (see their module
+  docs).
+- **Two mockable seams**, for the same reason: `device::MockBackend` means no test
+  needs a key, and `store::smb::MockConnector` (behind `app.share_connector`) means
+  no test needs a file server, a network or a credential that exists anywhere.
+- Two files are platform-gated and therefore only compiled where they run —
+  `store/smb/macos.rs` and `store/smb/windows.rs`. The parts that can be tested
+  anywhere were deliberately moved out of them (`store::smb::mounts` parses the mount
+  table, `store::smb::system` holds the no-privilege refusal), and what is left is the
+  FFI itself: `windows.rs` is verified by compiling it for
+  `x86_64-pc-windows-msvc`, since bundled SQLite cannot cross-compile without an MSVC
+  toolchain.
 - The barcode decoder is tested against **rendered Code 128 barcodes** produced by
   rxing's own encoder, so the real decode path runs with no camera and no fixtures to
   go stale.

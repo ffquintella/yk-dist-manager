@@ -77,7 +77,7 @@ Minimum set, kept in sync with the feature files:
 | `bootstrap.dry_run` | wizard |
 | `bootstrap.started`, `bootstrap.step.done`, `bootstrap.step.failed`, `bootstrap.finished` | executor (Wave 1) |
 | `template.created`, `template.changed`, `template.retired`, `template.reinstated`, `template.removed` | Templates screen — a new version, or a withdrawal (`template.seeded` is logged, not audited) |
-| `term.generated`, `term.saved`, `term.signed_uploaded` | consignment terms |
+| `term.generated`, `term.saved`, `term.signed_uploaded` | consignment terms — `term.saved` names the format (`format=pdf path=…`), since the two outputs are filed differently |
 | `term.template_edited`, `term.template_added` | Terms screen — a new version of the wording |
 | `db.backup`, `db.migrated`, `db.unlocked`, `db.unlock.failed` | storage |
 | `export.taken` | reports |

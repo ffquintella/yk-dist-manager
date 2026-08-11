@@ -16,6 +16,7 @@
 //! | [`settings`] | Which database to open, and the recent ones |
 //! | [`scan`] | Reading a serial from a barcode (label or camera) |
 //! | [`term`] | Consignment terms: multilingual templates and rendering |
+//! | [`pdf`] | The PDF a term is printed and signed on, written without a dependency |
 //! | [`versioning`] | "What number does the next edit get?", shared by both |
 //! | [`diagnostics`] | `--diagnose`: what this build is and what it can reach |
 //! | [`audit`] | Append-only, hash-chained audit trail |
@@ -34,6 +35,7 @@ pub mod diagnostics;
 pub mod domain;
 pub mod logging;
 pub mod paths;
+pub mod pdf;
 pub mod scan;
 pub mod settings;
 pub mod status;

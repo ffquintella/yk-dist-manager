@@ -22,14 +22,15 @@ immediately. Without that acknowledgement, the loss procedure has no basis.
 
 **Partly shipped, in two narrower features.**
 
-- Generating the term from the record, in multiple languages, with optional fields:
+- Generating the term from the record, in multiple languages, with optional fields,
+  **and exporting it as a PDF**:
   [`consignment-terms.md`](consignment-terms.md) — **done**.
 - Filing the signed scan against the hand-over:
   [`signed-term-documents.md`](signed-term-documents.md) — **done**.
 
-What is left in *this* spec: PDF output, the signature state machine with an age
-warning, the return receipt, and batch generation. `receipt_ref` remains a free-text
-field for a unit's own document reference, alongside the stored copy.
+What is left in *this* spec: the sealed-envelope slip, the signature state machine
+with an age warning, the return receipt, and batch generation. `receipt_ref` remains a
+free-text field for a unit's own document reference, alongside the stored copy.
 
 ## Design
 
@@ -67,6 +68,14 @@ output). Given the deployment model — a desktop app that should not need a TeX
 installation — the pure-Rust route wins unless the unit already has a document
 pipeline.
 
+> **Settled, 2026-08-11.** The pure-Rust route, and further: no PDF *crate* either.
+> `src/pdf.rs` writes the file, which is affordable because the document is
+> monospaced text in Courier — a standard-fourteen font, so nothing is embedded and
+> the font-parsing half of a writer disappears. The plainer output is not a loss here:
+> the term's clause indentation and signature rules are built out of spaces, so a
+> fixed-width font is what preserves them. See
+> [`consignment-terms.md`](consignment-terms.md) *Output format*.
+
 The document template must be editable without recompiling, like the bootstrap
 templates, and versioned the same way, because the wording is legal text that someone
 else owns.
@@ -96,7 +105,7 @@ gap `features/distribution-records.md` Phase 4 exists to make visible.
 |---|---|---|---|
 | 0 | Sealed-envelope slip for the transport secrets | Todo | **required by custody model B** for any hand-over that is not face to face; shares this feature's rendering |
 | 1 | Text term generated from the record | **Done** | [consignment-terms.md](consignment-terms.md) |
-| 2 | PDF output | Todo | pure-Rust writer preferred; the content was got right first |
+| 2 | PDF output | **Done** | [consignment-terms.md](consignment-terms.md) — the pure-Rust route won: `crate::pdf`, no dependency at all, Courier from the standard fourteen fonts so nothing is embedded |
 | 3 | Editable, versioned, multilingual template | **Done** | keyed `(id, language, version)` |
 | 4 | Signature state machine with an age warning | Todo | with distribution Phase 4 |
 | 5 | Store the signed document | **Done** | [signed-term-documents.md](signed-term-documents.md) — stored **in** the database, reversing the original plan; the reasoning is in that spec |

@@ -19,6 +19,92 @@ Maintenance instructions (see AGENTS.md §5):
 
 ### Added
 
+- **The register can live on an SMB share, and the application connects the share
+  itself** ([`features/smb-share-hosting.md`](features/smb-share-hosting.md)). Every
+  storage document here ended with "a real network share is still the recommendation",
+  and until now nothing could act on it: the tool could only open a path somebody else
+  had mounted, and the symptom of that not having happened was
+  `… is not reachable — is the share mounted?` — a message that names the problem and
+  offers nothing.
+  - **Three identities, and the chosen one is used exactly.** *The account I am signed
+    in with* is the default and, on **Windows**, the whole mechanism: a UNC path is
+    authenticated by this session's own token, the same way Explorer's is, so the right
+    implementation is to make no API call at all. *Guest* is anonymous access, chosen
+    deliberately. *A named account* takes a `DOMAIN\user` and a password typed at the
+    chooser. The signed-in user is **never** a silent fallback under a named account —
+    connecting as an unexpected identity is a register opened with permissions nobody
+    reviewed, and on a share that is read-only for everyone else it looks like lost
+    writes.
+  - **The password is never durable.** It is held in a `Secret` that keeps bytes,
+    zeroes them on drop and prints as `Secret(********)`, so no `{:?}`, no `tracing`
+    field and no panic message can carry it; it is readable only inside the crate, so
+    no test can assert on one and no widget can echo one. It never reaches an argument
+    vector either, which is precisely why the backends are native APIs
+    (`WNetAddConnection2W` on Windows, `NetFSMountURLSync` on macOS) rather than
+    `net use` and `mount_smbfs`: a password on a command line is readable by every
+    process on the workstation, and a credentials file is the temporary file the
+    security rules forbid.
+  - **A share that is already mounted is used and left alone.** Every connector probes
+    first, so a share mounted by Finder or a login script needs no credential — and is
+    not unmounted when the register closes. A connection *this* session made is
+    disconnected on every path that stops using the database: the Close button,
+    switching database, and quitting the application.
+  - **No drive letters.** Windows connections are deviceless, so the UNC path simply
+    starts working; `Z:` meaning a different share on the next workstation is exactly
+    the drift the register's location cannot have.
+  - **The location does not have to be spelled one way.** `smb://server/share/…`,
+    `cifs://…`, `\\server\share\…` and `//server/share/…` all parse, separators may be
+    mixed, and `smb://DOMAIN%5Cuser@server/share` carries its user out. A `..` segment,
+    an empty host or share, a control character or an over-long location is refused
+    before it reaches a system call — a traversal would put the register somewhere on
+    the file server nobody named.
+  - **Audited**: `db.share.connected` names the share and the identity when the
+    register opens on a freshly connected share; `db.share.disconnected` is written
+    *before* the close, while there is still a database to write it to. Neither ever
+    carries a secret. A refused connection cannot be audited — there is no open
+    database — so it is logged and shown on the chooser, the same rule as a refused
+    open.
+  - **Remembered without its password**: the settings file keeps the share, the access
+    mode and the user name, and the chooser offers them back with the password field
+    empty. `--diagnose` reports how this build reaches a share and which shares this
+    workstation has used.
+  - **On Linux the gap is stated rather than papered over**: an unprivileged process
+    cannot mount CIFS, and the alternatives are a `setuid` helper or a credentials
+    file, so the refusal names `mount.cifs`, `/etc/fstab` and `autofs` — and a share
+    that is already mounted is found and used normally.
+  - `StoreConfig::with_location` lets a caller state the location instead of having it
+    guessed from the path, because a share this application just connected *is* on a
+    network filesystem whatever mount point the operating system chose. Guessing wrong
+    would put a shared file in WAL mode, whose shared-memory sidecar cannot cross a
+    network filesystem at all.
+- **The consignment term exports as a PDF** — the sheet that is printed, signed and
+  filed ([`features/consignment-terms.md`](features/consignment-terms.md) phase 7).
+  *Export as PDF…* sits next to *Save as text…* in the term panel, and the Terms
+  editor's preview exports too, so the wording can be circulated for the review it
+  needs in the form the holder will actually read.
+  - **No new dependency, and no TeX on a workstation.** `src/pdf.rs` writes the file:
+    A4, Courier from the standard fourteen fonts so nothing is embedded, uncompressed
+    and entirely ASCII so a filed artefact stays greppable. Courier is also the right
+    font rather than a compromise — the term's numbered clauses and side-by-side
+    signature rules are built out of spaces, and only a fixed-width font keeps them.
+  - **The text and the PDF are the same document by construction**: both go through
+    `term::render_term_parts`, so the copy reviewed on screen cannot disagree with the
+    copy that gets signed. Line omission for an absent optional field applies to both.
+  - **Every page's footer names the wording that produced it**
+    (`consignment@2 (pt-BR) · #20423633 · TERM-2026-001`), so a signed sheet in a
+    filing cabinet is traceable back to the exact template version in the database.
+    A draft out of the editor says `@draft`.
+  - **The signature block is never split across a page break.** A term one line too
+    long for A4 would otherwise put the rules on page 1 and the names beneath them on
+    page 2 — a holder signing a sheet that does not say what they are signing.
+  - **A character the font cannot set is reported, not silently mangled.** The
+    encoding is CP1252, which covers Portuguese, Spanish, English, French, German and
+    Italian; a term in a language it cannot set warns the operator, before printing,
+    exactly which characters would come out as `?` — and the text output still carries
+    them correctly.
+  - No personal data in the PDF metadata: a file's `/Title` and `/Subject` travel with
+    it into mail clients and search indexes, and the body already says everything the
+    document needs to say.
 - **The database can live in a OneDrive folder, and two operators can share it —
   one at a time.** A synchronising folder is the worst place for a SQLite file, and it
   is where a real installation keeps the register, because it is the shared folder that
@@ -53,8 +139,25 @@ Maintenance instructions (see AGENTS.md §5):
   own, plus the conflict-copy alarm. Settings shows the lock, the holder and the lock
   file; the status bar says `db: cloud-sync (locked)`.
 
+### Fixed
+
+- **The signature block of a term now lines up for any holder's name.** A gap of two or
+  more spaces in a term template is a *column* — the shipped wording puts the rule, the
+  name under it and the role under that all at column 41 — and substituting a name of
+  any length other than the fifteen characters of `{{holder.name}}` slid the second
+  column with it. The template was never wrong; the renderer was throwing away the
+  geometry the template declared. A gap that follows a substitution is now resized to
+  put what comes after it back where the template put it, never shrinking below one
+  space. Applies to both outputs, since both come from one rendering. Line omission
+  remains the only *logic* in a term: this is layout, and it makes the spaces an author
+  already typed mean what they look like.
+
 ### Changed
 
+- `term.saved` now records **which format left the tool** (`format=pdf path=…`), because
+  the two outputs are filed differently — a signed PDF comes back as a scan, a text copy
+  goes into a ticket — and "a term was written" was not enough to reconstruct what
+  happened.
 - **Closing a database is now a protocol, not a drop.** Every path that stops using one
   — the Close button, switching database, creating another — writes its audit entry
   while the connection is still open, then closes the connection and releases the lock.

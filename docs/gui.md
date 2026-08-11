@@ -77,6 +77,19 @@ the operator closing one to switch. It carries:
 Open and Create never guess: opening a path that does not exist is an error, and
 creating over an existing file is refused.
 
+It also carries an **Open from a network share (SMB)** card, so the register on the
+unit's file server can be reached without the share having been mounted first: the
+location (`smb://…`, UNC or `//server/share/…`), the **identity** as three radio
+buttons with a sentence each — the signed-in account (the default), guest, or a named
+account — and, only for a named account, a user and a password field that is cleared
+the moment it is used. Radios rather than a dropdown because each option needs its
+sentence, and because picking the wrong one opens the register as an identity nobody
+reviewed. Shares used before are listed with the identity that reached them and a
+*use* / *forget* pair; the password is never among what *use* fills in. *Connect and
+open* and *Connect and create* stay separate for the same reason **Open** and
+**Create** do. On a platform that cannot mount a share itself, the card says so and
+names the alternative instead of offering a button that fails.
+
 A database in a cloud-sync folder that another workstation has open produces an **In use
 by another workstation** card instead of a bare error: the path, who holds it (operator,
 computer, since when), and one action. While that session is alive the action is *Try
@@ -129,9 +142,13 @@ Each row also carries the **term** column: *term* opens the consignment-term pan
 (green) so an unsigned hand-over is visible at a glance.
 
 The **term panel** picks a language (falling back with a visible notice when the
-requested one has no template), renders the term from the record, and offers *Save as
-text…*, *Upload signed term…* and *Edit wording…* — which opens the Terms screen on the
-same language. Under the language row it names the template that produced the text
+requested one has no template), renders the term from the record, and offers *Export as
+PDF…*, *Save as text…*, *Upload signed term…* and *Edit wording…* — which opens the Terms
+screen on the same language. The PDF is the sheet to print and have signed; the text is
+the same document for a ticket, and both come from one rendering so they cannot disagree.
+When the term uses a character the PDF font cannot set, an amber notice says which ones
+and that the text output carries them correctly — before anything is printed. Under the
+language row it names the template that produced the text
 (`consignment@2 (pt-BR)`), so an edit is visibly in effect. Below it, the filed documents
 are listed with their size, short SHA-256 and an *export* action — which verifies the
 digest and refuses on a mismatch.
@@ -199,9 +216,19 @@ somebody else owns, which is why it is data and not a constant in the source.
   (`MAX_TEXT`, `term::MAX_BODY`). Under the body, a live verdict: `renders` plus the
   variables in use, or the refusal — an unknown `{{variable}}` is caught here, at the
   desk, instead of at the counter with the holder waiting.
+- **Two or more spaces make a column.** Whatever follows such a gap stays at that
+  position however long the substituted value before it turns out to be, which is what
+  keeps a two-column signature block aligned for a holder called *Yu* and one called
+  *Maria da Conceição Albuquerque Fonseca*. A single space is spacing and is left
+  alone, as is a gap at the start of a line — so the indentation of a wrapped clause is
+  never touched.
 - **Preview** renders the draft against a sample context of obviously fictitious values.
   Every sample variable is filled on purpose, so the preview shows every line the real
-  document can print — line omission is what the operator needs to *see*.
+  document can print — line omission is what the operator needs to *see*. The preview
+  also offers **Export as PDF…**, which is how the wording reaches the people who own
+  it: a reviewer reads the document as it will be printed rather than a template full
+  of `{{variables}}`. The footer says `@draft`, nothing is stored, and no hand-over is
+  involved.
 - **Save as new version** writes version *N+1*; it never overwrites. **Reload stored
   version** discards the edit, and **Restore built-in wording** brings back the text this
   build ships (in the editor — nothing is stored until you save). Switching language with
@@ -231,6 +258,11 @@ that used to be a flat refusal now says what the lock does *and* what it does no
 because "locked" must not read as "solved"; if the lock was declined it goes back to being
 an error. A sync conflict copy next to the database is reported here as an error too: the
 register may have forked, and no other screen would say so.
+
+When the register is on a share **this session connected**, there is a **network share**
+row — the share, and as whom — plus a *Close and disconnect the share* action. Both
+appear only for a connection this session made: a share the operator mounted themselves
+is not this application's to take down, so the button would be a lie.
 
 ## Theme
 

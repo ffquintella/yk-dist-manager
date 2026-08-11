@@ -46,6 +46,19 @@ pub enum DbRequest {
     /// Break the abandoned single-writer lock on a cloud-hosted database and
     /// open it. Only ever issued by the operator clicking the button that says so.
     TakeOverLock(PathBuf),
+    /// Connect the SMB share on the share card, then open or create the database
+    /// on it.
+    ///
+    /// Carries which of the two, because open and create stay separate all the way
+    /// down: a mistyped file name on a share must not silently become a second,
+    /// empty register (`features/database-selection.md`).
+    ConnectShare { create: bool },
+    /// Fill the share card from a remembered share, ready to connect.
+    UseShare(String),
+    /// Drop a share from the remembered list. The share itself is not touched.
+    ForgetShare(String),
+    /// Close the database and disconnect the share this session connected.
+    DisconnectShare,
 }
 
 /// The database chooser's form state.
@@ -61,6 +74,34 @@ pub struct DatabaseForm {
     /// *action*: the chooser offers to take an abandoned lock over, and only when
     /// the holder has gone quiet long enough to be abandoned.
     pub locked: Option<LockedDatabase>,
+}
+
+/// The SMB share card's form state.
+///
+/// The password lives here rather than in
+/// [`AppSettings`](crate::settings::AppSettings) for the reason the whole feature
+/// turns on: it is typed, used for one connection, and cleared. Nothing writes it
+/// anywhere.
+#[derive(Default)]
+pub struct ShareForm {
+    /// What the operator typed: `smb://server/share/…`, `\\server\share\…` or
+    /// `//server/share/…`.
+    pub location: String,
+    pub access: crate::store::smb::Access,
+    /// `DOMAIN\user` or `user`, for a named account.
+    pub user: String,
+    /// Cleared as soon as the connection has been attempted.
+    pub password: String,
+    pub error: Option<String>,
+}
+
+impl ShareForm {
+    /// Read and clear the typed password. Never kept beyond the connect call.
+    fn take_password(&mut self) -> String {
+        let password = self.password.clone();
+        self.password.clear();
+        password
+    }
 }
 
 /// Why an open was refused, and by whom.
@@ -87,6 +128,12 @@ pub struct TermPanel {
     pub language: String,
     /// The rendered term, awaiting review before it is saved or printed.
     pub rendered: Option<String>,
+    /// The same term as a PDF, produced alongside the text so that what the
+    /// operator reviews on screen and what gets printed cannot drift apart.
+    pub pdf: Option<Vec<u8>>,
+    /// Set when the PDF font cannot carry a character the term uses — the
+    /// operator is told before the document is filed, not afterwards.
+    pub pdf_note: Option<String>,
     /// Language actually used, when it differs from the request.
     pub language_used: Option<String>,
     /// Which template version produced the rendered text, so the operator can see
@@ -102,6 +149,8 @@ impl Default for TermPanel {
             distribution: None,
             language: crate::term::DEFAULT_LANGUAGE.to_owned(),
             rendered: None,
+            pdf: None,
+            pdf_note: None,
             language_used: None,
             template_used: None,
             error: None,
@@ -337,6 +386,19 @@ pub struct YkDistApp {
     pub settings: AppSettings,
     pub db_form: DatabaseForm,
     pub db_request: Option<DbRequest>,
+    /// The SMB share this session connected, held for as long as the database on
+    /// it is open. `None` for a local file, and `None` for a share the operating
+    /// system had already mounted — that one is not this session's to take down.
+    pub share: Option<crate::store::smb::ShareConnection>,
+    pub share_form: ShareForm,
+    /// How this session reaches an SMB share.
+    ///
+    /// A factory rather than a value, because each connection consumes one — and
+    /// swappable for the same reason [`YkDistApp::backend`] is: the behaviour suite
+    /// drives connect → open → write → close → disconnect with no file server
+    /// anywhere near it, and a test that mounted a real share would be a test that
+    /// needs a network.
+    pub share_connector: Box<dyn Fn() -> Box<dyn crate::store::smb::Connector>>,
     pub scan: ScanPanel,
     pub open_error: Option<String>,
     pub tab: Tab,
@@ -403,6 +465,9 @@ impl YkDistApp {
             settings,
             db_form: DatabaseForm::default(),
             db_request: None,
+            share: None,
+            share_form: ShareForm::default(),
+            share_connector: Box::new(crate::store::smb::platform_connector),
             scan: ScanPanel::default(),
             open_error: None,
             tab: Tab::Inventory,
@@ -434,10 +499,22 @@ impl YkDistApp {
         // A remembered database that has gone (an unmounted share) must not be
         // re-created as an empty file — show the chooser instead.
         if must_exist && !app.config.path.is_file() {
-            app.open_error = Some(format!(
-                "{} is not reachable — is the share mounted?",
-                app.config.path.display()
-            ));
+            // "Is the share mounted?" names the problem and offers nothing, so when
+            // this workstation has reached a share from here before, the message
+            // points at the card that can reach it again.
+            app.open_error = Some(match app.settings.recent_shares.first() {
+                Some(share) => format!(
+                    "{} is not reachable. If the register is on a file server, connect the share \
+                     below — this workstation last used {}.",
+                    app.config.path.display(),
+                    share.location
+                ),
+                None => format!(
+                    "{} is not reachable — is the share mounted? A network share can be \
+                     connected below.",
+                    app.config.path.display()
+                ),
+            });
             return app;
         }
 
@@ -472,6 +549,194 @@ impl YkDistApp {
             DbRequest::TakeOverLock(path) => {
                 let password = self.take_password();
                 self.take_over_lock(&path, password);
+            }
+            DbRequest::ConnectShare { create } => self.connect_share(create),
+            DbRequest::UseShare(location) => self.fill_share_form(&location),
+            DbRequest::ForgetShare(location) => {
+                self.settings.forget_share(&location);
+                self.settings.save_quietly();
+            }
+            DbRequest::DisconnectShare => self.close_database(),
+        }
+    }
+
+    /// Fill the share card from a remembered share.
+    ///
+    /// The password is not among what is filled in: it is not remembered, and the
+    /// field is left for the operator to type.
+    fn fill_share_form(&mut self, location: &str) {
+        let Some(entry) = self
+            .settings
+            .recent_shares
+            .iter()
+            .find(|entry| entry.location == location)
+            .cloned()
+        else {
+            return;
+        };
+        self.share_form.location = entry.location;
+        self.share_form.access = entry.access;
+        self.share_form.user = entry.user;
+        self.share_form.password.clear();
+        self.share_form.error = None;
+    }
+
+    /// Connect the share on the card, then open or create the database on it.
+    ///
+    /// Three steps that stay distinguishable on purpose: a parse refusal is the
+    /// operator's typing, a connection refusal is the file server's answer, and a
+    /// failed open is the database. Collapsing them into one message would leave
+    /// somebody retyping a path when the real answer was "ask for access to the
+    /// share".
+    pub fn connect_share(&mut self, create: bool) {
+        use crate::store::smb::{self, Access, Credential};
+
+        self.share_form.error = None;
+        let typed = self.share_form.location.clone();
+        let password = self.share_form.take_password();
+
+        let parsed = match smb::parse(&typed) {
+            Ok(parsed) => parsed,
+            Err(e) => return self.report_share_failure(e.to_string()),
+        };
+
+        // A share with no file named inside it is a share, not a register. Refused
+        // before anything is sent to a server and before anything open is closed.
+        if parsed.target.inner.is_empty() {
+            return self.report_share_failure(format!(
+                "{} names a share but no database inside it — say which file, for example \
+                 {}/yubikeys/{}",
+                parsed.target.describe(),
+                parsed.target.describe(),
+                crate::paths::DEFAULT_DATABASE_NAME
+            ));
+        }
+
+        // The chosen identity decides; a user written into the location does not
+        // quietly change it. `smb://felipe@server/share` while the mode says "the
+        // signed-in user" is a contradiction the operator has to resolve, because
+        // guessing wrong opens the register as an identity nobody reviewed — and on
+        // a share that is read-only for everyone else, that looks like lost writes.
+        let access = self.share_form.access;
+        if access != Access::Named
+            && let Some(named) = parsed.user.as_deref()
+        {
+            return self.report_share_failure(format!(
+                "the location names the account `{named}`, but the chosen identity is {} — \
+                 either choose a named account, or take `{named}@` out of the location",
+                access.label(),
+            ));
+        }
+        let user = match access {
+            Access::Named => {
+                let typed = self.share_form.user.trim();
+                if typed.is_empty() {
+                    parsed.user.clone().unwrap_or_default()
+                } else {
+                    typed.to_owned()
+                }
+            }
+            _ => String::new(),
+        };
+        let credential = match access {
+            Access::LoggedOnUser => Credential::logged_on_user(),
+            Access::Anonymous => Credential::anonymous(),
+            Access::Named if user.is_empty() => {
+                return self.report_share_failure(
+                    "a named account needs a user name — or choose the signed-in user, or guest \
+                     if the share allows it"
+                        .to_owned(),
+                );
+            }
+            Access::Named => Credential::named(&user, &password),
+        };
+        // The credential has its own copy now; this one dies here.
+        drop(password);
+
+        // Whatever is open goes first, and completely: the audit entries, the
+        // close, the cloud-sync lock, and the share that database was on.
+        // Connecting first would risk taking down, a moment later, the very mount
+        // the new connection had just adopted — when both turn out to be the same
+        // share.
+        self.release_current_database();
+
+        let connection =
+            match smb::ShareConnection::open(&parsed.target, &credential, (self.share_connector)())
+            {
+                Ok(connection) => connection,
+                Err(e) => return self.report_share_failure(e.to_string()),
+            };
+        let database = connection.database_path();
+        let describe = connection.describe();
+
+        self.settings.remember_share(crate::settings::ShareEntry {
+            location: parsed.target.location(),
+            access,
+            user,
+        });
+        self.settings.save_quietly();
+
+        // The database's password is a different secret, from the other field.
+        let db_password = self.take_password();
+        let config = connection
+            .store_config()
+            .with_password(db_password)
+            .with_operator(&self.operator);
+        let opened = if create {
+            Store::create_new(&config)
+        } else {
+            Store::open_existing(&config)
+        };
+
+        match opened {
+            Ok(store) => {
+                self.adopt(store, config);
+                self.share = Some(connection);
+                self.record("db.share.connected", "database", &describe);
+                self.record(
+                    if create { "db.created" } else { "app.opened" },
+                    "database",
+                    &self.config.path.display().to_string(),
+                );
+                self.refresh();
+                self.status = format!("{} — {describe}", self.status);
+            }
+            Err(e) => {
+                // A share connected for a database that would not open is a
+                // connection nobody asked for. Dropping it disconnects it.
+                drop(connection);
+                self.report_open_failure(&database, e);
+            }
+        }
+    }
+
+    /// Show a share refusal on the chooser as well as in the log.
+    ///
+    /// It cannot be audited: there is no open database to write it to. The same
+    /// rule as a refused open — see `features/database-selection.md`.
+    fn report_share_failure(&mut self, message: String) {
+        tracing::error!(event = "db.share.failed", reason = %message);
+        self.share_form.error = Some(message.clone());
+        self.open_error = Some(message);
+    }
+
+    /// Disconnect the share this session connected, if it connected one.
+    ///
+    /// Called *after* the database on it has been closed, never before: the order
+    /// is audit, close the database, then disconnect — the entry that records the
+    /// disconnection needs a database to be written to.
+    fn release_current_share(&mut self) {
+        let Some(connection) = self.share.take() else {
+            return;
+        };
+        let share = connection.target().describe();
+        match connection.close() {
+            Ok(()) => tracing::info!(event = "db.share.released", share = %share),
+            Err(e) => {
+                tracing::error!(event = "db.share.detach.failed", share = %share, reason = %e);
+                // Loud, not swallowed: the operator has to know the share is still
+                // attached, because what they do next may depend on it.
+                self.status = format!("WARNING: {share} is still connected — {e}");
             }
         }
     }
@@ -621,10 +886,15 @@ impl YkDistApp {
     /// taking a lock over all leave a database behind, and on a sync folder the
     /// lock has to come off deliberately — after the upload — rather than whenever
     /// the value happens to be dropped.
+    ///
+    /// An SMB share this session connected goes with it, in that order: both audit
+    /// entries are written while there is still a database to write them to, then
+    /// the connection closes, then the share is disconnected. Disconnecting first
+    /// would pull the file out from under the close.
     fn release_current_database(&mut self) -> Option<crate::store::Settled> {
-        // The audit entry has to be written while the connection is still open,
-        // and it is the entry that records the lock being given up: the release
-        // itself happens with no database left to write to.
+        // The audit entries have to be written while the connection is still open,
+        // and they are the entries that record the lock and the share being given
+        // up: both releases happen with no database left to write to.
         let held = self
             .store
             .as_ref()
@@ -635,10 +905,20 @@ impl YkDistApp {
                     lease.holder()
                 )
             });
+        let share = self
+            .share
+            .as_ref()
+            .filter(|share| share.is_ours())
+            .map(|share| share.describe());
         if self.store.is_some() {
+            if let Some(share) = share {
+                self.record("db.share.disconnected", "database", &share);
+            }
             self.record("db.closed", "database", held.as_deref().unwrap_or(""));
         }
-        self.store.take().and_then(|store| store.close())
+        let settled = self.store.take().and_then(|store| store.close());
+        self.release_current_share();
+        settled
     }
 
     /// Adopt a freshly opened store as the current one.
@@ -1439,6 +1719,8 @@ impl YkDistApp {
         self.term_panel.open = true;
         self.term_panel.distribution = Some(distribution_id);
         self.term_panel.rendered = None;
+        self.term_panel.pdf = None;
+        self.term_panel.pdf_note = None;
         self.term_panel.language_used = None;
         self.term_panel.template_used = None;
         self.term_panel.error = None;
@@ -1494,7 +1776,11 @@ impl YkDistApp {
         );
 
         let language = self.term_panel.language.clone();
-        let Some(template) = choose_template(&self.term_templates, "consignment", &language) else {
+        // Owned, so that producing the PDF and writing the audit entry below do
+        // not fight over the borrow of `self.term_templates`.
+        let Some(template) =
+            choose_template(&self.term_templates, "consignment", &language).cloned()
+        else {
             self.term_panel.error = Some(format!("no consignment term template for `{language}`"));
             return;
         };
@@ -1507,12 +1793,14 @@ impl YkDistApp {
             template.id, template.version, template.language
         ));
 
-        match render_term(template, &ctx) {
+        match render_term(&template, &ctx) {
             Ok(text) => {
                 let details = format!(
                     "holder={} language={} template={}@{}",
                     holder.email, template.language, template.id, template.version
                 );
+                self.term_panel.pdf_note = Self::pdf_note(&text);
+                self.term_panel.pdf = self.term_pdf(&template, &ctx);
                 self.term_panel.rendered = Some(text);
                 self.record(
                     "term.generated",
@@ -1522,6 +1810,41 @@ impl YkDistApp {
             }
             Err(e) => self.term_panel.error = Some(e.to_string()),
         }
+    }
+
+    /// The term as a PDF, or `None` with the reason in the status bar.
+    ///
+    /// A failure here is not fatal: the text output is still on screen and still
+    /// saveable, so the operator is told and the hand-over continues.
+    fn term_pdf(
+        &mut self,
+        template: &crate::term::TermTemplate,
+        ctx: &crate::term::TermContext,
+    ) -> Option<Vec<u8>> {
+        let created = crate::pdf::pdf_date(&chrono::Local::now());
+        match crate::term::render_term_pdf(template, ctx, &created) {
+            Ok(bytes) => Some(bytes),
+            Err(e) => {
+                tracing::warn!(event = "term.pdf.refused", reason = %e);
+                self.status = format!("the PDF could not be produced: {e} — save as text instead");
+                None
+            }
+        }
+    }
+
+    /// Warn about characters the PDF font cannot set, before anybody prints a
+    /// document full of question marks.
+    fn pdf_note(text: &str) -> Option<String> {
+        let missing = crate::pdf::unrepresentable(text);
+        if missing.is_empty() {
+            return None;
+        }
+        let shown: String = missing.iter().take(8).collect();
+        Some(format!(
+            "the PDF font cannot set {} character(s) of this term ({shown}) — they print as `?`. \
+             The text output carries them correctly.",
+            missing.len()
+        ))
     }
 
     // ------------------------------------------------- editing a term template
@@ -1641,6 +1964,55 @@ impl YkDistApp {
         }
     }
 
+    /// Export the draft as a PDF against the sample data.
+    ///
+    /// This is how the wording reaches the people who own it: the term's text is
+    /// institutional, and it needs its owner's review and the DPO's sign-off on
+    /// the data-protection paragraph (`features/consignment-terms.md`). Sending
+    /// them the document as it will be printed is more use than sending them a
+    /// template with `{{variables}}` in it.
+    ///
+    /// Nothing is stored and no hand-over is involved: the values are
+    /// [`crate::term::TermContext::sample`]'s fictitious ones, and the footer
+    /// says `@draft`.
+    pub fn save_term_preview_pdf(&mut self) {
+        use crate::term::{TermContext, render_term, render_term_pdf};
+
+        self.term_editor.error = None;
+        self.term_editor.notice = None;
+        let draft = self.term_editor.draft();
+        if let Err(e) = draft.check() {
+            self.term_editor.error = Some(e.to_string());
+            return;
+        }
+
+        let sample = TermContext::sample();
+        let created = crate::pdf::pdf_date(&chrono::Local::now());
+        let bytes = match render_term_pdf(&draft, &sample, &created) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                self.term_editor.error = Some(e.to_string());
+                return;
+            }
+        };
+        if let Ok(text) = render_term(&draft, &sample) {
+            self.term_editor.error = Self::pdf_note(&text);
+        }
+
+        let suggested = format!(
+            "{}-{}-sample.pdf",
+            draft.id.trim(),
+            draft.language.trim().replace('/', "-")
+        );
+        if let Some(path) = self.save_bytes(&suggested, &bytes) {
+            self.status = format!("sample term written to {}", path.display());
+            self.term_editor.notice = Some(format!(
+                "written to {} — sample data, nothing recorded and nothing stored",
+                path.display()
+            ));
+        }
+    }
+
     /// Store the draft as a **new version** of the term.
     ///
     /// The version already on record is left untouched, because it may be the one
@@ -1688,22 +2060,45 @@ impl YkDistApp {
         }
     }
 
-    /// Write the rendered term to a file the operator chooses.
+    /// Write the rendered term to a file the operator chooses, as plain text.
     pub fn save_term(&mut self) {
         let Some(text) = self.term_panel.rendered.clone() else {
             return;
         };
+        self.write_term("text", "txt", text.as_bytes());
+    }
+
+    /// Write the term as the PDF that gets printed, signed and filed.
+    pub fn save_term_pdf(&mut self) {
+        let Some(bytes) = self.term_panel.pdf.clone() else {
+            self.status = "generate the term before exporting it as a PDF".into();
+            return;
+        };
+        self.write_term("pdf", "pdf", &bytes);
+    }
+
+    /// Save one rendering of the term, and audit which format left the tool.
+    ///
+    /// The format is in the audit detail because the two outputs are filed
+    /// differently — a signed PDF comes back as a scan, a text copy goes into a
+    /// ticket — so "a term was written" is not enough to reconstruct what
+    /// happened.
+    fn write_term(&mut self, format: &str, extension: &str, bytes: &[u8]) {
         let serial = self
             .term_panel
             .distribution
             .and_then(|id| self.distributions.iter().find(|d| d.id == id))
             .map(|d| d.key_serial)
             .unwrap_or_default();
-        let suggested = format!("termo-{serial}.txt");
+        let suggested = format!("termo-{serial}.{extension}");
 
-        if let Some(path) = self.save_bytes(&suggested, text.as_bytes()) {
+        if let Some(path) = self.save_bytes(&suggested, bytes) {
             let display = path.display().to_string();
-            self.record("term.saved", &format!("serial:{serial}"), &display);
+            self.record(
+                "term.saved",
+                &format!("serial:{serial}"),
+                &format!("format={format} path={display}"),
+            );
             self.status = format!("term written to {display}");
         }
     }

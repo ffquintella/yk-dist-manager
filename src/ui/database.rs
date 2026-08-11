@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use elegance::{Accent, Button, CalloutTone, Theme};
 
 use crate::app::{DbRequest, YkDistApp};
+use crate::domain::MAX_TEXT;
 
 /// The chooser is a single column on a wide window; anything wider than this
 /// and the eye has to travel between the label and its field.
@@ -54,6 +55,8 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
                     locked(app, ui);
                     recent(app, ui);
                     chooser(app, ui);
+                    ui.add_space(14.0);
+                    share(app, ui);
                     ui.add_space(14.0);
                     build_notes(ui);
                 });
@@ -282,6 +285,184 @@ fn chooser(app: &mut YkDistApp, ui: &mut egui::Ui) {
              file is refused.",
         );
     });
+}
+
+/// The SMB share card: reach the unit's file server from here.
+///
+/// A card of its own rather than a second meaning for the path field, because the
+/// three things it needs — a share, an identity, and a password that is typed and
+/// dropped — have nothing to do with opening a local file, and because the identity
+/// is a choice with consequences an operator should see while making it.
+fn share(app: &mut YkDistApp, ui: &mut egui::Ui) {
+    use crate::store::smb::Access;
+
+    let mut request: Option<DbRequest> = None;
+
+    super::titled_card(ui, "Open from a network share (SMB)", |ui| {
+        if let Some(error) = app.share_form.error.clone() {
+            super::error_label(ui, &error);
+            ui.add_space(10.0);
+        }
+
+        remembered_shares(app, ui, &mut request);
+
+        super::capped_input(
+            ui,
+            &mut app.share_form.location,
+            crate::store::smb::MAX_LOCATION,
+            |input| {
+                input
+                    .label("Share and database")
+                    .hint(r"smb://fileserver/ti-share/yubikeys/keys.sqlite3")
+                    .id_salt("share-location")
+            },
+        );
+        super::hint(
+            ui,
+            "Also accepted: \\\\fileserver\\ti-share\\yubikeys\\keys.sqlite3 and \
+             //fileserver/ti-share/… — whichever your platform gave you. The file inside the \
+             share has to be named; a share on its own is not a register.",
+        );
+
+        ui.add_space(12.0);
+
+        // Radios rather than a dropdown: each option needs a sentence, and the
+        // consequence of picking the wrong one is a register opened as an identity
+        // nobody reviewed.
+        ui.label("Identity");
+        ui.add_space(4.0);
+        for option in Access::ALL {
+            let label = match option {
+                Access::LoggedOnUser => "The account I am signed in with",
+                Access::Anonymous => "Guest (no user name, no password)",
+                Access::Named => "A named account",
+            };
+            ui.radio_value(&mut app.share_form.access, option, label);
+        }
+        super::hint(
+            ui,
+            if cfg!(windows) {
+                "On Windows the signed-in account is the whole mechanism: the share is opened \
+                 with this session's own credentials, exactly as Explorer does, and no password \
+                 is sent or stored. Choose a named account only when the share needs a different \
+                 one."
+            } else {
+                "\"The account I am signed in with\" uses the credentials macOS already holds \
+                 for that server (its Keychain entry). Choose a named account when the share \
+                 needs a different one."
+            },
+        );
+
+        if app.share_form.access == Access::Named {
+            ui.add_space(10.0);
+            super::form_columns(ui, |left, right, _width| {
+                super::capped_input(left, &mut app.share_form.user, MAX_TEXT, |input| {
+                    input
+                        .label("User")
+                        .hint(r"DOMAIN\user, or just user")
+                        .id_salt("share-user")
+                });
+                super::capped_input(right, &mut app.share_form.password, MAX_TEXT, |input| {
+                    input
+                        .label("Password")
+                        .hint("typed every time; never stored")
+                        .password(true)
+                        .id_salt("share-password")
+                });
+            });
+            super::hint(
+                ui,
+                "The password is used for this connection and then dropped. It is never written \
+                 to the settings file, the database, a log or the audit trail — the share and the \
+                 user name are remembered, so only the password has to be retyped.",
+            );
+        }
+
+        ui.add_space(14.0);
+
+        let has_location = !app.share_form.location.trim().is_empty();
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .add(Button::new("Connect and open").enabled(has_location))
+                .on_hover_text("reach the share, then open the database on it; it must exist")
+                .clicked()
+            {
+                request = Some(DbRequest::ConnectShare { create: false });
+            }
+            if ui
+                .add(
+                    Button::new("Connect and create")
+                        .accent(Accent::Green)
+                        .enabled(has_location),
+                )
+                .on_hover_text(
+                    "reach the share, then create a database on it; refuses if a file \
+                                is already there",
+                )
+                .clicked()
+            {
+                request = Some(DbRequest::ConnectShare { create: true });
+            }
+        });
+
+        if !crate::store::smb::can_connect() {
+            ui.add_space(12.0);
+            super::notice(
+                ui,
+                CalloutTone::Neutral,
+                "On this platform an unprivileged process cannot mount a CIFS share, so the \
+                 share has to be mounted by the system — from /etc/fstab with mount.cifs, or by \
+                 an autofs map. A share that is already mounted is found automatically and \
+                 works normally; the path field above also accepts its mount point directly.",
+            );
+        }
+    });
+
+    if let Some(request) = request {
+        app.db_request = Some(request);
+    }
+}
+
+/// Shares this workstation has used before — the share and the identity, never a
+/// password.
+fn remembered_shares(app: &mut YkDistApp, ui: &mut egui::Ui, request: &mut Option<DbRequest>) {
+    if app.settings.recent_shares.is_empty() {
+        return;
+    }
+    let entries = app.settings.recent_shares.clone();
+
+    egui::Grid::new("recent-shares")
+        .num_columns(3)
+        .spacing([12.0, 8.0])
+        .show(ui, |ui| {
+            for entry in &entries {
+                super::mono(ui, &entry.location);
+                super::faint(
+                    ui,
+                    &if entry.user.is_empty() {
+                        entry.access.label().to_owned()
+                    } else {
+                        entry.user.clone()
+                    },
+                );
+                ui.horizontal(|ui| {
+                    if super::row_button(ui, "use")
+                        .on_hover_text("fill the fields below; the password is never remembered")
+                        .clicked()
+                    {
+                        *request = Some(DbRequest::UseShare(entry.location.clone()));
+                    }
+                    if super::row_button(ui, "forget")
+                        .on_hover_text("remove from this list; the share is not touched")
+                        .clicked()
+                    {
+                        *request = Some(DbRequest::ForgetShare(entry.location.clone()));
+                    }
+                });
+                ui.end_row();
+            }
+        });
+    ui.add_space(12.0);
 }
 
 /// What this particular build can and cannot do.

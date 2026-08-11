@@ -142,6 +142,16 @@ pub struct Report {
     pub database_lock: Option<String>,
     /// Copies a sync client could not merge, sitting next to the database.
     pub database_conflicts: Vec<String>,
+    /// How this build reaches an SMB share, and whether it can connect one itself.
+    ///
+    /// The first question about a register on a file server that will not open is
+    /// which of the two situations the workstation is in: this build connects the
+    /// share, or the share has to be there already.
+    pub smb_connector: String,
+    pub smb_can_connect: bool,
+    /// SMB shares this workstation has opened the register from, and as whom.
+    /// Never a password — there is none stored to report.
+    pub smb_shares: Vec<String>,
     pub settings: String,
     pub ykman: Option<String>,
     pub cameras: Vec<String>,
@@ -151,8 +161,8 @@ impl Report {
     /// Gather everything, touching nothing that could fail loudly.
     pub fn gather() -> Self {
         let database = crate::store::Store::default_path();
-        let remembered = crate::settings::AppSettings::load().last_database;
-        let effective = remembered.unwrap_or(database);
+        let settings = crate::settings::AppSettings::load();
+        let effective = settings.last_database.clone().unwrap_or(database);
 
         Self {
             version: crate::VERSION,
@@ -177,6 +187,22 @@ impl Report {
                 .map(|path| path.display().to_string())
                 .collect(),
             database: effective.display().to_string(),
+            smb_connector: crate::store::smb::platform_connector().label().to_owned(),
+            smb_can_connect: crate::store::smb::can_connect(),
+            // Read from the settings file, not probed: `--diagnose` must not open a
+            // connection to a file server, and there is no password here to leak
+            // because none was ever stored.
+            smb_shares: settings
+                .recent_shares
+                .iter()
+                .map(|entry| {
+                    if entry.user.is_empty() {
+                        format!("{} as {}", entry.location, entry.access.label())
+                    } else {
+                        format!("{} as {}", entry.location, entry.user)
+                    }
+                })
+                .collect(),
             settings: crate::settings::AppSettings::path().display().to_string(),
             ykman: which_ykman(),
             cameras: list_cameras(),
@@ -247,6 +273,19 @@ impl Report {
                 self.database_conflicts.len(),
                 self.database_conflicts.join(", ")
             );
+        }
+        let _ = writeln!(
+            out,
+            "smb shares:        {} ({})",
+            self.smb_connector,
+            if self.smb_can_connect {
+                "this build can connect a share itself"
+            } else {
+                "the share must be mounted by the system on this platform"
+            }
+        );
+        for share in &self.smb_shares {
+            let _ = writeln!(out, "                   {share}");
         }
         let _ = writeln!(out, "settings:          {}", self.settings);
         let _ = writeln!(
@@ -338,6 +377,9 @@ mod tests {
             database_on_cloud_sync: false,
             database_lock: None,
             database_conflicts: Vec::new(),
+            smb_connector: "NetFS (macOS)".into(),
+            smb_can_connect: true,
+            smb_shares: Vec::new(),
             settings: "/tmp/settings.json".into(),
             ykman: Some("/opt/homebrew/bin/ykman".into()),
             cameras: vec!["0: FaceTime HD Camera".into()],
@@ -483,6 +525,27 @@ mod tests {
             text.contains("may have forked"),
             "the report must say what the copies mean"
         );
+    }
+
+    #[test]
+    fn the_report_says_how_this_build_reaches_a_share() {
+        // The first question about a register on a file server that will not open:
+        // does this build connect the share, or must the system have mounted it?
+        let mut connected = report();
+        connected.smb_shares = vec![r"//fileserver/ti-share/keys.sqlite3 as FGV\felipe".into()];
+        let text = connected.render();
+        assert!(text.contains("NetFS (macOS)"), "{text}");
+        assert!(text.contains("can connect a share itself"), "{text}");
+        assert!(
+            text.contains("//fileserver/ti-share/keys.sqlite3"),
+            "{text}"
+        );
+        assert!(text.contains(r"FGV\felipe"), "{text}");
+
+        let mut limited = report();
+        limited.smb_connector = "system mounts only".into();
+        limited.smb_can_connect = false;
+        assert!(limited.render().contains("must be mounted by the system"));
     }
 
     #[test]
