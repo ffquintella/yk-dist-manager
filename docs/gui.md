@@ -77,6 +77,14 @@ the operator closing one to switch. It carries:
 Open and Create never guess: opening a path that does not exist is an error, and
 creating over an existing file is refused.
 
+A database in a cloud-sync folder that another workstation has open produces an **In use
+by another workstation** card instead of a bare error: the path, who holds it (operator,
+computer, since when), and one action. While that session is alive the action is *Try
+again*; once its lock has gone unrefreshed for fifteen minutes it becomes *Take the lock
+over*, in the red accent, with the warning that a live session mid-hand-over is exactly
+what must not be interrupted. A lock held by this computer says so, because the usual
+cause is a second window of this application.
+
 ### Inventory
 
 The keys the unit owns. "Read attached key" identifies the key in the reader and inserts or
@@ -216,6 +224,13 @@ Operator and organisation (persisted between sessions); the database path, locki
 whether it is password-protected; the device transport; the recent databases; and the
 actions — *Switch database…*, *Open another…*, *Create new…*, integrity check, backup,
 reload. Also the version string, so a screenshot identifies the build.
+
+For a database in a cloud-sync folder there is one more row — the **single-writer lock**:
+held by this workstation, by whom since when, and the path of the lock file. The warning
+that used to be a flat refusal now says what the lock does *and* what it does not cover,
+because "locked" must not read as "solved"; if the lock was declined it goes back to being
+an error. A sync conflict copy next to the database is reported here as an error too: the
+register may have forked, and no other screen would say so.
 
 ## Theme
 

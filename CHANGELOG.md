@@ -19,6 +19,52 @@ Maintenance instructions (see AGENTS.md §5):
 
 ### Added
 
+- **The database can live in a OneDrive folder, and two operators can share it —
+  one at a time.** A synchronising folder is the worst place for a SQLite file, and it
+  is where a real installation keeps the register, because it is the shared folder that
+  unit has. Detecting it and warning (v0.4.0) managed nothing. So such a path is now its
+  own location, `Location::CloudSync`, with a cooperative **single-writer lock**
+  ([`features/cloud-sync-hosting.md`](features/cloud-sync-hosting.md)):
+  - opening **waits for the sync client** to stop changing the file, so the connection
+    is never opened on a half-downloaded database (bounded, reported, and tunable with
+    `$YKDM_SYNC_QUIET_MS` / `$YKDM_SYNC_TIMEOUT_MS`);
+  - a **`<database>.lock`** file next to the database records who has it — operator,
+    workstation, pid, run, and when it was taken and last refreshed. A second
+    workstation is **refused by name** rather than allowed to write to a copy the sync
+    client will resolve by keeping both;
+  - the lock is refreshed every minute while the session lives, and a session that
+    finds the lock taken from it **closes the database** instead of writing;
+  - closing releases in the right order: audit entry, connection closed, **wait for the
+    upload**, then remove the lock — so the next workstation cannot start from a file
+    still on its way;
+  - the pragmas are the network share's (rollback journal, `synchronous=FULL`), because
+    WAL's `-wal`/`-shm` sidecars cannot survive a sync client.
+- **A sync conflict is reported instead of going unnoticed.** Copies a client left
+  because it could not merge (`keys (1).sqlite3`, `…conflicted copy…`) are found next to
+  the database and surfaced in the status line, in Settings, in `--diagnose` and in the
+  audit trail (`db.sync.conflict_copies`) — the register may have forked, which is the
+  failure this location is dangerous for. Our own backups and lock file are not mistaken
+  for them.
+- **Taking over an abandoned lock**, deliberately. A lock unrefreshed for fifteen
+  minutes is *still* refused: only the operator can know the other machine is switched
+  off rather than mid-hand-over. The chooser then offers *Take the lock over*, names who
+  was holding it, and records the break in the audit trail (`db.lock.taken_over`).
+- `--diagnose` gains a **`database lock:`** line, read without ever taking a lock of its
+  own, plus the conflict-copy alarm. Settings shows the lock, the holder and the lock
+  file; the status bar says `db: cloud-sync (locked)`.
+
+### Changed
+
+- **Closing a database is now a protocol, not a drop.** Every path that stops using one
+  — the Close button, switching database, creating another — writes its audit entry
+  while the connection is still open, then closes the connection and releases the lock.
+  `Store::close` returns what the wait for the sync client achieved.
+- A lock is identified by the **run** that took it, not by host and pid: pids are reused,
+  so a lock left behind by a dead session could otherwise have been silently adopted by
+  a later one — the exact two-writer case the lock exists to prevent.
+
+### Added
+
 - **An application icon.** A box truck whose cargo panel is a YubiKey — keyring
   slot, gold touch contact, USB contacts — drawn once in
   [`assets/logo.svg`](assets/logo.svg) and rendered by `make icons` into the window

@@ -30,14 +30,29 @@ deployment.
 | State | Count |
 |---|---|
 | Done | 9 |
-| In progress | 10 |
+| In progress | 11 |
 | Todo | 20 |
-| **Total tracked items** | **39** (across 36 specs — two items share a spec) |
+| **Total tracked items** | **40** (across 37 specs — two items share a spec) |
 
 Released: **v0.5.0**. Current wave: **Wave 1 — native execution.**
 
 **Out of turn, unreleased** (AGENTS.md §1 asks for the reason, in this file, in the
-same commit): the **Templates screen** — phase 2 of
+same commit): **hosting the database in a OneDrive folder** —
+[`features/cloud-sync-hosting.md`](features/cloud-sync-hosting.md) — was built at the
+request of the operator who will run the tool. It belongs to Wave 0's storage work, not
+to Wave 1. The reason it could not wait: a `--diagnose` report from a real installation
+showed the register already living in `~/Library/CloudStorage/OneDrive-…/`, because that
+is the shared folder the unit has. v0.4.0 answered that with detection, conservative
+pragmas and a warning — which manages nothing, since the operator has nowhere else to
+put it. So the risk is now managed: `Location::CloudSync` waits for the sync client,
+takes a `<database>.lock` next to the file, refuses a second workstation **by name**,
+releases only after the upload, and reports the copies a sync client leaves when it
+could not merge. Two operators sharing that folder now collide with a refusal instead of
+with two divergent registers of who holds which security token. No schema change. It is
+not an endorsement of the location — see the ESI gate in the spec and in
+[Open questions](#open-questions).
+
+Also out of turn, unreleased: the **Templates screen** — phase 2 of
 [`features/bootstrap-templates.md`](features/bootstrap-templates.md), plus add /
 duplicate / retire / remove — was built at the request of the operator who will run
 the tool. It belongs to Wave 0, which is not finished, rather than to Wave 1, and it
@@ -77,7 +92,7 @@ of the job: choosing or creating the database file, recording serials from a bar
 generating the consignment term in the holder's language, and filing the signed copy
 against the hand-over — and, from the Terms screen, editing that term's wording per
 language. The Templates screen now does the same for the bootstrap procedure itself.
-329 tests pass (plus 2 read-only hardware tests), with 87.43% line coverage of the
+333 tests pass (plus 2 read-only hardware tests), with 87.79% line coverage of the
 headless core.
 
 Camera scanning is a default feature, and on macOS it needs the bundled application:
@@ -107,6 +122,7 @@ Everything needed before a single byte is written to a key.
 | `[x]` | `ykman` fallback + parsers | [spec](features/ykman-fallback.md) — argv-only subprocess, typed errors, parsers unit-tested against recorded output of ykman 5.9.2. |
 | `[/]` | Device detection | [spec](features/device-detection.md) — read-on-demand works; hot-plug polling and multi-key selection pending. |
 | `[/]` | Single-file SQLite storage | [spec](features/storage-sqlite-single-file.md) — schema **v4**, `user_version` migrations (v1→v4 tested), WAL locally / rollback journal on a share, `VACUUM INTO` backup, `integrity_check`. |
+| `[/]` | Cloud-sync hosting (OneDrive) | [spec](features/cloud-sync-hosting.md) — `Location::CloudSync`: waits for the sync client, takes `<database>.lock`, refuses a second workstation by name, releases after the upload, reports sync conflict copies. Automatic backup before the first write, and a read-only second viewer, are Todo. Whether the location is *acceptable* is an ESI decision, not this feature's. |
 | `[x]` | Choosing / creating the database file | [spec](features/database-selection.md) — strict `open_existing` vs `create_new` (a typo can no longer create an empty database), recent-database list, native dialogs, switch from Settings. |
 | `[ ]` | Optional database password | [spec](features/db-password-and-encryption.md) — `encrypted-db` feature wires `PRAGMA key`; unlock screen exists. KDF parameters, password change and re-key are Todo. |
 | `[x]` | Logging | [spec](features/logging.md) — one entry point, three levels, G-002 line format, no hand-built log lines. |
@@ -212,6 +228,15 @@ Decisions that change what gets built, and are not the implementer's to make.
    default taken is generate-and-discard: the slot is deliberately frozen, and
    reprogramming it later requires an OTP applet reset. Confirm, or switch the
    template to put the code in the envelope.
+8. **May the register live in a cloud-sync folder at all?** One installation already
+   keeps it in OneDrive, and the tool now makes that *survivable* — one workstation
+   at a time, by lock file
+   ([`features/cloud-sync-hosting.md`](features/cloud-sync-hosting.md)). Survivable is
+   not approved: the file holds personal data and the record of who carries which
+   security token, and the folder's sharing settings become its access control. Whether
+   a third-party sync client may hold it, and under what sharing rules, is **ESI**'s
+   call. It is also the strongest argument yet for finishing the database password
+   (`features/db-password-and-encryption.md`).
 
 ### Answered
 
@@ -255,3 +280,5 @@ Decisions that change what gets built, and are not the implementer's to make.
 | 2026-08-11 | A template is **retired** rather than deleted once anything refers to it — and a built-in can only ever be retired | Three facts collide: a register must be correctable, a run's procedure must stay explainable, and the application re-seeds its built-ins on every open. So removal is kept for the case it is honest in (a procedure typed by mistake, nothing referring to it), and everything else is retirement: withdrawn from the wizard, kept in the database, and *not* undone by the next launch. Deleting a built-in would only have looked like it worked, which is worse than a refusal that names the operation that lasts |
 | 2026-08-11 | A draft template must **plan** before it can be stored | `check()` runs a real `plan()` against a fictitious holder and key, including the steps that arrive disabled. An unknown `{{variable}}` or a missing `slot` is a refusal at the desk, by the person who typed it, instead of a failure in front of a key with a holder waiting — and because the store applies the same gate, nothing in the database can fail to plan. The cost is that the sample context has to be able to supply every documented variable, which a test asserts |
 | 2026-08-10 | The layout is fluid — the page decides width, and a wide table scrolls inside its own card | A card is an `egui::Frame`, so it was as wide as whatever was inside it: the Inventory table filled the window while the Holders form stopped at two 340px columns, and no two screens lined up. Making the *page* horizontally scrollable would have been the other fix, but then every card on a screen becomes as wide as the widest table on it — so the overflow is contained in `ui::table` and the body scrolls vertically only |
+| 2026-08-11 | A database in a cloud-sync folder is opened **one workstation at a time**, enforced by a lock file next to it | Warning about the location changed nothing, because the unit that hit it has nowhere else to put the register. A sync client offers no lock manager and no supported "have you finished?" API, so sequencing has to happen outside the database: wait until the file stops changing, take `<database>.lock`, refuse the second workstation *by name*, and remove the lock only after the upload — releasing it earlier would invite the next operator to start from a file still on its way. The lock is cooperative and says so: it binds workstations running this tool, not a machine that ignores it, which is why sync conflict copies are also detected and reported |
+| 2026-08-11 | A lock is held by a **run**, not by a host and pid, and an abandoned one is broken only by an explicit operator action | Pids are reused, so "same host, same pid" would let a lock left by a dead run be silently adopted — the exact two-writer case the lock prevents. A per-run id makes the question exact. And staleness is deliberately 15 minutes with no automatic break: a sleeping laptop stops renewing without releasing, so only the operator can know the other machine is off rather than mid-hand-over. Taking the lock over names the previous holder in the audit trail |

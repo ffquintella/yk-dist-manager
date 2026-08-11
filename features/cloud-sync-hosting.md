@@ -73,7 +73,12 @@ network share is still the recommendation, and a scheduled backup is still requi
 6. **Release after the upload.** On close: audit entry (while the connection is still
    open) → close the connection → wait for the file to settle → delete the lock. The
    order is deliberate: removing the lock before the upload finished would invite the
-   next workstation to start from a file still on its way.
+   next workstation to start from a file still on its way. *Every* path that stops
+   using a database does this — the Close button, switching database, creating
+   another, and **quitting the application** (`Drop for YkDistApp`), which is what
+   operators actually do. `Drop for SyncLease` is only a backstop: it removes the lock
+   without waiting, because a panic cannot wait for a sync client. A `SIGKILL` or a
+   power cut leaves the lock behind, and that is what staleness is for.
 
 ### Identity is per run, not per pid
 
@@ -153,6 +158,14 @@ to write to. It is logged (`db.open.failed`, `db.lock.acquired`, `db.lock.lost`,
 - through `Store`: opening takes the lock and closing releases it; a held database
   refuses a second open; a local database takes no lock file; the lock can be declined
   and the status line says so.
+
+`tests/behaviour_app_cloud_lock.rs` (1 scenario, the only test that drives
+`YkDistApp` — it owns its binary's environment): starting on a sync-hosted path takes
+the lock; closing releases it and audits "releasing the single-writer lock held by …";
+another workstation's abandoned lock becomes a refusal carrying the holder and the
+`stale` flag rather than a message; taking it over opens the register and writes
+`db.lock.taken_over` naming the previous holder; and **quitting** the application
+releases the lock as well as closing it does.
 
 `tests/behaviour_storage.rs`:
 

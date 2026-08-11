@@ -1044,6 +1044,11 @@ impl YkDistApp {
     /// through [`Self::open_database`] or [`Self::create_database`], which refuse
     /// to create-by-accident or open-by-accident.
     pub fn try_open(&mut self, password: Option<String>) {
+        // Nothing is open on the paths that reach here — first launch, and the
+        // unlock screen after a refused password — but the release is what makes
+        // that true rather than assumed: opening while a lock of ours is still
+        // held would be refused by our own lock file.
+        self.release_current_database();
         let config = self.config.clone().with_password(password);
         match Store::open(&config) {
             Ok(store) => {
@@ -2146,6 +2151,30 @@ fn unsaved_template_message(id: &str, action: &str) -> String {
 
 fn existing_is_new(store: &Store, serial: u32) -> bool {
     !matches!(store.key_by_serial(serial), Ok(Some(_)))
+}
+
+/// Quitting the application closes the database properly.
+///
+/// Most operators will never press *Switch database…* — they will close the window,
+/// and on a cloud-hosted register that has to run the same protocol as the button:
+/// audit the close, close the connection, let the sync client finish the upload, and
+/// only then remove the lock. Dropping the [`Store`] alone would release the lock
+/// without waiting, which invites the next workstation to open a file still on its
+/// way up.
+///
+/// This is not a guarantee — a `SIGKILL`, a power cut or a panic during teardown
+/// leaves the lock behind. That case is what the fifteen-minute staleness and the
+/// deliberate take-over exist for.
+impl Drop for YkDistApp {
+    fn drop(&mut self) {
+        if let Some(settled) = self.release_current_database() {
+            tracing::info!(
+                event = "db.closed",
+                detail = settled.describe(),
+                reason = "application exit"
+            );
+        }
+    }
 }
 
 impl eframe::App for YkDistApp {

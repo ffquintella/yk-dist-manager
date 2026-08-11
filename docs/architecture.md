@@ -47,6 +47,7 @@
 | `template` | Templates, variable rendering, the editable draft, and turning a template into a plan | Execute anything, hold a secret value |
 | `versioning` | One answer to "what number does the next edit get?", shared by templates and terms | Know what is being versioned |
 | `store` | The SQLite file: schema, migrations, pragmas, CRUD, audit insertion | Contain business rules that belong in `domain` |
+| `store::cloud` | Making a database in a sync folder (OneDrive, Dropbox, …) strictly sequential: the settle wait, the `<database>.lock` single-writer lock, conflict-copy detection | Pretend to be a distributed lock, or hold anything secret |
 | `audit` | The chain: entry shape, hashing, verification, the file sink | Depend on `store` (so `store` can use it, not the reverse) |
 | `logging` | The one logging entry point | Be bypassed by a hand-formatted line |
 | `branding` | The embedded application icon, and refusing a malformed one | Depend on an optional feature — the icon exists in every build |

@@ -102,6 +102,7 @@ is not a fix.
 | **Identification number** | Named on the consignment term (CPF or the local equivalent) | `holders` (optional) |
 | **Phone**, **address** | Contacting a holder; posting a key | `holders` (optional) |
 | Operator name | Accountability for a hand-over and every audit entry | `distributions`, `bootstrap_runs`, `audit` |
+| Operator name + workstation name | Who currently has a cloud-hosted database open, so a second operator is refused by name rather than allowed to fork the register | `<database>.lock` (a file, not a table — see [`../features/cloud-sync-hosting.md`](../features/cloud-sync-hosting.md)) |
 | **Signed term (document)** | The evidence that a key was signed for | `documents.content` |
 
 Two additions in v0.2.x raise what a copy of this database is worth, and both are
@@ -112,6 +113,13 @@ stated rather than glossed over:
 2. A **signed term** is a scanned document carrying a name, an identification number
    and a handwritten signature, stored inside the database (the reasoning is in
    `../features/signed-term-documents.md`).
+
+The **lock file** a cloud-hosted database needs is the one place personal data is written
+outside the database: an operator name, a workstation name and a pid, all of which the
+audit trail already records, and no more. It is deleted when the database is closed. It
+holds **no secret** — no password, no PIN, no access code — like every other file this
+tool writes. A database in a sync folder is itself an argument for the password: the file
+sits in somebody else's storage, and its sharing settings become its access control.
 
 Both are direct arguments for turning the database password on
 (`../features/db-password-and-encryption.md`). A unit filing signed terms in an
@@ -245,7 +253,12 @@ everything that does not depend on it, and say plainly what is pending. That is 
    SSDF, DevSecOps). The copy available when this was written was IRM-protected and could not
    be read. **Ask the ESI for the current text before homologation**; where it conflicts with
    this document, the official document prevails.
-6. **Enforcement of the PIN change is sometimes procedural** — `forcePINChange` needs
+6. **A database in a cloud-sync folder** is serialised by a cooperative lock file, not by
+   a lock manager: it binds workstations running this tool, and cannot bind one that does
+   not. Sync conflict copies are detected and reported rather than prevented. Whether the
+   register may live in third-party sync storage at all, and under what sharing rules, is
+   an *ESI* decision (`../features/cloud-sync-hosting.md`).
+7. **Enforcement of the PIN change is sometimes procedural** — `forcePINChange` needs
    firmware 5.7+, and PIV has no equivalent at all. Under custody model B those keys rely on
    the hand-over term's instruction. The run records which applied, so the exposure is
    measurable; closing it would mean either a 5.7+ fleet or model A (holder present).

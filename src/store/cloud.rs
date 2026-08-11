@@ -645,7 +645,7 @@ impl SyncLease {
                 detail = settled.describe()
             );
         }
-        remove_lock(&self.lock);
+        remove_our_lock(&self.lock);
         self.released = true;
         tracing::info!(event = "db.lock.released", path = %self.lock.display());
         settled
@@ -658,7 +658,7 @@ impl Drop for SyncLease {
             return;
         }
         // A panic or a hard quit still has to leave the register openable.
-        remove_lock(&self.lock);
+        remove_our_lock(&self.lock);
         tracing::warn!(
             event = "db.lock.released",
             path = %self.lock.display(),
@@ -719,6 +719,28 @@ fn write_lock(lock: &Path, holder: &LeaseHolder, exclusive: bool) -> Result<(), 
             path: lock.to_path_buf(),
             reason: e.to_string(),
         })
+}
+
+/// Remove the lock file **only if it is still this run's**.
+///
+/// Releasing after losing the lock is a real sequence: another workstation took it
+/// over, this session found out at its next renewal and is closing down. Deleting
+/// the file then would delete *their* lock and let a third workstation in — turning
+/// one recoverable clash into the two-writer case the whole protocol exists to
+/// prevent. A lock that has become unreadable is also left alone, for the same
+/// reason: it is not provably ours.
+fn remove_our_lock(lock: &Path) {
+    match read_holder(lock) {
+        Some(holder) if !holder.is_local() => {
+            tracing::warn!(
+                event = "db.lock.not_ours",
+                path = %lock.display(),
+                holder = %holder,
+                detail = "left in place: this lock belongs to another session now"
+            );
+        }
+        _ => remove_lock(lock),
+    }
 }
 
 /// Remove the lock file, logging rather than propagating: the caller is on its
@@ -838,5 +860,62 @@ mod tests {
             env_millis("YKDM_SYNC_QUIET_MS_TEST_ABSENT", Duration::from_secs(7)),
             Duration::from_secs(7)
         );
+        // And the shipped defaults are the ones documented in `--help` and in
+        // docs/operations.md.
+        let default = SyncPolicy::default();
+        assert_eq!(default.quiet, Duration::from_millis(1_500));
+        assert_eq!(default.timeout, Duration::from_secs(15));
+    }
+
+    #[test]
+    fn a_refusal_names_the_person_the_computer_and_how_long_ago() {
+        let holder = LeaseHolder {
+            host: "MAC-RECEPCAO".into(),
+            operator: "ana".into(),
+            pid: 4242,
+            session: Uuid::from_u128(0xA1A1),
+            app_version: "0.5.0".into(),
+            acquired_at: Utc::now() - chrono::Duration::minutes(20),
+            renewed_at: Utc::now() - chrono::Duration::minutes(20),
+        };
+
+        let described = holder.to_string();
+        for expected in ["ana", "MAC-RECEPCAO", "4242", "holding since"] {
+            assert!(described.contains(expected), "{described}");
+        }
+        // Twenty silent minutes is past the lease, and not this run's lock.
+        assert!(holder.is_stale());
+        assert!(!holder.is_local());
+        assert!(!holder.is_same_host() || holder.host == local_host());
+    }
+
+    #[test]
+    fn a_local_holder_is_recognised_as_this_run_and_is_not_stale() {
+        let mine = LeaseHolder::local("felipe");
+        assert!(mine.is_local());
+        assert!(mine.is_same_host());
+        assert!(!mine.is_stale());
+        assert_eq!(mine.app_version, crate::VERSION);
+        assert!(
+            !local_host().is_empty(),
+            "a nameless host makes messages vague"
+        );
+    }
+
+    #[test]
+    fn what_the_wait_achieved_is_reported_in_words() {
+        assert!(Settled::NotThere.describe().contains("no file"));
+        assert!(
+            Settled::Quiet {
+                waited: Duration::from_millis(120)
+            }
+            .describe()
+            .contains("120ms")
+        );
+        let unsettled = Settled::StillChanging {
+            waited: Duration::from_millis(15_000),
+        };
+        assert!(unsettled.is_unsettled());
+        assert!(unsettled.describe().contains("sync client"));
     }
 }

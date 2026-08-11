@@ -73,11 +73,18 @@ and matched no share prefix:
 
 `looks_like_cloud_sync()` recognises OneDrive, Dropbox, Google Drive, iCloud
 (`Mobile Documents`), pCloud and macOS's `CloudStorage` File Provider directory. Such a
-path is classified with the network shares, so at least the journal mode is safe, and
-the operator is warned in the status line, in the Settings screen and in `--diagnose`.
+path is now its own location — `Location::CloudSync` — which takes the share's pragmas
+*and* a **single-writer lock file**, because unlike two workstations on a share, two
+workstations behind a sync client share no lock manager at all.
 
-Safer pragmas reduce the risk; they do not remove it. The recommendation stays a real
-network share, or a local file with a scheduled backup.
+That protocol is specified in [`cloud-sync-hosting.md`](cloud-sync-hosting.md): wait
+until the file has stopped changing, take `<database>.lock`, refuse a second
+workstation by name, release the lock only after the upload, and report the copies a
+sync client leaves when it could not merge. The operator is still warned in the status
+line, in the Settings screen and in `--diagnose`.
+
+Safer pragmas and a cooperative lock reduce the risk; they do not remove it. The
+recommendation stays a real network share, or a local file with a scheduled backup.
 
 ### Schema
 
@@ -121,6 +128,7 @@ Two operators on the same share will collide eventually. Planned policy:
 | 1c | Schema v2 (serial provenance), v3 (optional holder fields, term templates, documents) and v4 (`templates.retired_at`) | Done | the v1→v4 chain is covered by a test that builds a v1 file by hand |
 | 2 | Location-aware pragmas | Done | WAL vs rollback journal, tested |
 | 2b | Cloud-sync detection: safe pragmas plus a visible warning | Done | found by a `--diagnose` report from a real installation |
+| 2c | Cloud-sync hosting: `Location::CloudSync` + single-writer lock | Done | [spec](cloud-sync-hosting.md) — the installation that prompted 2b needed the folder to *work*, not just to be warned about |
 | 3 | Backup (`VACUUM INTO`) + `integrity_check` | Done | Settings screen |
 | 4 | Multi-operator concurrency policy | Todo | busy retry + optimistic `updated_at` |
 | 5 | Per-step run rows instead of a JSON blob | Todo | needed for step-level reporting |
@@ -137,6 +145,9 @@ Two operators on the same share will collide eventually. Planned policy:
 | `db.backup` | Backup written, with the target path |
 | `db.integrity_check` | Result recorded when run |
 | `db.conflict` | Phase 4: an optimistic-concurrency conflict was refused |
+| `db.closed` | The database was closed; names the single-writer lock when one was held |
+| `db.lock.taken_over` | An abandoned cloud-sync lock was broken deliberately |
+| `db.sync.conflict_copies` | A sync client left copies it could not merge next to the file |
 
 ## Tests
 

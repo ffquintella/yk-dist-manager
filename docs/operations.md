@@ -92,17 +92,44 @@ new location, because the heuristic can be wrong.
 **On a share:** two operators can use the file, but they are serialised. If someone else is
 writing, you will see a busy message rather than a corruption.
 
-**Not in a cloud-sync folder.** OneDrive, Dropbox, Google Drive, iCloud and the like are
-the one place *not* to put this file:
+### In a cloud-sync folder (OneDrive, Dropbox, Google Drive, iCloud)
 
-- the sync client copies it while a writer holds it open;
+Not the recommended place, and the place several units actually have. Two things make it
+dangerous:
+
+- the sync client copies the file while a writer holds it open;
 - a conflict is resolved by keeping **both** copies rather than merging — so the failure
   mode is two divergent registers of who holds which key.
 
 The application recognises those paths, opens them with the conservative journal mode
-(never WAL), and warns in the status line, in Settings and in `--diagnose`. That reduces
-the risk; it does not remove it. Move the file to a real network share, or keep it local
-and back it up on a schedule.
+(never WAL), and — because a sync client offers no locking of its own — **serialises
+access with a lock file**. What that means at the desk:
+
+1. Opening the database waits a moment for OneDrive to finish downloading it, then
+   creates `yk-dist-manager.sqlite3.lock` beside it.
+2. While you have it open, **another computer cannot open it**. That operator sees your
+   name, your workstation and when you took it, instead of silently working on a copy.
+3. **Close the database (or the application) when you are done** — Settings → *Switch
+   database…*, or just quit. Closing waits for the upload to finish and then removes the
+   lock. Leaving the application open all afternoon keeps everybody else out.
+4. If a computer crashed or was switched off with the database open, its lock stays
+   behind. After fifteen minutes without a refresh the chooser offers **Take the lock
+   over** — use it only when you know nobody is working in the register, because two
+   people writing is exactly what produces two divergent copies. Who was holding it goes
+   into the audit trail.
+5. Settings and `--diagnose` show the lock state (`database lock:`). If a sync conflict
+   copy appears next to the file (`yk-dist-manager (1).sqlite3`, `…conflicted copy…`),
+   both places report it as an alarm: the register may have forked, and the copies have
+   to be compared before either is trusted.
+
+On a slow link the wait can be tuned: `$YKDM_SYNC_QUIET_MS` (how long the file must be
+unchanged before it counts as downloaded, default 1500) and `$YKDM_SYNC_TIMEOUT_MS` (how
+long to wait before carrying on and saying so, default 15000).
+
+The lock binds workstations running this tool. It cannot bind a machine that ignores it,
+and neither operator can see anything while offline. It removes the common accident, not
+the risk: a real network share, or a local file with a scheduled backup, is still the
+better home for the register.
 
 **With a password:** run a build with `--features encrypted-db`; the app prompts at startup.
 Note that everyone shares the one password — it is confidentiality at rest, not per-operator

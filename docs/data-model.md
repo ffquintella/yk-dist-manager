@@ -249,6 +249,7 @@ Planned: **v5** — per-step rows for `bootstrap_runs` (queryable step outcomes)
 | `bootstrap_runs` | `operator`, `holder_id` | Ordinary personal data (identifier) |
 | `documents` | `content` — a signed term carries a name, an identification number and a **signature** | Personal data in document form |
 | `audit` | `actor`, `target`, `details` may name a person | Ordinary personal data |
+| *(not a table)* `<database>.lock` | `operator`, `host`, `pid` — who currently has a cloud-hosted database open ([`../features/cloud-sync-hosting.md`](../features/cloud-sync-hosting.md)) | Ordinary personal data, deleted when the database is closed |
 
 No credential value is stored in any table. Keeping that true is the point of
 [`../features/secrets-custody.md`](../features/secrets-custody.md).

@@ -202,6 +202,17 @@ fn a_lease_taken_over_by_another_workstation_is_reported_as_lost() {
         Renewal::Lost(holder) => assert_eq!(holder.operator, "ana"),
         other => panic!("renewing over somebody else's lock must not succeed: {other:?}"),
     }
+
+    // And closing down afterwards must leave *their* lock alone: deleting it would
+    // let a third workstation in, which is the two-writer case the protocol exists
+    // to prevent.
+    let lock = lease.lock_file().to_path_buf();
+    lease.release(&SyncPolicy::immediate());
+    assert!(
+        lock.is_file(),
+        "the new holder's lock must survive our exit"
+    );
+    assert_eq!(cloud::read_holder(&lock).unwrap().operator, "ana");
 }
 
 #[test]
