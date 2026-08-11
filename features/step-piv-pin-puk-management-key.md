@@ -133,3 +133,58 @@ operator should know it.
 - `src/template/plan.rs`
 - `docs/yubikey-reference.md`
 - [NIST SP 800-73-4 (PIV card interface)](https://csrc.nist.gov/publications/detail/sp/800-73/4/final)
+
+## Blocker found 2026-08-11: the crate's PIV writes are marked `untested`
+
+Implementing this step against [`yubikey`](https://crates.io/crates/yubikey) 0.8
+stopped on a dependency-quality question that is not the implementer's to settle.
+
+**Every mutating PIV operation this step needs is behind the crate's `untested`
+Cargo feature** — upstream's own name for it:
+
+```rust
+#[cfg(feature = "untested")] pub fn change_pin(...)
+#[cfg(feature = "untested")] pub fn change_puk(...)
+#[cfg(feature = "untested")] pub fn set_protected(...)   // MgmKey
+#[cfg(feature = "untested")] pub fn set_manual(...)      // MgmKey
+#[cfg(feature = "untested")] pub fn get_protected(...)   // MgmKey
+```
+
+The read paths (`piv::metadata`, `piv::Key::list`, `piv::generate`,
+`Certificate::write`) are not gated, so identification, slot inspection,
+on-device key generation and certificate import are all reachable from the
+supported surface. It is exactly the PIN, PUK and management-key operations —
+the ones whose failure mode is worst — that upstream declines to vouch for.
+
+Why that matters more here than it would elsewhere: a management key set to a
+value nobody holds leaves the PIV applet **administratively dead**, with no
+recovery short of a reset that destroys the signing certificate and the key
+behind it. That is the single most expensive failure this tool can cause, and
+`AGENTS.md` §2 asks for the native crate specifically because it is the safer
+transport. A crate feature named `untested` inverts that argument for these
+calls.
+
+### The options, and what each costs
+
+| Option | Cost |
+|---|---|
+| **Enable `yubikey/untested`** behind a separate opt-in feature (e.g. `native-piv-write`), so the risk is a deliberate build-time act and appears in `--diagnose` | The code is upstream's, unexercised by its authors; we would be the ones exercising it, against real keys |
+| **Drive PIV writes through `ykman`**, as the documented fallback | `ykman` is well exercised and is already a labelled transport in the plan. Costs the two things `features/native-device-transport.md` wanted to avoid: a PIN on a command line, and a Python dependency on every workstation |
+| **Contribute tests upstream** and get the gate lifted | Slowest, best for everyone, and needs hardware time |
+
+### Recommendation
+
+Take the **`ykman` fallback** for PIN/PUK/management-key writes in the first
+production release, and keep the native path behind an opt-in feature until
+either upstream lifts the gate or the operations have been exercised here
+against dedicated test keys. The plan the operator sees already labels a step's
+transport, so a `ykman`-driven PIV step is honest rather than hidden — and the
+secret-on-a-command-line objection is real but bounded, where a bricked applet
+is not.
+
+**This is an architecture premise, so it is the ESI's call** (`AGENTS.md` §8),
+not the implementer's. Recorded here rather than decided.
+
+The rest of the step — reading whether the PIN, PUK and management key are still
+factory default via `GET METADATA` (firmware 5.2.3+), so idempotency never costs
+a retry — is unaffected and can land either way.

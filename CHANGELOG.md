@@ -101,6 +101,20 @@ Maintenance instructions (see AGENTS.md §5):
   `.finished`, `.aborted`, `.resumed`, `.incomplete`, plus `secret.generated`
   (kind and length, never the value) and `secret.change_enforcement`.
 
+### Changed
+
+- **The PIV transport is blocked on a decision, and the analysis is written down**
+  ([`features/step-piv-pin-puk-management-key.md`](features/step-piv-pin-puk-management-key.md)).
+  Implementing it against the `yubikey` crate stopped on the discovery that every
+  mutating PIV operation — `change_pin`, `change_puk`, and all three management-key
+  setters — sits behind that crate's `untested` Cargo feature. The read paths are
+  not gated; it is precisely the operations whose failure mode is worst that
+  upstream declines to vouch for, and a management key set to a value nobody holds
+  leaves the applet administratively dead. Three options, their costs and a
+  recommendation (use the `ykman` fallback for these writes in the first
+  production release) are recorded in the spec. It is an architecture premise, so
+  it is the ESI's call rather than the implementer's.
+
 ### Fixed
 
 - **The standard bootstrap procedure could never have completed on a real key.**
