@@ -17,6 +17,12 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-11
+
+Reaching the register where it actually lives, and handing the holder a document
+they can sign. The MINOR slot because both add a capability, and because the
+build gains platform-specific dependencies (`windows-sys`, macOS NetFS).
+
 ### Added
 
 - **The register can live on an SMB share, and the application connects the share
@@ -712,7 +718,8 @@ become rows.
 - Uploaded filenames are treated as data: any directory component is stripped, so a
   name like `../../etc/passwd.pdf` cannot escape.
 
-[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.3.0...v0.4.0

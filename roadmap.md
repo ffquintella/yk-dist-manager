@@ -37,7 +37,7 @@ deployment.
 > The counts above had drifted (they said 11 in progress against 13 `[/]` rows), as
 > had the test and coverage figures quoted in two places. Both are corrected here.
 
-Released: **v0.6.0**. Current wave: **Wave 1 — native execution.**
+Released: **v0.7.0**. Current wave: **Wave 1 — native execution.**
 
 **Out of turn, released in v0.6.0** (AGENTS.md §1 asks for the reason, in this file, in the
 same commit): **hosting the database in a OneDrive folder** —
@@ -55,7 +55,7 @@ with two divergent registers of who holds which security token. No schema change
 not an endorsement of the location — see the ESI gate in the spec and in
 [Open questions](#open-questions).
 
-**Also out of turn, unreleased**: **connecting the SMB share from inside the
+**Also out of turn, released in v0.7.0**: **connecting the SMB share from inside the
 application** — [`features/smb-share-hosting.md`](features/smb-share-hosting.md). It
 belongs to Wave 0's storage work, not to Wave 1, and it was taken now because it is the
 missing half of the sentence every storage document here ends with. "Put the register on
