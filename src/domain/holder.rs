@@ -77,7 +77,7 @@ impl Holder {
         !self.identification_number.trim().is_empty()
     }
 
-    /// `Ana Silva <ana.silva@fgv.br>`, for tables and receipts.
+    /// `Ana Silva <ana.silva@example.org>`, for tables and receipts.
     pub fn display(&self) -> String {
         format!("{} <{}>", self.full_name, self.email)
     }

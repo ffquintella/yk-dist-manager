@@ -17,6 +17,113 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+### Added
+
+- **An application icon.** A box truck whose cargo panel is a YubiKey — keyring
+  slot, gold touch contact, USB contacts — drawn once in
+  [`assets/logo.svg`](assets/logo.svg) and rendered by `make icons` into the window
+  and dock icon, the macOS `.icns` the bundle already looked for, and the PNGs the
+  documentation uses. The mark carries no text, so it needs no translation, and it
+  is deliberately generic: replacing it with an institution-issued asset is one SVG and one
+  command. Until now `cargo run` and the bundle both showed the platform
+  placeholder, and an application you identify by reading its title bar is one you
+  mis-click during a hand-over. See
+  [`features/application-icon.md`](features/application-icon.md).
+- **`make icons`** — `assets/render-icons.sh` renders every raster size from the
+  SVG (PNG 16–1024, the macOS `.icns`, and the RGBA blob the binary embeds) and
+  fails if the blob is not the byte count it should be. The generated files are
+  committed on purpose: `make bundle` has to produce an icon on a machine with no
+  rasteriser, and `include_bytes!` needs the blob at compile time. Edit the SVG,
+  run the target, commit both.
+
+### Changed
+
+- The window icon is embedded as a raw RGBA blob rather than a PNG, because
+  decoding a PNG would mean the `image` crate — an *optional* dependency behind the
+  `barcode` feature — and the icon has to be present in every build, including
+  `--no-default-features`. A blob whose length disagrees with its declared size
+  costs a generic icon and an `error` log line, never the launch.
+- `packaging/macos/bundle.sh` no longer explains why there is no logo. The icon is
+  still optional there: a bundle without the file is valid, just generic.
+
+## [0.5.0] - 2026-08-11
+
+### Added
+
+- **A Templates screen: the bootstrap procedure is now editable in the
+  application.** Templates have always been data
+  ([`features/bootstrap-templates.md`](features/bootstrap-templates.md) phase 2), but
+  the only way to change one was to edit Rust. The new screen lists every template
+  version on record and lets an operator **add** a template (from nothing or by
+  duplicating an existing procedure), change its name, description and steps —
+  including which steps are enabled, which are required, their order, their ids and
+  their `name = value` parameters — and **withdraw** one. Adding a step fills in the
+  parameters that step kind reads, so a hand-built template plans on the first try.
+  The Bootstrap screen gains a *Manage templates…* button that opens this screen on
+  the template the wizard has selected.
+- **A live verdict on the draft.** The editor shows `plans` or the exact refusal,
+  because `BootstrapTemplate::check` runs a real `plan()` against a fictitious
+  holder and key (`RenderContext::sample`). An unknown `{{variable}}`, a step
+  missing a parameter it needs, a duplicate step id or a template with nothing
+  enabled is refused **at the desk**, and the same gate guards the database — so a
+  procedure that cannot be planned cannot be stored. Steps that arrive disabled are
+  checked too: the wizard can enable an optional step on any run.
+- **Retiring a template**, and reinstating it. A version a bootstrap run recorded
+  cannot be deleted — a run saying it applied `org-standard v1` with no
+  `org-standard v1` to look up is not a record — so it is *retired* instead:
+  withdrawn from the wizard, kept in the database, and **not resurrected** by the
+  built-in seeding that runs on every open. New audit events `template.created`,
+  `template.changed`, `template.retired`, `template.reinstated`,
+  `template.removed`; each entry carries the id, version, previous version, step
+  count and run count, never the procedure text.
+- **Removing a template version outright**, behind a confirmation, for a procedure
+  typed by mistake. `Store::delete_template` refuses a version any run recorded and
+  a version this build ships (that one would come back on the next open), and both
+  refusals name retirement instead (`StoreError::TemplateInUse`). The Remove button
+  is disabled with the reason on it rather than offering an action that will be
+  refused.
+
+### Changed
+
+- **An edit of a template stores a new version**, numbered by the database, exactly
+  as the Terms screen already did for the consignment wording: the version a run
+  recorded is never overwritten, and two workstations editing the same template
+  cannot both produce "version 2". The numbering rule now lives in one place,
+  `versioning::next_version`, shared by terms and templates.
+- **The bootstrap wizard offers the newest version of each template**, rather than
+  every stored version. Older versions stay in the database because runs refer to
+  them; offering one for a *new* run would be offering a superseded procedure. A
+  database with no template at all still falls back to the built-ins — but a
+  database where every template has been *retired* now offers none, because that
+  was a deliberate decision.
+- Schema **v4**: `templates.retired_at`, with a migration. A template id is
+  restricted to lower-case letters, digits and hyphens (`template::check_id`), since
+  it is what a bootstrap run records.
+
+### Removed
+
+- **The application is no longer branded to one institution.** Every occurrence of
+  the previous organisation's name is gone from the code, the tests, the packaging
+  and the documentation:
+  - The built-in procedure is now **`org-standard` / "Organisation standard
+    bootstrap"** (`BootstrapTemplate::org_standard`), and its description
+    interpolates `{{org}}` instead of naming an institution. **On upgrade:** the new
+    id is seeded beside the previously shipped one, so a database opened by an older
+    build shows both in the Templates screen — retire the older entry, which keeps
+    the runs that recorded it explainable. Nothing is renamed under an existing run's
+    feet.
+  - The default organisation is now the placeholder `UNSET-ORGANISATION`
+    (`app::DEFAULT_ORG`) and Settings warns while it is unset, because `{{org}}`
+    reaches the PIV certificate subject and the FIDO2 relying-party id — that value
+    belongs to the unit running the tool, not to this build.
+  - Sample and test data use `example.org`, "Example Organisation" and unit `IT`;
+    the macOS bundle identifier is `org.example.yk-dist-manager` (override with
+    `YKDM_BUNDLE_ID`).
+  - The security rules are unchanged and still cite **NRM** and **G-002**; they are
+    now described as the institutional norm and its secure-systems guide rather than
+    named to an organisation. The compliance spec is now
+    [`features/compliance.md`](features/compliance.md).
+
 ## [0.4.0] - 2026-08-11
 
 ### Added
@@ -237,7 +344,7 @@ Maintenance instructions (see AGENTS.md §5):
   parsers for `ykman list --serials` and `ykman info` unit-tested against output
   recorded from ykman 5.9.2.
 - **Bootstrap templates**: versioned, declarative, with `{{holder.email}}`-style
-  rendering, structural validation, and two built-ins (`fgv-standard`,
+  rendering, structural validation, and two built-ins (`org-standard`,
   `fido-only`).
 - **Bootstrap planner**: renders a template plus a holder into an execution plan
   where every step declares its transport (native / `ykman` fallback / manual)

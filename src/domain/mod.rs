@@ -168,8 +168,8 @@ mod tests {
     #[test]
     fn email_is_normalised_to_lowercase() {
         assert_eq!(
-            validate_email("Felipe.Quintella@FGV.BR").unwrap(),
-            "felipe.quintella@fgv.br"
+            validate_email("Ana.Silva@Example.ORG").unwrap(),
+            "ana.silva@example.org"
         );
     }
 }

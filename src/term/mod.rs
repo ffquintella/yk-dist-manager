@@ -183,28 +183,11 @@ impl TermTemplate {
     }
 }
 
-/// Sort key for a version: the leading digits numerically, so `10` sorts after
-/// `9`, then the whole string so the order is total and stable.
-fn version_order(version: &str) -> (u64, &str) {
-    let digits: String = version
-        .trim()
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect();
-    (digits.parse().unwrap_or(0), version)
-}
+/// The numbering a term edit gets. Shared with the bootstrap templates, which
+/// version for the same reason — see [`crate::versioning`].
+pub use crate::versioning::next_version;
 
-/// The version to give the next edit: one more than the highest numeric version
-/// already present. A version that is not a number counts as 0, so the first
-/// numbered edit of a hand-named template becomes `1`.
-pub fn next_version(existing: &[String]) -> String {
-    let highest = existing
-        .iter()
-        .map(|version| version_order(version).0)
-        .max()
-        .unwrap_or(0);
-    (highest + 1).to_string()
-}
+use crate::versioning::version_order;
 
 /// The highest-versioned template among the candidates.
 fn latest<'a>(candidates: impl Iterator<Item = &'a TermTemplate>) -> Option<&'a TermTemplate> {
@@ -234,7 +217,7 @@ pub struct TermContext {
     pub key_serial: String,
     pub key_model: String,
     pub key_firmware: String,
-    /// What the bootstrap applied, e.g. `fgv-standard 1 — FIDO2 PIN, …`.
+    /// What the bootstrap applied, e.g. `org-standard 1 — FIDO2 PIN, …`.
     pub applied: String,
     /// The custody statement the holder is agreeing to.
     pub custody: String,
@@ -325,7 +308,7 @@ impl TermContext {
             key_serial: "00000000".into(),
             key_model: "YubiKey 5 NFC".into(),
             key_firmware: "5.7.1".into(),
-            applied: "fgv-standard 1 — FIDO2 PIN, OTP access code, FIDO2 credential, PIV \
+            applied: "org-standard 1 — FIDO2 PIN, OTP access code, FIDO2 credential, PIV \
                       certificate"
                 .into(),
             custody: crate::domain::CustodyModel::DEFAULT.label().to_owned(),

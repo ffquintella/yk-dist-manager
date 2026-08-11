@@ -62,6 +62,10 @@ Environment:
   YKDM_DATA_DIR                Per-user data directory
   YKDM_LOG                     Log filter, e.g. `debug`
   YKDM_ALLOW_UNBUNDLED_CAMERA  Attempt the camera outside an app bundle (may abort)
+  YKDM_SYNC_QUIET_MS           Cloud-sync folder: how long the database file must be
+                               unchanged before it counts as downloaded (default 1500)
+  YKDM_SYNC_TIMEOUT_MS         Cloud-sync folder: how long to wait for the sync client
+                               before saying so and carrying on (default 15000)
 ";
 
 /// The features this build was compiled with.
@@ -133,6 +137,11 @@ pub struct Report {
     pub database_exists: bool,
     /// The database sits in a synchronising folder — a real risk, not a nitpick.
     pub database_on_cloud_sync: bool,
+    /// Who holds the single-writer lock, when one is there. The first question to
+    /// ask about a cloud-hosted database that will not open.
+    pub database_lock: Option<String>,
+    /// Copies a sync client could not merge, sitting next to the database.
+    pub database_conflicts: Vec<String>,
     pub settings: String,
     pub ykman: Option<String>,
     pub cameras: Vec<String>,
@@ -157,6 +166,16 @@ impl Report {
             features: compiled_features(),
             database_exists: effective.is_file(),
             database_on_cloud_sync: crate::store::looks_like_cloud_sync(&effective),
+            // Read, never taken: `--diagnose` must not lock a database another
+            // operator is working in, and must not create a lock file of its own.
+            database_lock: crate::store::cloud::read_holder(&crate::store::cloud::lock_path(
+                &effective,
+            ))
+            .map(|holder| holder.to_string()),
+            database_conflicts: crate::store::cloud::conflict_copies(&effective)
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect(),
             database: effective.display().to_string(),
             settings: crate::settings::AppSettings::path().display().to_string(),
             ykman: which_ykman(),
@@ -207,8 +226,26 @@ impl Report {
                 out,
                 "                   WARNING: this is a cloud-sync folder. A sync client can \
                  copy the file mid-write, and it resolves a clash by keeping both copies — so \
-                 two operators can end up with divergent registers and no merge. Use a network \
-                 share, or a local file with a scheduled backup."
+                 two operators can end up with divergent registers and no merge. One workstation \
+                 at a time may open it: the single-writer lock file next to the database is what \
+                 enforces that. A network share, or a local file with a scheduled backup, is \
+                 still safer."
+            );
+        }
+        let _ = writeln!(
+            out,
+            "database lock:     {}",
+            self.database_lock
+                .clone()
+                .unwrap_or_else(|| "(not held)".into())
+        );
+        if !self.database_conflicts.is_empty() {
+            let _ = writeln!(
+                out,
+                "                   ALARM: {} sync conflict copy/copies next to the database: \
+                 {}. The register may have forked; compare them before trusting either.",
+                self.database_conflicts.len(),
+                self.database_conflicts.join(", ")
             );
         }
         let _ = writeln!(out, "settings:          {}", self.settings);
@@ -299,6 +336,8 @@ mod tests {
             database: "/tmp/keys.sqlite3".into(),
             database_exists: true,
             database_on_cloud_sync: false,
+            database_lock: None,
+            database_conflicts: Vec::new(),
             settings: "/tmp/settings.json".into(),
             ykman: Some("/opt/homebrew/bin/ykman".into()),
             cameras: vec!["0: FaceTime HD Camera".into()],
@@ -420,6 +459,30 @@ mod tests {
 
         // And it stays quiet when there is nothing to warn about.
         assert!(!report().render().contains("WARNING"));
+    }
+
+    #[test]
+    fn the_report_says_who_holds_the_single_writer_lock() {
+        // The state of the lock is the first question about a cloud-hosted
+        // database that will not open, so the line is always there.
+        assert!(report().render().contains("database lock:     (not held)"));
+
+        let mut held = report();
+        held.database_lock = Some("felipe on MAC-01 (pid 42), holding since …".into());
+        assert!(held.render().contains("MAC-01"));
+    }
+
+    #[test]
+    fn sync_conflict_copies_are_an_alarm_in_the_report() {
+        let mut forked = report();
+        forked.database_conflicts = vec!["/tmp/keys (1).sqlite3".into()];
+        let text = forked.render();
+        assert!(text.contains("ALARM"), "{text}");
+        assert!(text.contains("keys (1).sqlite3"), "{text}");
+        assert!(
+            text.contains("may have forked"),
+            "the report must say what the copies mean"
+        );
     }
 
     #[test]

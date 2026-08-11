@@ -41,6 +41,24 @@ pub enum StepKind {
 }
 
 impl StepKind {
+    /// Every kind a template may use, in the order the standard procedure applies
+    /// them — which is the order the "add a step" list offers, so a template
+    /// built by hand comes out in a sensible sequence.
+    pub const ALL: [StepKind; 12] = [
+        StepKind::Fido2Pin,
+        StepKind::Fido2MinPinLength,
+        StepKind::Fido2ForcePinChange,
+        StepKind::Fido2Credential,
+        StepKind::OtpAccessCode,
+        StepKind::OtpSlotConfig,
+        StepKind::PivPinPuk,
+        StepKind::PivManagementKey,
+        StepKind::PivKeygen,
+        StepKind::PivCsr,
+        StepKind::PivCertImport,
+        StepKind::Verify,
+    ];
+
     pub fn label(&self) -> &'static str {
         match self {
             StepKind::Fido2Pin => "FIDO2 PIN",
@@ -55,6 +73,27 @@ impl StepKind {
             StepKind::PivCsr => "PIV certificate request",
             StepKind::PivCertImport => "PIV certificate import",
             StepKind::Verify => "Verification",
+        }
+    }
+
+    /// Id-shaped name, used as the default step id when a step is added by hand.
+    ///
+    /// These are the ids the built-in templates use, so a hand-built template
+    /// reads like the shipped one in a run record.
+    pub fn slug(&self) -> &'static str {
+        match self {
+            StepKind::Fido2Pin => "fido2-pin",
+            StepKind::Fido2MinPinLength => "fido2-min-pin-length",
+            StepKind::Fido2ForcePinChange => "fido2-force-pin-change",
+            StepKind::Fido2Credential => "fido2-credential",
+            StepKind::OtpAccessCode => "otp-access-code",
+            StepKind::OtpSlotConfig => "otp-slot-config",
+            StepKind::PivPinPuk => "piv-pin-puk",
+            StepKind::PivManagementKey => "piv-management-key",
+            StepKind::PivKeygen => "piv-keygen",
+            StepKind::PivCsr => "piv-csr",
+            StepKind::PivCertImport => "piv-cert-import",
+            StepKind::Verify => "verify",
         }
     }
 

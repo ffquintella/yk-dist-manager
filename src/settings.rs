@@ -174,10 +174,12 @@ impl AppSettings {
     }
 }
 
+/// The logged-in user, which is the operator until somebody types another name.
+///
+/// Shared with [`crate::store::cloud`] so the name in a cloud lock file is the
+/// same name the audit trail records.
 fn default_operator() -> String {
-    std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
-        .unwrap_or_else(|_| "unknown".into())
+    crate::store::cloud::local_operator()
 }
 
 #[cfg(test)]

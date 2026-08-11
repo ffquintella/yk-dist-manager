@@ -1,3 +1,5 @@
+<img src="assets/icons/icon-128.png" alt="" width="96" align="right">
+
 # yk-dist-manager
 
 Desktop tool (Rust + [egui](https://github.com/emilk/egui)) for handing out
@@ -17,7 +19,7 @@ It answers three questions that a spreadsheet answers badly:
 
 ## What the bootstrap does
 
-The default template (`fgv-standard`) applies, in order:
+The default template (`org-standard`) applies, in order:
 
 | Step | What it does |
 |---|---|
@@ -128,6 +130,7 @@ make bundle        # assembles target/bundle/YubiKey Distribution Manager.app
 make verify-bundle # checks the bundle is what macOS needs, using --diagnose
 make run-bundled   # launch it
 make dmg           # release build wrapped in a .dmg
+make icons         # re-render the icon from assets/logo.svg after editing it
 ```
 
 The default build includes the file dialogs and camera scanning. With native hardware
@@ -190,9 +193,10 @@ cargo test --features native-device --test hardware_native -- --ignored --nocapt
 | [`docs/data-model.md`](docs/data-model.md) | Schema (v3), field by field |
 | [`docs/bootstrap-procedure.md`](docs/bootstrap-procedure.md) | The procedure, step by step, with the real commands |
 | [`docs/yubikey-reference.md`](docs/yubikey-reference.md) | Native vs `ykman` capability matrix, firmware gates, gotchas |
-| [`docs/security-and-compliance.md`](docs/security-and-compliance.md) | Secrets, personal data, audit, FGV norm mapping |
+| [`docs/security-and-compliance.md`](docs/security-and-compliance.md) | Secrets, personal data, audit, norm mapping |
 | [`docs/operations.md`](docs/operations.md) | Runbooks: distribute, return, lost key, backup |
 | [`docs/development.md`](docs/development.md) | Layout, conventions, how to add a step |
+| [`features/application-icon.md`](features/application-icon.md) | The icon: what the mark is, and `make icons` |
 | [`AGENTS.md`](AGENTS.md) | Working agreement: secure development, audit coverage, tests, changelog, semver |
 
 ## Licence

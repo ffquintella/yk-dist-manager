@@ -8,6 +8,7 @@
 //!
 //! | Module | Role |
 //! |---|---|
+//! | [`branding`] | The application icon, embedded for every platform |
 //! | [`domain`] | Records: keys, holders, distribution events, bootstrap runs |
 //! | [`device`] | YubiKey discovery / inspection behind a mockable trait |
 //! | [`template`] | Bootstrap templates, variable rendering, command planning |
@@ -15,6 +16,7 @@
 //! | [`settings`] | Which database to open, and the recent ones |
 //! | [`scan`] | Reading a serial from a barcode (label or camera) |
 //! | [`term`] | Consignment terms: multilingual templates and rendering |
+//! | [`versioning`] | "What number does the next edit get?", shared by both |
 //! | [`diagnostics`] | `--diagnose`: what this build is and what it can reach |
 //! | [`audit`] | Append-only, hash-chained audit trail |
 //! | [`status`] | How loudly the status bar reports the last outcome |
@@ -26,6 +28,7 @@
 
 pub mod app;
 pub mod audit;
+pub mod branding;
 pub mod device;
 pub mod diagnostics;
 pub mod domain;
@@ -38,6 +41,7 @@ pub mod store;
 pub mod template;
 pub mod term;
 pub mod ui;
+pub mod versioning;
 
 pub use app::YkDistApp;
 

@@ -78,7 +78,7 @@ fn scenario_hand_a_key_to_a_person_and_see_who_holds_it() {
     // Given
     let world = World::new();
     let key = world.key_in_stock(20_423_633);
-    let ana = world.holder("Ana Silva", "ana.silva@fgv.br");
+    let ana = world.holder("Ana Silva", "ana.silva@example.org");
 
     // When
     world.distribute(&key, &ana, "felipe");
@@ -88,7 +88,7 @@ fn scenario_hand_a_key_to_a_person_and_see_who_holds_it() {
     assert_eq!(distributions.len(), 1);
     let record = &distributions[0];
     assert_eq!(record.key_serial, 20_423_633);
-    assert_eq!(record.holder_display, "Ana Silva <ana.silva@fgv.br>");
+    assert_eq!(record.holder_display, "Ana Silva <ana.silva@example.org>");
     assert_eq!(record.distributed_by, "felipe");
     assert!(record.is_open());
 
@@ -116,7 +116,7 @@ fn scenario_returning_a_key_closes_the_record_without_rewriting_history() {
     // Given a distributed key
     let world = World::new();
     let key = world.key_in_stock(20_423_633);
-    let ana = world.holder("Ana Silva", "ana.silva@fgv.br");
+    let ana = world.holder("Ana Silva", "ana.silva@example.org");
     let record = world.distribute(&key, &ana, "felipe");
 
     // When the holder gives it back
@@ -148,7 +148,7 @@ fn scenario_a_key_cannot_be_returned_twice() {
     // Given a key already returned
     let world = World::new();
     let key = world.key_in_stock(20_423_633);
-    let ana = world.holder("Ana Silva", "ana.silva@fgv.br");
+    let ana = world.holder("Ana Silva", "ana.silva@example.org");
     let record = world.distribute(&key, &ana, "felipe");
     world.store.mark_returned(record.id, "felipe").unwrap();
 
@@ -166,8 +166,8 @@ fn scenario_one_key_reissued_to_a_second_holder_keeps_both_records() {
     // Given a key that went out and came back
     let world = World::new();
     let key = world.key_in_stock(20_423_633);
-    let ana = world.holder("Ana Silva", "ana.silva@fgv.br");
-    let bruno = world.holder("Bruno Costa", "bruno.costa@fgv.br");
+    let ana = world.holder("Ana Silva", "ana.silva@example.org");
+    let bruno = world.holder("Bruno Costa", "bruno.costa@example.org");
     let first = world.distribute(&key, &ana, "felipe");
     world.store.mark_returned(first.id, "felipe").unwrap();
     world
@@ -193,10 +193,10 @@ fn scenario_one_key_reissued_to_a_second_holder_keeps_both_records() {
 fn scenario_the_same_person_is_not_duplicated_by_email() {
     // Given a registered holder
     let world = World::new();
-    world.holder("Ana Silva", "ana.silva@fgv.br");
+    world.holder("Ana Silva", "ana.silva@example.org");
 
     // When the same address is registered again with a corrected name
-    world.holder("Ana Silva Souza", "ana.silva@fgv.br");
+    world.holder("Ana Silva Souza", "ana.silva@example.org");
 
     // Then there is still one person, with the newer name
     let holders = world.store.holders().unwrap();
@@ -226,7 +226,7 @@ fn scenario_a_key_that_has_been_handed_over_cannot_be_removed_from_the_inventory
     // Given a key in somebody's hands
     let world = World::new();
     let key = world.key_in_stock(20_423_633);
-    let ana = world.holder("Ana Silva", "ana.silva@fgv.br");
+    let ana = world.holder("Ana Silva", "ana.silva@example.org");
     world.distribute(&key, &ana, "felipe");
 
     // When an operator tries to delete the inventory row

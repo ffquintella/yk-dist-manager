@@ -1,8 +1,8 @@
-# Feature: FGV compliance artefacts
+# Feature: Compliance artefacts
 
 ## Summary
 
-The documents the FGV *Norma de Aquisição, Desenvolvimento e Manutenção de Sistemas*
+The documents the institutional *system acquisition, development and maintenance norm*
 (NRM) requires for a system like this one: classification, registration with the ESI, data
 documentation, change records, and homologation.
 
@@ -33,7 +33,7 @@ and — depending on the custody decision — potentially the credentials themse
 | Reading | Level |
 |---|---|
 | Ordinary personal data (name, e-mail, unit) | 2 |
-| Security-relevant data, strategically sensitive to FGV: the token↔person map and what is on each token | **3** |
+| Security-relevant data, strategically sensitive to the institution: the token↔person map and what is on each token | **3** |
 | If secrets are ever escrowed here | 3, arguably 4 |
 
 **Proposed: level 3.** The map of who holds which credential is exactly the reconnaissance
@@ -47,7 +47,7 @@ This is a **proposal**; the ESI validates.
 
 | Artefact | Content | Template |
 |---|---|---|
-| System registration | Name, level and justification, responsible analyst, business owner, unit, coordinator, publication owner, homologation owners (TIC and user), infrastructure owner, environments and servers, integrations, password-change locations and procedures, ESI authorisation | `templates/registro-de-sistema.md` in the FGV skill |
+| System registration | Name, level and justification, responsible analyst, business owner, unit, coordinator, publication owner, homologation owners (TIC and user), infrastructure owner, environments and servers, integrations, password-change locations and procedures, ESI authorisation | `templates/registro-de-sistema.md` in the secure-development skill |
 | Data documentation | Which tables hold personal or sensitive data, and which fields | `templates/documentacao-de-dados.md` |
 | Change document | What changed and where, for every version installed anywhere | `templates/documento-de-mudanca.md` |
 | Homologation report | Evidence that the change was validated before production | `templates/relatorio-de-homologacao.md` |
@@ -66,7 +66,7 @@ Cannot be self-approved. From `docs/security-and-compliance.md`:
 | Architecture security premises | ESI |
 | Pre-production security verification (every version) | ESI |
 | Privacy notice, lawful basis, consent | DPO |
-| Assessment of a system processing personal data under FGV control | DCI |
+| Assessment of a system processing personal data under the organisation's control | DCI |
 | Every integration mechanism (AD, CA, BastionVault) | ESI |
 | Audit and log retention | ESI |
 | Classification level | ESI |
@@ -122,5 +122,5 @@ in by a person, not inferred.
 ## References
 
 - `docs/security-and-compliance.md`
-- FGV NRM v2 (April 2021); G-002 v1.0 (June 2013); G-002 v2.0 (July 2026, unread)
-- FGV skill templates under `templates/` in `fgv-desenvolvimento-seguro`
+- NRM v2 (April 2021); G-002 v1.0 (June 2013); G-002 v2.0 (July 2026, unread)
+- The secure-development skill templates under `templates/`

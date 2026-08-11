@@ -3,7 +3,7 @@
 
 .DEFAULT_GOAL := help
 .PHONY: help build run run-native diagnose bundle bundle-release run-bundled \
-        verify-bundle dmg check check-all fmt lint test test-all coverage \
+        verify-bundle dmg icons check check-all fmt lint test test-all coverage \
         coverage-core coverage-html hardware clean release-check
 
 COVERAGE_FLOOR := 80
@@ -43,6 +43,9 @@ run-bundled: bundle ## macOS: launch the bundled app (camera scanning works here
 
 dmg: ## macOS: assemble a release .app and wrap it in a .dmg
 	packaging/macos/bundle.sh --release --dmg
+
+icons: ## Re-render every icon from assets/logo.svg (needs librsvg + ImageMagick)
+	assets/render-icons.sh
 
 check: ## Fast compile check, default features
 	cargo check

@@ -58,11 +58,20 @@ fn main() -> eframe::Result {
             .unwrap_or_else(|| "(remembered or default)".into())
     );
 
+    let mut viewport = eframe::egui::ViewportBuilder::default()
+        .with_inner_size([1180.0, 760.0])
+        .with_min_inner_size([900.0, 600.0])
+        .with_title("YubiKey Distribution Manager");
+
+    // A missing icon is cosmetic, so `window_icon` reporting a malformed blob
+    // costs the operator a generic icon, not a launch. macOS bundles take theirs
+    // from Info.plist instead; this is what Windows, Linux and `cargo run` show.
+    if let Some(icon) = yk_dist_manager::branding::window_icon() {
+        viewport = viewport.with_icon(icon);
+    }
+
     let options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size([1180.0, 760.0])
-            .with_min_inner_size([900.0, 600.0])
-            .with_title("YubiKey Distribution Manager"),
+        viewport,
         ..Default::default()
     };
 

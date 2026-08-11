@@ -17,6 +17,15 @@
 //! 4. **Append-only audit.** The `audit` table rejects `UPDATE` and `DELETE`
 //!    through `BEFORE` triggers, so immutability is a database restriction and
 //!    not an application convention (NRM §5.3.1).
+//! 5. **Cloud-sync folder.** A database under OneDrive (or Dropbox, or Google
+//!    Drive) cannot rely on SQLite's locks at all, because the other workstation
+//!    is not sharing a file system with this one — it is receiving whole-file
+//!    copies, minutes late. Such a database is made strictly sequential instead,
+//!    by the lock-file protocol in [`cloud`]: wait for the download, take
+//!    `<database>.lock`, refuse a second workstation by name, and release only
+//!    after the upload. See `features/cloud-sync-hosting.md`.
+
+pub mod cloud;
 
 use std::path::{Path, PathBuf};
 
@@ -24,17 +33,19 @@ use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
 
+pub use cloud::{LeaseError, LeaseHolder, Renewal, Settled, SyncLease, SyncPolicy};
+
 use crate::audit::{AuditEntry, GENESIS};
 use crate::domain::{AttachedDocument, DocumentKind};
 use crate::domain::{
     BootstrapRun, DeliveryMethod, DistributionRecord, Holder, KeyStatus, SerialSource, StepOutcome,
     YubiKeyRecord,
 };
-use crate::template::BootstrapTemplate;
+use crate::template::{BootstrapTemplate, StoredTemplate};
 use crate::term::TermTemplate;
 
 /// Current schema version, tracked in `PRAGMA user_version`.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -55,6 +66,14 @@ pub enum StoreError {
     Transition { from: String, to: String },
     #[error("serial {serial} has history and cannot be removed: {reason}")]
     HasHistory { serial: u32, reason: String },
+    #[error("{id} version {version} cannot be removed: {reason}")]
+    TemplateInUse {
+        id: String,
+        version: String,
+        reason: String,
+    },
+    #[error("the template was refused: {0}")]
+    Template(#[from] crate::template::TemplateError),
     #[error("record not found: {0}")]
     NotFound(String),
     #[error("no database file at {0} — choose an existing one, or create a new one")]
@@ -63,6 +82,12 @@ pub enum StoreError {
     AlreadyExists(PathBuf),
     #[error("serialisation error: {0}")]
     Json(#[from] serde_json::Error),
+    /// The single-writer lock on a cloud-hosted database could not be taken.
+    ///
+    /// Transparent on purpose: the message an operator needs is the one
+    /// [`LeaseError`] writes, naming the workstation that has the register.
+    #[error(transparent)]
+    Lease(#[from] LeaseError),
     #[error("the term template was refused: {0}")]
     Term(#[from] crate::term::TermError),
 }
@@ -76,6 +101,12 @@ pub enum Location {
     LocalDisk,
     /// SMB/NFS/AFP share: rollback journal, full sync, long busy timeout.
     NetworkShare,
+    /// A synchronising folder (OneDrive, Dropbox, Google Drive, iCloud).
+    ///
+    /// The share's pragmas, **plus** the single-writer lock file from [`cloud`]:
+    /// on a share the two workstations at least share a lock manager, and here
+    /// they do not, so sequencing has to be arranged outside the database.
+    CloudSync,
 }
 
 /// Path fragments that mean a cloud-sync folder.
@@ -119,11 +150,13 @@ impl Location {
             || raw.starts_with("/net/")
             || raw.starts_with("/media/");
 
-        // A cloud-sync folder is classified with the shares, not with local disk:
-        // WAL's shared-memory sidecars cannot survive a sync client, so at minimum
-        // the file must run in rollback-journal mode. The operator is warned
-        // separately — safer pragmas reduce the risk but do not remove it.
-        if looks_remote || looks_like_cloud_sync(path) {
+        // A cloud-sync folder gets its own classification, ahead of the share
+        // check: it needs the share's pragmas (WAL's shared-memory sidecars cannot
+        // survive a sync client) *and* the lock-file protocol, because the other
+        // workstation is not sharing a file system with this one.
+        if looks_like_cloud_sync(path) {
+            Location::CloudSync
+        } else if looks_remote {
             Location::NetworkShare
         } else {
             Location::LocalDisk
@@ -134,7 +167,13 @@ impl Location {
         match self {
             Location::LocalDisk => "local disk (WAL)",
             Location::NetworkShare => "network share (rollback journal)",
+            Location::CloudSync => "cloud-sync folder (rollback journal, single-writer lock)",
         }
+    }
+
+    /// Does a database here need the [`cloud`] lock file?
+    pub fn requires_lease(&self) -> bool {
+        matches!(self, Location::CloudSync)
     }
 }
 
@@ -145,6 +184,22 @@ pub struct StoreConfig {
     /// `None` = unencrypted file.
     pub password: Option<String>,
     pub location: Location,
+    /// Take the single-writer lock when the location needs one
+    /// ([`Location::requires_lease`]).
+    ///
+    /// On by default, and off only for a deliberate look at a file nobody is
+    /// working in — a diagnosis, a test, a copy being inspected.
+    pub lease: bool,
+    /// Break a lock whose holder has gone quiet.
+    ///
+    /// Never on by default: only the operator can know that the other workstation
+    /// is switched off rather than mid-hand-over, so this is set by an explicit
+    /// "take over" action and audited when it happens.
+    pub take_over_stale_lease: bool,
+    /// Recorded in the lock file so a refusal can name a person, not a pid.
+    pub operator: String,
+    /// How long to wait for the sync client, before opening and after closing.
+    pub sync: SyncPolicy,
 }
 
 impl StoreConfig {
@@ -155,12 +210,48 @@ impl StoreConfig {
             path,
             password: None,
             location,
+            lease: true,
+            take_over_stale_lease: false,
+            operator: cloud::local_operator(),
+            sync: SyncPolicy::from_env(),
         }
     }
 
     pub fn with_password(mut self, password: Option<String>) -> Self {
         self.password = password.filter(|p| !p.is_empty());
         self
+    }
+
+    /// Record who is opening it, for the lock file.
+    pub fn with_operator(mut self, operator: &str) -> Self {
+        let operator = operator.trim();
+        if !operator.is_empty() {
+            self.operator = operator.to_owned();
+        }
+        self
+    }
+
+    /// How patiently to wait for the sync client.
+    pub fn with_sync_policy(mut self, sync: SyncPolicy) -> Self {
+        self.sync = sync;
+        self
+    }
+
+    /// Open without taking the single-writer lock.
+    pub fn without_lease(mut self) -> Self {
+        self.lease = false;
+        self
+    }
+
+    /// Break an abandoned lock. An explicit operator decision, never a default.
+    pub fn taking_over_stale_lease(mut self) -> Self {
+        self.take_over_stale_lease = true;
+        self
+    }
+
+    /// Will this open take the lock file?
+    pub fn requires_lease(&self) -> bool {
+        self.lease && self.location.requires_lease()
     }
 }
 
@@ -170,6 +261,14 @@ pub struct Store {
     path: PathBuf,
     location: Location,
     encrypted: bool,
+    /// Held for the whole session when the database is in a sync folder.
+    ///
+    /// The GUI keeps one connection open from the moment a database is chosen, so
+    /// the lock is held for the session rather than per write: "strictly
+    /// sequential" here means one *workstation* at a time, which is what the sync
+    /// client's whole-file, minutes-late copying can support.
+    lease: Option<SyncLease>,
+    sync: SyncPolicy,
 }
 
 impl Store {
@@ -193,8 +292,28 @@ impl Store {
         if let Some(parent) = config.path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
+        // The lock comes first, and so does waiting for the sync client: both
+        // decide whether this process may open the file at all.
+        let lease = Self::acquire_lease(config)?;
         let conn = Connection::open(&config.path)?;
-        Self::finish_open(conn, config.path.clone(), config)
+        Self::finish_open(conn, config.path.clone(), config, lease)
+    }
+
+    /// Take the single-writer lock, when the location calls for one.
+    ///
+    /// Returns `Ok(None)` for a local file or a real share, where SQLite's own
+    /// locking is the right mechanism and a lock file would only be a second,
+    /// weaker one.
+    fn acquire_lease(config: &StoreConfig) -> Result<Option<SyncLease>> {
+        if !config.requires_lease() {
+            return Ok(None);
+        }
+        let lease = if config.take_over_stale_lease {
+            SyncLease::take_over(&config.path, &config.operator, &config.sync)?
+        } else {
+            SyncLease::acquire(&config.path, &config.operator, &config.sync)?
+        };
+        Ok(Some(lease))
     }
 
     /// Open a database that must already exist.
@@ -221,15 +340,16 @@ impl Store {
     /// In-memory database, for tests.
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
-        let config = StoreConfig {
-            path: PathBuf::from(":memory:"),
-            password: None,
-            location: Location::LocalDisk,
-        };
-        Self::finish_open(conn, config.path.clone(), &config)
+        let config = StoreConfig::new(":memory:").without_lease();
+        Self::finish_open(conn, config.path.clone(), &config, None)
     }
 
-    fn finish_open(conn: Connection, path: PathBuf, config: &StoreConfig) -> Result<Self> {
+    fn finish_open(
+        conn: Connection,
+        path: PathBuf,
+        config: &StoreConfig,
+        lease: Option<SyncLease>,
+    ) -> Result<Self> {
         // The key must be applied before anything else touches the file.
         if let Some(password) = &config.password {
             apply_key(&conn, password)?;
@@ -251,6 +371,8 @@ impl Store {
             path,
             location: config.location,
             encrypted: config.password.is_some(),
+            lease,
+            sync: config.sync,
         };
         store.apply_pragmas()?;
         store.migrate()?;
@@ -259,9 +381,11 @@ impl Store {
             tracing::warn!(
                 event = "db.cloud_sync.detected",
                 path = %store.path.display(),
+                locked = store.lease.is_some(),
                 detail = "a sync client can copy the file mid-write and resolves a clash by \
-                          keeping both copies; use a network share or a local file with a \
-                          scheduled backup"
+                          keeping both copies; the single-writer lock sequences the operators \
+                          that cooperate, but a network share or a local file with a scheduled \
+                          backup is still the better place"
             );
         }
 
@@ -277,7 +401,11 @@ impl Store {
                 self.conn.pragma_update(None, "synchronous", "NORMAL")?;
                 self.conn.busy_timeout(std::time::Duration::from_secs(5))?;
             }
-            Location::NetworkShare => {
+            // A sync folder gets the share's pragmas for the same reason plus one
+            // more: rollback journal leaves the database file complete on disk
+            // between commits, which is the only state a sync client can usefully
+            // upload. WAL would hand it three files that must arrive in step.
+            Location::NetworkShare | Location::CloudSync => {
                 // Rollback journal is the only mode that survives SMB/NFS.
                 self.set_journal_mode("DELETE")?;
                 self.conn.pragma_update(None, "synchronous", "FULL")?;
@@ -326,10 +454,11 @@ impl Store {
             } else {
                 ", no password"
             },
-            if self.on_cloud_sync() {
-                " — WARNING: cloud-sync folder"
-            } else {
-                ""
+            match &self.lease {
+                Some(_) => " — single-writer lock held",
+                None if self.on_cloud_sync() =>
+                    " — WARNING: cloud-sync folder, no single-writer lock",
+                None => "",
             }
         )
     }
@@ -338,10 +467,63 @@ impl Store {
     ///
     /// Surfaced rather than silently tolerated: a sync client resolves a clash by
     /// keeping both files, so two operators can end up with divergent registers and
-    /// no merge. The recommendation is a real network share, or a local file with a
+    /// no merge. The lock file ([`cloud`]) sequences the operators who cooperate;
+    /// the recommendation is still a real network share, or a local file with a
     /// scheduled copy.
     pub fn on_cloud_sync(&self) -> bool {
-        looks_like_cloud_sync(&self.path)
+        self.location == Location::CloudSync || looks_like_cloud_sync(&self.path)
+    }
+
+    /// The lock this session holds, when the location called for one.
+    pub fn lease(&self) -> Option<&SyncLease> {
+        self.lease.as_ref()
+    }
+
+    /// Sync conflict copies found next to the database when it was opened.
+    ///
+    /// Not re-scanned per call: this is what the folder looked like at the moment
+    /// the register was opened, which is the fact a report wants.
+    pub fn conflict_copies(&self) -> &[PathBuf] {
+        match &self.lease {
+            Some(lease) => &lease.report().conflicts,
+            None => &[],
+        }
+    }
+
+    /// Keep the lock file fresh, so another workstation can tell this session
+    /// apart from an abandoned one. Cheap, and safe to call every frame.
+    ///
+    /// [`Renewal::Lost`] means another workstation has taken the lock: the caller
+    /// must stop writing and close the database.
+    pub fn renew_lease(&mut self) -> Result<Renewal> {
+        match &mut self.lease {
+            Some(lease) => Ok(lease.renew_if_due()?),
+            None => Ok(Renewal::NotDue),
+        }
+    }
+
+    /// Close the connection, wait for the sync client, then release the lock.
+    ///
+    /// The last two steps are the second half of the cloud-sync protocol, and
+    /// they only happen on this path — dropping a [`Store`] releases the lock
+    /// without waiting for the upload, which is a backstop and not the intended
+    /// exit. Returns what the wait achieved, when there was one to do.
+    ///
+    /// Infallible on purpose: a failure to close the connection is logged loudly,
+    /// because the one thing that must still happen is releasing the lock.
+    pub fn close(self) -> Option<Settled> {
+        let Self {
+            conn,
+            path,
+            lease,
+            sync,
+            ..
+        } = self;
+
+        if let Err((_, e)) = conn.close() {
+            tracing::error!(event = "db.close.failed", path = %path.display(), reason = %e);
+        }
+        lease.map(|lease| lease.release(&sync))
     }
 
     // ---------------------------------------------------------------- schema
@@ -369,6 +551,9 @@ impl Store {
         }
         if version < 3 {
             self.conn.execute_batch(MIGRATE_V3)?;
+        }
+        if version < 4 {
+            self.conn.execute_batch(MIGRATE_V4)?;
         }
 
         self.conn
@@ -721,16 +906,140 @@ impl Store {
         Ok(())
     }
 
+    /// Templates the wizard may offer: everything that has not been retired.
     pub fn templates(&self) -> Result<Vec<BootstrapTemplate>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT body FROM templates ORDER BY id, version")?;
+            .prepare("SELECT body FROM templates WHERE retired_at IS NULL ORDER BY id, version")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         let mut out = Vec::new();
         for body in rows {
             out.push(serde_json::from_str(&body?)?);
         }
         Ok(out)
+    }
+
+    /// Every template version on record, retired ones included, each with the
+    /// number of bootstrap runs that recorded it.
+    ///
+    /// The run count comes from the same query on purpose: the Templates screen
+    /// uses it to say *why* a version cannot be deleted before the operator
+    /// clicks, and a count fetched separately would be a second truth.
+    pub fn template_catalogue(&self) -> Result<Vec<StoredTemplate>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT t.body, t.retired_at, t.updated_at,
+                    (SELECT count(*) FROM bootstrap_runs r
+                      WHERE r.template_id = t.id AND r.template_version = t.version)
+             FROM templates t ORDER BY t.id, t.version",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (body, retired_at, updated_at, runs) = row?;
+            out.push(StoredTemplate {
+                template: serde_json::from_str(&body)?,
+                retired_at,
+                runs: runs.max(0) as usize,
+                updated_at,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Versions on record for one template id, retired ones included.
+    ///
+    /// Retired versions count: the numbering must never reuse a version a run
+    /// might refer to.
+    pub fn template_versions(&self, id: &str) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT version FROM templates WHERE id = ?1 ORDER BY version")?;
+        let rows = stmt.query_map(params![id], |row| row.get::<_, String>(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Store an edited template **as a new version**, and return what was stored.
+    ///
+    /// This is the only write the editor performs, and it never overwrites. A
+    /// bootstrap run records the `(template_id, template_version)` it applied, so
+    /// the version on record has to stay exactly as it was — the newest version is
+    /// what the wizard offers next (`template::latest_per_id`). The draft's own
+    /// version is ignored: the number comes from what the database already holds,
+    /// so two operators editing the same template cannot both produce "version 2".
+    ///
+    /// The template is checked first ([`BootstrapTemplate::check`]), which plans it
+    /// against a sample context — nothing that cannot be planned reaches the
+    /// database.
+    pub fn save_template_version(&self, draft: &BootstrapTemplate) -> Result<BootstrapTemplate> {
+        draft.check()?;
+        let trimmed = draft.as_version(&draft.version);
+        let existing = self.template_versions(&trimmed.id)?;
+        let stored = trimmed.as_version(&crate::versioning::next_version(&existing));
+        self.upsert_template(&stored)?;
+        Ok(stored)
+    }
+
+    /// One template version, with its state and run count.
+    pub fn stored_template(&self, id: &str, version: &str) -> Result<StoredTemplate> {
+        self.template_catalogue()?
+            .into_iter()
+            .find(|stored| stored.template.id == id && stored.template.version == version)
+            .ok_or_else(|| StoreError::NotFound(format!("template {id} version {version}")))
+    }
+
+    /// Withdraw a version from the wizard, keeping it on record.
+    ///
+    /// The row stays, so a run that applied it can still be explained, and
+    /// [`Self::seed_builtin_templates`] will not resurrect it — seeding asks
+    /// whether the `(id, version)` exists, not whether it is in use.
+    pub fn retire_template(&self, id: &str, version: &str) -> Result<StoredTemplate> {
+        let stored = self.stored_template(id, version)?;
+        self.conn.execute(
+            "UPDATE templates SET retired_at = ?1 WHERE id = ?2 AND version = ?3
+                                   AND retired_at IS NULL",
+            params![Utc::now().to_rfc3339(), id, version],
+        )?;
+        Ok(stored)
+    }
+
+    /// Put a retired version back in use.
+    pub fn reinstate_template(&self, id: &str, version: &str) -> Result<StoredTemplate> {
+        let stored = self.stored_template(id, version)?;
+        self.conn.execute(
+            "UPDATE templates SET retired_at = NULL WHERE id = ?1 AND version = ?2",
+            params![id, version],
+        )?;
+        Ok(stored)
+    }
+
+    /// Delete a template version outright, for one typed by mistake.
+    ///
+    /// Refused when a bootstrap run recorded it, and refused for a version this
+    /// build ships — that one would be re-created the next time the database is
+    /// opened, so deleting it would only look like it worked. Both refusals name
+    /// retirement, which is the operation that does what was asked. See
+    /// [`StoredTemplate::removal_refusal`].
+    pub fn delete_template(&self, id: &str, version: &str) -> Result<StoredTemplate> {
+        let stored = self.stored_template(id, version)?;
+        if let Some(reason) = stored.removal_refusal() {
+            return Err(StoreError::TemplateInUse {
+                id: id.to_owned(),
+                version: version.to_owned(),
+                reason,
+            });
+        }
+        self.conn.execute(
+            "DELETE FROM templates WHERE id = ?1 AND version = ?2",
+            params![id, version],
+        )?;
+        Ok(stored)
     }
 
     /// Make sure the built-in templates exist, without clobbering edits to a
@@ -1445,4 +1754,23 @@ CREATE TABLE IF NOT EXISTS documents (
 );
 
 CREATE INDEX IF NOT EXISTS idx_documents_distribution ON documents(distribution_id);
+"#;
+
+/// Schema v4 — a bootstrap template can be **retired**.
+///
+/// The Templates screen lets an operator add, edit and remove a procedure, and
+/// "remove" has two meanings that must not be confused. A template no run refers
+/// to is deleted outright. One that a run *does* refer to cannot be: a run saying
+/// it applied `org-standard v1`, with no `org-standard v1` to look up, is not a
+/// record. Such a version is retired instead — withdrawn from the wizard, kept in
+/// the database — and this column is where that decision lives.
+///
+/// It is a column rather than a field in the template body because the body is
+/// the *template format*, shared with the future import/export, while retirement
+/// is this deployment's opinion about a template. It also has to be queryable:
+/// `templates()` returns what the wizard may offer, which is the rows where this
+/// is NULL. Every row that existed before this migration was in use, which is why
+/// the default is NULL.
+const MIGRATE_V4: &str = r#"
+ALTER TABLE templates ADD COLUMN retired_at TEXT;
 "#;

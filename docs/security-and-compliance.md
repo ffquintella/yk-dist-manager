@@ -1,8 +1,8 @@
 # Security and compliance
 
 How this tool handles secrets, personal data, audit and logs — and how that maps onto the
-FGV *Norma de Aquisição, Desenvolvimento e Manutenção de Sistemas* (NRM v2, April 2021) and
-guide **G-002**.
+institutional *system acquisition, development and maintenance norm* (**NRM** v2, April
+2021) and its secure-systems guide (**G-002**).
 
 The norm is binding and carries sanctions from the CSI. Its rules are treated here as
 requirements, not recommendations.
@@ -18,7 +18,7 @@ numbers of security tokens; and the map of which credential material sits on whi
 
 The personal data alone would suggest level 2. What raises it is the token↔person map: it is
 precisely the reconnaissance an attacker wants before targeting authentication, which makes
-it strategically sensitive to FGV under NRM §2's broader definition of sensitive data.
+it strategically sensitive to the institution under NRM §2's broader definition of sensitive data.
 
 Level 3 brings: a change request for every version installed anywhere, known security
 defects taking priority over feature work, and a prohibition on discontinued or unsupported
@@ -119,7 +119,7 @@ unencrypted database on an open share should understand what it has built.
 
 No phone, address, ID document, photo, or any special-category data. The full inventory is
 in [data-model.md](data-model.md) §Personal data summary, which is also the input to the
-FGV data documentation artefact.
+organisation's data documentation artefact.
 
 ### Rules
 
@@ -225,7 +225,7 @@ Beyond the norm, because this tool writes to security hardware:
 | Audit and log retention | **ESI** |
 | Classification level | **ESI** |
 | Privacy notice, lawful basis, consent | **DPO** |
-| Assessment of a system processing personal data under FGV control | **DCI** |
+| Assessment of a system processing personal data under the organisation's control | **DCI** |
 | Adequacy plan for a declared gap | **CSI** (ESI first) |
 
 When work is blocked on one of these: write the assumption in the feature file, build
@@ -259,7 +259,7 @@ full conformance that does not survive a look at the code would not be.
 
 - NRM v2 (April 2021); G-002 v1.0 (June 2013)
 - [`../AGENTS.md`](../AGENTS.md) — the same rules as day-to-day engineering practice
-- [`../features/fgv-compliance.md`](../features/fgv-compliance.md) — the artefacts to produce
+- [`../features/compliance.md`](../features/compliance.md) — the artefacts to produce
 - [`../features/secrets-custody.md`](../features/secrets-custody.md),
   [`../features/audit-trail.md`](../features/audit-trail.md),
   [`../features/db-password-and-encryption.md`](../features/db-password-and-encryption.md)

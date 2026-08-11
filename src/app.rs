@@ -17,6 +17,14 @@ use crate::settings::AppSettings;
 use crate::store::{Location, Store, StoreConfig};
 use crate::template::{BootstrapTemplate, PlannedCommand, RenderContext};
 
+/// Placeholder organisation, used until the operator sets their own in Settings.
+///
+/// Deliberately not an institution's name: `{{org}}` goes into certificate
+/// subjects and the FIDO2 relying-party id, so the value has to come from the unit
+/// that runs the tool, and a placeholder that plainly needs replacing is the way
+/// to ask for it.
+pub const DEFAULT_ORG: &str = "UNSET-ORGANISATION";
+
 /// A database action requested by a click, performed after the paint pass.
 ///
 /// Native file dialogs are modal and blocking, so they must not run inside a
@@ -35,6 +43,9 @@ pub enum DbRequest {
     Close,
     /// Drop a path from the recent list.
     Forget(PathBuf),
+    /// Break the abandoned single-writer lock on a cloud-hosted database and
+    /// open it. Only ever issued by the operator clicking the button that says so.
+    TakeOverLock(PathBuf),
 }
 
 /// The database chooser's form state.
@@ -43,6 +54,28 @@ pub struct DatabaseForm {
     pub path: String,
     pub password: String,
     pub error: Option<String>,
+    /// Set when an open was refused because another workstation holds the
+    /// single-writer lock on a cloud-hosted database.
+    ///
+    /// Kept as state rather than folded into `error` because it carries an
+    /// *action*: the chooser offers to take an abandoned lock over, and only when
+    /// the holder has gone quiet long enough to be abandoned.
+    pub locked: Option<LockedDatabase>,
+}
+
+/// Why an open was refused, and by whom.
+pub struct LockedDatabase {
+    pub path: PathBuf,
+    /// The holder, as the refusal describes it. No secret, and no more personal
+    /// data than the audit trail already records: operator, host, pid.
+    pub holder: String,
+    /// The holder has been silent longer than [`crate::store::cloud::STALE_AFTER`],
+    /// so taking over is offered.
+    pub stale: bool,
+    /// The lock belongs to another run on *this* workstation — usually a second
+    /// window of this application. A different instruction from "ask the person
+    /// at the other desk".
+    pub same_host: bool,
 }
 
 /// Consignment-term panel state (distribution screen).
@@ -138,6 +171,28 @@ impl TermEditor {
     }
 }
 
+/// Bootstrap-template editor state (Templates screen).
+///
+/// Everything here is a *draft*: nothing reaches the database until the operator
+/// saves, and saving stores a new version rather than overwriting the one a
+/// bootstrap run may already have recorded. The editing rules themselves live on
+/// [`crate::template::TemplateDraft`], where they are unit-tested.
+#[derive(Default)]
+pub struct TemplateEditor {
+    pub draft: crate::template::TemplateDraft,
+    /// False until the editor has been filled from a template once.
+    pub loaded: bool,
+    /// Which step has its description and parameters expanded.
+    pub open_step: Option<usize>,
+    /// Position in [`crate::domain::StepKind::ALL`] for "add a step".
+    pub new_kind: usize,
+    /// `(id, version)` the operator asked to remove, awaiting confirmation. A
+    /// removal is a second, separate decision from the click that asked for it.
+    pub pending_removal: Option<(String, String)>,
+    pub error: Option<String>,
+    pub notice: Option<String>,
+}
+
 /// Serial-scanning panel state (inventory screen).
 #[derive(Default)]
 pub struct ScanPanel {
@@ -182,17 +237,19 @@ pub enum Tab {
     Holders,
     Distribution,
     Bootstrap,
+    Templates,
     Terms,
     Audit,
     Settings,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 7] = [
+    pub const ALL: [Tab; 8] = [
         Tab::Inventory,
         Tab::Holders,
         Tab::Distribution,
         Tab::Bootstrap,
+        Tab::Templates,
         Tab::Terms,
         Tab::Audit,
         Tab::Settings,
@@ -204,6 +261,7 @@ impl Tab {
             Tab::Holders => "Holders",
             Tab::Distribution => "Distribution",
             Tab::Bootstrap => "Bootstrap",
+            Tab::Templates => "Templates",
             Tab::Terms => "Terms",
             Tab::Audit => "Audit",
             Tab::Settings => "Settings",
@@ -294,12 +352,17 @@ pub struct YkDistApp {
     pub distributions: Vec<DistributionRecord>,
     pub runs: Vec<BootstrapRun>,
     pub audit_view: Vec<AuditEntry>,
+    /// What the wizard may offer: the newest version of each template in use.
     pub templates: Vec<BootstrapTemplate>,
+    /// Every template version on record, retired ones included, with its run
+    /// count — what the Templates screen manages.
+    pub template_catalogue: Vec<crate::template::StoredTemplate>,
 
     pub holder_form: HolderForm,
     pub dist_form: DistForm,
     pub inventory: InventoryPanel,
     pub wizard: Wizard,
+    pub template_editor: TemplateEditor,
     pub term_panel: TermPanel,
     pub term_editor: TermEditor,
     /// Term templates, refreshed with everything else.
@@ -322,8 +385,13 @@ impl YkDistApp {
         };
 
         let operator = settings.operator.clone();
+        // The organisation is the operator's to state, in Settings — this
+        // application is not branded to one. It still needs a value rather than an
+        // empty string, because `{{org}}` reaches a certificate subject and a
+        // FIDO2 relying-party id, and a blank one there is worse than an obvious
+        // placeholder the operator will replace.
         let org = if settings.org.trim().is_empty() {
-            "FGV".to_owned()
+            DEFAULT_ORG.to_owned()
         } else {
             settings.org.clone()
         };
@@ -349,10 +417,12 @@ impl YkDistApp {
             runs: Vec::new(),
             audit_view: Vec::new(),
             templates: Vec::new(),
+            template_catalogue: Vec::new(),
             holder_form: HolderForm::default(),
             dist_form: DistForm::default(),
             inventory: InventoryPanel::default(),
             wizard: Wizard::default(),
+            template_editor: TemplateEditor::default(),
             term_panel: TermPanel::default(),
             term_editor: TermEditor::default(),
             term_templates: Vec::new(),
@@ -399,6 +469,10 @@ impl YkDistApp {
                 self.settings.forget(&path);
                 self.settings.save_quietly();
             }
+            DbRequest::TakeOverLock(path) => {
+                let password = self.take_password();
+                self.take_over_lock(&path, password);
+            }
         }
     }
 
@@ -415,7 +489,11 @@ impl YkDistApp {
 
     /// Open an existing database, remembering it on success.
     pub fn open_database(&mut self, path: &Path, password: Option<String>) {
-        let config = StoreConfig::new(path).with_password(password);
+        // Whatever is open goes first, through the closing protocol: on a sync
+        // folder the lock has to come off with the upload finished, and reopening
+        // the database that is already open must not be refused by our own lock.
+        self.release_current_database();
+        let config = self.store_config(path).with_password(password);
         match Store::open_existing(&config) {
             Ok(store) => {
                 self.adopt(store, config);
@@ -426,17 +504,14 @@ impl YkDistApp {
                 );
                 self.refresh();
             }
-            Err(e) => {
-                tracing::error!(event = "db.open.failed", path = %path.display(), reason = %e);
-                self.db_form.error = Some(e.to_string());
-                self.open_error = Some(e.to_string());
-            }
+            Err(e) => self.report_open_failure(path, e),
         }
     }
 
     /// Create a new database, refusing to overwrite an existing file.
     pub fn create_database(&mut self, path: &Path, password: Option<String>) {
-        let config = StoreConfig::new(path).with_password(password);
+        self.release_current_database();
+        let config = self.store_config(path).with_password(password);
         match Store::create_new(&config) {
             Ok(store) => {
                 let display = store.path().display().to_string();
@@ -452,12 +527,78 @@ impl YkDistApp {
         }
     }
 
-    /// Close the current database and return to the chooser.
-    pub fn close_database(&mut self) {
-        if self.store.is_some() {
-            self.record("db.closed", "database", "");
+    /// Open a cloud-hosted database whose lock was left behind by a session that
+    /// is gone.
+    ///
+    /// A separate entry point, not a retry flag on [`Self::open_database`],
+    /// because it is a different decision: the operator is asserting that the
+    /// other workstation is not working in the register. The break is audited as
+    /// soon as the database is open.
+    pub fn take_over_lock(&mut self, path: &Path, password: Option<String>) {
+        self.release_current_database();
+        let config = self
+            .store_config(path)
+            .with_password(password)
+            .taking_over_stale_lease();
+        match Store::open_existing(&config) {
+            Ok(store) => {
+                let broken = store
+                    .lease()
+                    .and_then(|lease| lease.report().took_over.as_ref())
+                    .map(|previous| previous.to_string())
+                    .unwrap_or_else(|| "no lock was there to take".into());
+                self.adopt(store, config);
+                self.record("db.lock.taken_over", "database", &broken);
+                self.record(
+                    "app.opened",
+                    "database",
+                    &self.config.path.display().to_string(),
+                );
+                self.refresh();
+            }
+            Err(e) => self.report_open_failure(path, e),
         }
-        self.store = None;
+    }
+
+    /// The open configuration this session uses: the operator's name goes into
+    /// the lock file, so a refusal on another workstation names a person.
+    fn store_config(&self, path: &Path) -> StoreConfig {
+        StoreConfig::new(path).with_operator(&self.operator)
+    }
+
+    /// Show a failed open, keeping a lock refusal actionable.
+    fn report_open_failure(&mut self, path: &Path, error: crate::store::StoreError) {
+        tracing::error!(event = "db.open.failed", path = %path.display(), reason = %error);
+        let message = error.to_string();
+
+        // A lock refusal is not the operator's mistake and is not fixed by
+        // retyping the path: it names the workstation that has the register, and
+        // offers the one action that can help when that workstation is gone.
+        self.db_form.locked = match &error {
+            crate::store::StoreError::Lease(crate::store::LeaseError::Held { holder, stale }) => {
+                Some(LockedDatabase {
+                    path: path.to_path_buf(),
+                    holder: holder.to_string(),
+                    stale: *stale,
+                    same_host: holder.is_same_host(),
+                })
+            }
+            _ => None,
+        };
+
+        self.db_form.error = Some(message.clone());
+        self.open_error = Some(message);
+    }
+
+    /// Close the current database and return to the chooser.
+    ///
+    /// For a cloud-hosted file this is the second half of the lock protocol: the
+    /// audit entry is written while the connection is still open, then the
+    /// connection closes, the file is given time to finish uploading, and only
+    /// then is the lock removed. See [`crate::store::cloud`].
+    pub fn close_database(&mut self) {
+        let released = self.release_current_database();
+
         self.keys.clear();
         self.holders.clear();
         self.distributions.clear();
@@ -465,8 +606,39 @@ impl YkDistApp {
         self.audit_view.clear();
         self.open_error = None;
         self.db_form.error = None;
+        self.db_form.locked = None;
         self.db_form.path = self.config.path.display().to_string();
-        self.status = "no database open".into();
+        self.status = match released {
+            Some(settled) => format!("no database open — lock released, {}", settled.describe()),
+            None => "no database open".into(),
+        };
+    }
+
+    /// Audit the close, then hand the store back to the closing protocol.
+    ///
+    /// Split out because *every* path that stops using a database has to do this,
+    /// not just the Close button: switching to another database, creating one, and
+    /// taking a lock over all leave a database behind, and on a sync folder the
+    /// lock has to come off deliberately — after the upload — rather than whenever
+    /// the value happens to be dropped.
+    fn release_current_database(&mut self) -> Option<crate::store::Settled> {
+        // The audit entry has to be written while the connection is still open,
+        // and it is the entry that records the lock being given up: the release
+        // itself happens with no database left to write to.
+        let held = self
+            .store
+            .as_ref()
+            .and_then(|store| store.lease())
+            .map(|lease| {
+                format!(
+                    "releasing the single-writer lock held by {}",
+                    lease.holder()
+                )
+            });
+        if self.store.is_some() {
+            self.record("db.closed", "database", held.as_deref().unwrap_or(""));
+        }
+        self.store.take().and_then(|store| store.close())
     }
 
     /// Adopt a freshly opened store as the current one.
@@ -488,10 +660,67 @@ impl YkDistApp {
 
         self.db_form.path = config.path.display().to_string();
         self.db_form.error = None;
+        self.db_form.locked = None;
         self.open_error = None;
         self.status = store.describe();
         self.config = config;
         self.store = Some(store);
+
+        // A sync client that could not decide leaves copies behind, and that is
+        // the failure this location is dangerous for: two divergent registers.
+        // It goes in the audit trail as well as the log, because "the register
+        // forked on this date" is exactly what a later reader needs.
+        let conflicts: Vec<String> = self
+            .store
+            .as_ref()
+            .map(|store| {
+                store
+                    .conflict_copies()
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !conflicts.is_empty() {
+            let detail = format!(
+                "{} sync conflict copy/copies next to the database: {}",
+                conflicts.len(),
+                conflicts.join(", ")
+            );
+            self.record("db.sync.conflict_copies", "database", &detail);
+            self.status = format!("WARNING: {detail}");
+        }
+    }
+
+    /// Keep the single-writer lock fresh, and stop working if it was taken away.
+    ///
+    /// Called once per frame. Cheap: the lock file is only rewritten every
+    /// [`crate::store::cloud::RENEW_EVERY`], and a database that needs no lock
+    /// answers immediately.
+    pub fn tick_lease(&mut self) {
+        let Some(store) = self.store.as_mut() else {
+            return;
+        };
+        match store.renew_lease() {
+            Ok(crate::store::Renewal::NotDue | crate::store::Renewal::Renewed) => {}
+            // Another workstation has taken the register. Continuing to write
+            // would produce exactly the two divergent copies the lock exists to
+            // prevent, so the database is closed and the operator is told why.
+            Ok(crate::store::Renewal::Lost(holder)) => {
+                let holder = holder.to_string();
+                tracing::error!(event = "db.lock.lost", holder = %holder);
+                self.close_database();
+                self.status = format!(
+                    "ALARM: the single-writer lock was taken over by {holder} — the database was \
+                     closed to avoid two divergent registers. Check with that operator before \
+                     reopening it."
+                );
+            }
+            Err(e) => {
+                tracing::error!(event = "db.lock.renew.failed", reason = %e);
+                self.status = format!("could not refresh the database lock: {e}");
+            }
+        }
     }
 
     /// Persist the operator identity and organisation.
@@ -847,7 +1076,10 @@ impl YkDistApp {
                 self.holders = holders;
                 self.distributions = dists;
                 self.runs = runs;
-                self.templates = templates;
+                // The wizard offers the newest version of each template in use;
+                // the older versions stay on record for the runs that applied
+                // them (see `template::latest_per_id`).
+                self.templates = crate::template::latest_per_id(&templates);
                 self.audit_view = audit;
             }
             _ => {
@@ -855,7 +1087,14 @@ impl YkDistApp {
                 tracing::error!(event = "db.read.failed");
             }
         }
-        if self.templates.is_empty() {
+        match store.template_catalogue() {
+            Ok(catalogue) => self.template_catalogue = catalogue,
+            Err(e) => tracing::error!(event = "template.read.failed", reason = %e),
+        }
+        // Only a database with no template at all falls back to the built-ins:
+        // an operator who has retired every template has said something
+        // deliberate, and the wizard must not quietly re-offer them.
+        if self.template_catalogue.is_empty() {
             self.templates = BootstrapTemplate::builtin();
         }
 
@@ -870,6 +1109,319 @@ impl YkDistApp {
         match store.document_counts() {
             Ok(counts) => self.document_counts = counts,
             Err(e) => tracing::error!(event = "document.count.failed", reason = %e),
+        }
+    }
+
+    // ------------------------------------------ editing a bootstrap template
+
+    /// The exact version the editor's draft was loaded from, or `None` for a
+    /// template that has never been stored.
+    ///
+    /// Deliberately the *loaded* version and not the newest: if another
+    /// workstation stores version 3 while this one has version 2 open, an
+    /// untouched draft must not start claiming unsaved changes.
+    pub fn template_baseline(&self) -> Option<&BootstrapTemplate> {
+        let version = self.template_editor.draft.loaded_version.as_deref()?;
+        let id = self.template_editor.draft.id.trim();
+        self.template_catalogue
+            .iter()
+            .find(|stored| stored.template.id == id && stored.template.version == version)
+            .map(|stored| &stored.template)
+    }
+
+    /// True when the draft differs from the version it came from.
+    pub fn template_editor_dirty(&self) -> bool {
+        self.template_editor
+            .draft
+            .is_dirty(self.template_baseline())
+    }
+
+    /// The newest version on record of a template id, retired ones included.
+    pub fn latest_stored_template(&self, id: &str) -> Option<&BootstrapTemplate> {
+        self.template_catalogue
+            .iter()
+            .map(|stored| &stored.template)
+            .filter(|template| template.id == id)
+            .max_by(|a, b| {
+                crate::versioning::version_order(&a.version)
+                    .cmp(&crate::versioning::version_order(&b.version))
+            })
+    }
+
+    /// Open a template in the editor. `version` picks one exactly; `None` opens
+    /// the newest on record.
+    ///
+    /// Reads the cached catalogue rather than the database, so it is safe to call
+    /// from a click inside a painted table.
+    pub fn load_template(&mut self, id: &str, version: Option<&str>) {
+        let found = match version {
+            Some(version) => self
+                .template_catalogue
+                .iter()
+                .find(|stored| stored.template.id == id && stored.template.version == version)
+                .map(|stored| stored.template.clone()),
+            None => self.latest_stored_template(id).cloned(),
+        };
+        let Some(template) = found else {
+            self.template_editor.error = Some(format!("no template `{id}` on record"));
+            return;
+        };
+
+        self.template_editor.draft = crate::template::TemplateDraft::from_template(&template, true);
+        self.template_editor.loaded = true;
+        self.template_editor.open_step = None;
+        self.template_editor.pending_removal = None;
+        self.template_editor.error = None;
+        self.template_editor.notice = None;
+    }
+
+    /// Start a template from nothing.
+    ///
+    /// Refuses to discard an unsaved edit, the same way the Terms screen does:
+    /// a procedure somebody has just typed is not something to lose to a click.
+    pub fn start_template(&mut self) {
+        self.template_editor.error = None;
+        self.template_editor.notice = None;
+        if self.template_editor_dirty() {
+            self.template_editor.error = Some(unsaved_template_message(
+                &self.template_editor.draft.id,
+                "starting a new one",
+            ));
+            return;
+        }
+        self.template_editor.draft = crate::template::TemplateDraft::blank();
+        self.template_editor.loaded = true;
+        self.template_editor.open_step = None;
+        self.template_editor.notice = Some(
+            "new template — give it an id, a name and its steps; nothing is stored until you \
+             save"
+                .into(),
+        );
+    }
+
+    /// Copy a template version into the editor under a fresh id.
+    ///
+    /// This is how a variant is made — the FIDO-only procedure for a contractor
+    /// is the standard one minus PIV — so the copy keeps the steps and takes an
+    /// id nothing else is using.
+    pub fn duplicate_template(&mut self, id: &str, version: &str) {
+        self.template_editor.error = None;
+        self.template_editor.notice = None;
+        if self.template_editor_dirty() {
+            self.template_editor.error = Some(unsaved_template_message(
+                &self.template_editor.draft.id,
+                "duplicating another",
+            ));
+            return;
+        }
+        let Some(source) = self
+            .template_catalogue
+            .iter()
+            .find(|stored| stored.template.id == id && stored.template.version == version)
+            .map(|stored| stored.template.clone())
+        else {
+            self.template_editor.error = Some(format!("no template `{id}` version {version}"));
+            return;
+        };
+
+        let taken: Vec<String> = self
+            .template_catalogue
+            .iter()
+            .map(|stored| stored.template.id.clone())
+            .collect();
+        let new_id = crate::template::unique_id(&taken, &format!("{id}-copy"));
+        let copy = source.duplicated_as(&new_id, &format!("{} (copy)", source.name));
+
+        self.template_editor.draft = crate::template::TemplateDraft::from_template(&copy, false);
+        self.template_editor.loaded = true;
+        self.template_editor.open_step = None;
+        self.template_editor.notice = Some(format!(
+            "copied {id} version {version} as `{new_id}` — nothing is stored until you save"
+        ));
+    }
+
+    /// Put this build's steps for the draft's id back in the editor.
+    pub fn restore_builtin_template(&mut self) {
+        let id = self.template_editor.draft.id.trim().to_owned();
+        self.template_editor.error = None;
+        match BootstrapTemplate::builtin_for(&id) {
+            Some(builtin) => {
+                let loaded = self.template_editor.draft.loaded_version.clone();
+                self.template_editor.draft =
+                    crate::template::TemplateDraft::from_template(&builtin, false);
+                self.template_editor.draft.loaded_version = loaded;
+                self.template_editor.open_step = None;
+                self.template_editor.notice = Some(
+                    "the built-in steps are in the editor — they are not stored until you save"
+                        .into(),
+                );
+            }
+            None => {
+                self.template_editor.error =
+                    Some(format!("this build ships no template called `{id}`"));
+            }
+        }
+    }
+
+    /// Append a step of the kind selected in the editor.
+    pub fn add_template_step(&mut self) {
+        self.template_editor.error = None;
+        let kind = crate::domain::StepKind::ALL
+            .get(self.template_editor.new_kind)
+            .copied()
+            .unwrap_or(crate::domain::StepKind::Verify);
+        match self.template_editor.draft.add_step(kind) {
+            Ok(()) => {
+                self.template_editor.open_step = Some(self.template_editor.draft.steps.len() - 1);
+                self.template_editor.notice = Some(format!(
+                    "{} added at the end — move it to where it belongs in the procedure",
+                    kind.label()
+                ));
+            }
+            Err(e) => self.template_editor.error = Some(e.to_string()),
+        }
+    }
+
+    /// Store the draft as a **new version** of its template.
+    ///
+    /// The version on record is left untouched, because a bootstrap run may
+    /// reference it; the newly stored version is what the wizard offers next.
+    pub fn save_template(&mut self) {
+        self.template_editor.error = None;
+        self.template_editor.notice = None;
+
+        let draft = match self.template_editor.draft.to_template() {
+            Ok(draft) => draft,
+            Err(e) => {
+                self.template_editor.error = Some(e.to_string());
+                return;
+            }
+        };
+        let previous = self.template_editor.draft.loaded_version.clone();
+        let result = {
+            let Some(store) = &self.store else {
+                self.template_editor.error = Some("no database open".into());
+                return;
+            };
+            store.save_template_version(&draft)
+        };
+
+        match result {
+            Ok(stored) => {
+                let (event, target, details) =
+                    crate::template::edit_audit_entry(&stored, previous.as_deref());
+                self.record(event, &target, &details);
+                self.status = format!(
+                    "{} saved as version {} ({} step(s))",
+                    stored.id,
+                    stored.version,
+                    stored.steps.len()
+                );
+                self.template_editor.notice = Some(match &previous {
+                    Some(previous) => format!(
+                        "saved as version {} — new runs use it, and version {previous} stays on \
+                         record for the runs already made against it",
+                        stored.version
+                    ),
+                    None => format!("`{}` added as version {}", stored.id, stored.version),
+                });
+                self.template_editor.draft.loaded_version = Some(stored.version);
+                self.refresh();
+            }
+            Err(e) => {
+                tracing::warn!(event = "template.save.refused", reason = %e);
+                self.template_editor.error = Some(e.to_string());
+            }
+        }
+    }
+
+    /// Withdraw a template version from the wizard, keeping it on record.
+    pub fn retire_template(&mut self, id: &str, version: &str) {
+        self.template_editor.error = None;
+        let Some(store) = &self.store else { return };
+        match store.retire_template(id, version) {
+            Ok(stored) => {
+                self.record(
+                    "template.retired",
+                    &format!("template:{id}"),
+                    &stored.audit_detail(),
+                );
+                self.status = format!("{id} version {version} retired — no longer offered");
+                self.refresh();
+            }
+            Err(e) => {
+                tracing::warn!(event = "template.retire.failed", template = id, reason = %e);
+                self.template_editor.error = Some(e.to_string());
+            }
+        }
+    }
+
+    /// Put a retired template version back in use.
+    pub fn reinstate_template(&mut self, id: &str, version: &str) {
+        self.template_editor.error = None;
+        let Some(store) = &self.store else { return };
+        match store.reinstate_template(id, version) {
+            Ok(stored) => {
+                self.record(
+                    "template.reinstated",
+                    &format!("template:{id}"),
+                    &stored.audit_detail(),
+                );
+                self.status = format!("{id} version {version} is in use again");
+                self.refresh();
+            }
+            Err(e) => {
+                tracing::warn!(event = "template.reinstate.failed", template = id, reason = %e);
+                self.template_editor.error = Some(e.to_string());
+            }
+        }
+    }
+
+    /// Ask to remove a template version. Nothing is deleted until
+    /// [`Self::remove_template`].
+    pub fn request_template_removal(&mut self, id: &str, version: &str) {
+        self.template_editor.error = None;
+        self.template_editor.pending_removal = Some((id.to_owned(), version.to_owned()));
+    }
+
+    /// Abandon a removal the operator asked about and then declined.
+    pub fn cancel_template_removal(&mut self) {
+        self.template_editor.pending_removal = None;
+        self.template_editor.error = None;
+    }
+
+    /// Delete a template version the operator has confirmed.
+    ///
+    /// For a procedure typed by mistake only: the store refuses a version any
+    /// bootstrap run recorded, and refuses one this build ships (it would come
+    /// back on the next open). Both refusals name retirement and are shown rather
+    /// than swallowed. The audit entry outlives the row.
+    pub fn remove_template(&mut self, id: &str, version: &str) {
+        self.template_editor.error = None;
+        let Some(store) = &self.store else { return };
+        match store.delete_template(id, version) {
+            Ok(stored) => {
+                self.record(
+                    "template.removed",
+                    &format!("template:{id}"),
+                    &stored.audit_detail(),
+                );
+                self.status = format!("{id} version {version} removed");
+                tracing::info!(event = "template.removed", template = id, version);
+                self.template_editor.pending_removal = None;
+                // The editor may have been showing exactly what was just deleted.
+                if self.template_editor.draft.id.trim() == id
+                    && self.template_editor.draft.loaded_version.as_deref() == Some(version)
+                {
+                    self.template_editor.draft.loaded_version = None;
+                }
+                self.refresh();
+            }
+            Err(e) => {
+                tracing::warn!(event = "template.remove.refused", template = id, reason = %e);
+                self.template_editor.error = Some(e.to_string());
+                self.status = format!("refused: {e}");
+            }
         }
     }
 
@@ -1579,6 +2131,19 @@ impl YkDistApp {
     }
 }
 
+/// The refusal shown when a click would discard an unsaved template edit.
+fn unsaved_template_message(id: &str, action: &str) -> String {
+    let name = if id.trim().is_empty() {
+        "the new template".to_owned()
+    } else {
+        format!("`{}`", id.trim())
+    };
+    format!(
+        "there are unsaved changes to {name} — save them, or discard them with “Reload stored \
+         version”, before {action}"
+    )
+}
+
 fn existing_is_new(store: &Store, serial: u32) -> bool {
     !matches!(store.key_by_serial(serial), Ok(Some(_)))
 }
@@ -1593,6 +2158,9 @@ impl eframe::App for YkDistApp {
         // Deferred work first: dialogs are modal, and camera frames must not be
         // fetched from inside a paint closure.
         self.handle_db_request();
+        // Says "this workstation still has the register" to the other operators
+        // sharing a sync folder, and notices when one of them took it anyway.
+        self.tick_lease();
         #[cfg(feature = "camera")]
         if self.scan.open {
             let ctx = ui.ctx().clone();
@@ -1625,6 +2193,7 @@ impl eframe::App for YkDistApp {
                             Tab::Holders => crate::ui::holders::show(self, ui),
                             Tab::Distribution => crate::ui::distribution::show(self, ui),
                             Tab::Bootstrap => crate::ui::bootstrap::show(self, ui),
+                            Tab::Templates => crate::ui::templates::show(self, ui),
                             Tab::Terms => crate::ui::terms::show(self, ui),
                             Tab::Audit => crate::ui::audit::show(self, ui),
                             Tab::Settings => crate::ui::settings::show(self, ui),
@@ -1701,6 +2270,14 @@ impl YkDistApp {
                             match store.location() {
                                 Location::NetworkShare => "db: network share",
                                 Location::LocalDisk => "db: local",
+                                // The lock is the thing worth a place in the
+                                // status bar: it is what makes a shared sync
+                                // folder safe to work in, and its absence is what
+                                // an operator has to know about.
+                                Location::CloudSync if store.lease().is_some() => {
+                                    "db: cloud-sync (locked)"
+                                }
+                                Location::CloudSync => "db: cloud-sync (UNLOCKED)",
                             },
                             IndicatorState::On,
                         );

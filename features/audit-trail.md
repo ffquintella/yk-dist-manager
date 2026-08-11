@@ -14,7 +14,7 @@ on the trail being trustworthy: "the record says Ana received serial 20423633 on
 10/08/2026, and nobody has edited that since". A log file that an operator can edit
 answers nothing.
 
-FGV NRM §5.3.1 is explicit: login, account creation and account changes must always
+NRM §5.3.1 is explicit: login, account creation and account changes must always
 be audited; audit data must live in a different instance from operational data;
 nobody may delete or alter audit records, and that must be guaranteed by
 **database restrictions**, not by the application; and the audit table must
@@ -76,7 +76,7 @@ Minimum set, kept in sync with the feature files:
 | `key.distributed`, `key.returned` | distribution |
 | `bootstrap.dry_run` | wizard |
 | `bootstrap.started`, `bootstrap.step.done`, `bootstrap.step.failed`, `bootstrap.finished` | executor (Wave 1) |
-| `template.created`, `template.changed`, `template.seeded` | templates |
+| `template.created`, `template.changed`, `template.retired`, `template.reinstated`, `template.removed` | Templates screen — a new version, or a withdrawal (`template.seeded` is logged, not audited) |
 | `term.generated`, `term.saved`, `term.signed_uploaded` | consignment terms |
 | `term.template_edited`, `term.template_added` | Terms screen — a new version of the wording |
 | `db.backup`, `db.migrated`, `db.unlocked`, `db.unlock.failed` | storage |

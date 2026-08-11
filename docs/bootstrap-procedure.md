@@ -1,8 +1,14 @@
 # The bootstrap procedure
 
-The `fgv-standard` template, step by step. This document and
-[`BootstrapTemplate::default_fgv()`](../src/template/mod.rs) describe the same thing and
+The `org-standard` template, step by step. This document and
+[`BootstrapTemplate::org_standard()`](../src/template/mod.rs) describe the same thing and
 must be changed together.
+
+`org-standard` is the procedure this build *ships*, not the only one a unit can run: the
+**Templates** screen adds, duplicates and edits templates, and an edit is stored as a new
+version rather than replacing this one ([`../features/bootstrap-templates.md`](../features/bootstrap-templates.md)).
+So read what follows as the default, and read the version recorded on a bootstrap run for
+what a particular key actually got.
 
 > **Status:** the wizard builds and records this plan today. Execution against a key lands
 > in Wave 1 ([`../roadmap.md`](../roadmap.md)); the "Execute on key" button is disabled and
@@ -239,7 +245,7 @@ applied on the bootstrap" a year later.
 
 - **`fido-only`** — FIDO2 PIN, minimum PIN length, forced change, credential, verification.
   For keys that only need WebAuthn.
-- **`fgv-sysadmin`** (planned) — adds an SSH credential
+- **`org-sysadmin`** (planned) — adds an SSH credential
   ([`../features/ssh-authentication.md`](../features/ssh-authentication.md)).
 - **Stock preparation** (planned) — everything that does not need a holder, so keys can be
   prepared in a batch and assigned later.

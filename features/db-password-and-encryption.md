@@ -86,7 +86,7 @@ the new key, verify it opens and its audit chain verifies, then swap — never
 | 3 | Unlock attempt throttling + audit of failures | Todo | 3 fails → delay, per AGENTS.md |
 | 4 | Explicit KDF parameters (`PRAGMA kdf_iter`, cipher page size) | Todo | needs the ESI-approved cipher/parameter set |
 | 5 | "Encrypt an existing plain database" migration | Todo | one-way, confirmed, backup taken first |
-| 6 | Password strength meter + policy | Todo | reuse the FGV password guidance |
+| 6 | Password strength meter + policy | Todo | reuse the organisation's password guidance |
 | 7 | Optional: unlock with a YubiKey instead of a typed password | Todo | HMAC-SHA1 challenge-response (OTP slot 2) as the KDF input — depends on `native-otp` |
 
 Phase 7 is the interesting one: the tool distributes YubiKeys, so using one to

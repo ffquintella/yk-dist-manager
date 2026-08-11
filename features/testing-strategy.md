@@ -18,21 +18,21 @@ whole even though every part passes.
 
 **Suites in place; CI and the coverage gate are not.**
 
-- **259 tests** pass on the default features (`cargo test`); 258 with
+- **329 tests** pass on the default features (`cargo test`); 328 with
   `--all-features`, the difference being one test that only exists when
   `encrypted-db` is *off*. Plus 2 hardware tests, ignored by default.
 - `cargo check --no-default-features` is part of the pre-commit sweep, because the
   no-camera build is a supported configuration
   (`make check-all`).
-- Core line coverage **87.07%** (region 84.45%), above the 80% floor.
-- Unit suites: `unit_domain.rs`, `unit_template.rs`, `unit_audit.rs`,
+- Core line coverage **87.43%** (region 84.95%), above the 80% floor.
+- Unit suites: `unit_domain.rs`, `unit_template.rs` (50), `unit_audit.rs`,
   `unit_ykman_parse.rs`, `unit_store.rs` (29), `unit_device_backends.rs`,
   `unit_records.rs`, `unit_logging_format.rs`, `unit_term.rs` (30),
   `unit_settings.rs` (3), plus in-module tests for `logging`, `domain`, `custody`,
   `document` (7), `scan` (13) and `rxing_decoder` (5).
 - Behaviour suites: `behaviour_distribution.rs` (10 scenarios),
   `behaviour_bootstrap.rs` (10), `behaviour_storage.rs` (11),
-  `behaviour_terms_and_documents.rs` (15).
+  `behaviour_templates.rs` (13), `behaviour_terms_and_documents.rs` (15).
 - The barcode decoder is tested against **rendered Code 128 barcodes** produced by
   rxing's own encoder, so the real decode path runs with no camera and no fixtures to
   go stale.

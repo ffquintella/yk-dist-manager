@@ -127,6 +127,40 @@ fn selection(app: &mut YkDistApp, ui: &mut egui::Ui) {
         let description = template.description.clone();
         super::hint(ui, &description);
     }
+
+    // The wizard runs a template; the Templates screen decides what one is. The
+    // jump carries the selected template with it, the way the Distribution screen
+    // opens the Terms editor on the language it just generated.
+    let selected = app.selected_template().map(|t| t.id.clone());
+    let mut manage = false;
+    ui.add_space(8.0);
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .add(
+                Button::new("Manage templates…")
+                    .outline()
+                    .size(elegance::ButtonSize::Small),
+            )
+            .on_hover_text(
+                "add, change or withdraw a template — an edit is stored as a new version and \
+                 applies to the next run",
+            )
+            .clicked()
+        {
+            manage = true;
+        }
+        ui.add_space(6.0);
+        super::faint(
+            ui,
+            "The list offers the newest version of each template in use.",
+        );
+    });
+    if manage {
+        if let Some(id) = selected {
+            app.load_template(&id, None);
+        }
+        app.tab = crate::app::Tab::Templates;
+    }
 }
 
 fn steps(app: &mut YkDistApp, ui: &mut egui::Ui) {

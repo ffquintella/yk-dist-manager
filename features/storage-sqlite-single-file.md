@@ -40,11 +40,12 @@ password work tracked in `features/db-password-and-encryption.md`.
 
 ### Locking, by location
 
-| | Local disk | Network share |
-|---|---|---|
-| `journal_mode` | `WAL` | `DELETE` (rollback journal) |
-| `synchronous` | `NORMAL` | `FULL` |
-| `busy_timeout` | 5s | 20s |
+| | Local disk | Network share | Cloud-sync folder |
+|---|---|---|---|
+| `journal_mode` | `WAL` | `DELETE` (rollback journal) | `DELETE` |
+| `synchronous` | `NORMAL` | `FULL` | `FULL` |
+| `busy_timeout` | 5s | 20s | 20s |
+| single-writer lock file | — | — | **yes** ([spec](cloud-sync-hosting.md)) |
 
 **Why not WAL on a share:** WAL coordinates readers and writers through a shared
 memory file (`-shm`) mapped by every process. Network filesystems do not provide
@@ -117,12 +118,12 @@ Two operators on the same share will collide eventually. Planned policy:
 |---|---|---|---|
 | 1 | Schema v1 + `user_version` migrations | Done | refuses a newer schema |
 | 1b | Strict `open_existing` / `create_new` | Done | [spec](database-selection.md) — a typo can no longer create an empty database |
-| 1c | Schema v2 (serial provenance) and v3 (optional holder fields, term templates, documents) | Done | the v1→v3 chain is covered by a test that builds a v1 file by hand |
+| 1c | Schema v2 (serial provenance), v3 (optional holder fields, term templates, documents) and v4 (`templates.retired_at`) | Done | the v1→v4 chain is covered by a test that builds a v1 file by hand |
 | 2 | Location-aware pragmas | Done | WAL vs rollback journal, tested |
 | 2b | Cloud-sync detection: safe pragmas plus a visible warning | Done | found by a `--diagnose` report from a real installation |
 | 3 | Backup (`VACUUM INTO`) + `integrity_check` | Done | Settings screen |
 | 4 | Multi-operator concurrency policy | Todo | busy retry + optimistic `updated_at` |
-| 5 | Schema v2: per-step run rows instead of a JSON blob | Todo | needed for step-level reporting |
+| 5 | Per-step run rows instead of a JSON blob | Todo | needed for step-level reporting |
 | 6 | Scheduled/automatic backup with rotation | Todo | daily copy next to the file, keep N |
 | 7 | Archival and retention | Todo | blocked on the ESI retention decision |
 | 8 | Import from the spreadsheet this replaces | Todo | CSV mapping + dry-run preview |

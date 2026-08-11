@@ -13,7 +13,7 @@ username is, editable in Settings, with no verification. The audit trail is ther
 only as strong as the assumption that whoever is at the workstation is who they claim to
 be — which is exactly the assumption an audit trail is supposed to avoid needing.
 
-The FGV norm is direct about this: a single authentication and authorisation point,
+The development norm (NRM) is direct about this: a single authentication and authorisation point,
 authorisation by profile or group rather than per user, MFA on sensitive operations, and
 integration with the corporate Active Directory. Bootstrapping a security token is a
 sensitive operation by any reading.

@@ -32,6 +32,7 @@ pub mod distribution;
 pub mod holders;
 pub mod inventory;
 pub mod settings;
+pub mod templates;
 pub mod terms;
 
 /// Space between the window edge and the content, applied by the shell to the

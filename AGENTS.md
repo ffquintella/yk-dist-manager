@@ -28,8 +28,8 @@ work needs a feature file before it needs code.
 
 ## 2. Secure development rules
 
-These come from the FGV *Norma de Aquisição, Desenvolvimento e Manutenção de
-Sistemas* (NRM) and guide G-002, mapped to this codebase in
+These come from the institutional *system acquisition, development and maintenance
+norm* (NRM) and its secure-systems guide (G-002), mapped to this codebase in
 [`docs/security-and-compliance.md`](docs/security-and-compliance.md).
 
 **Secrets**
@@ -131,7 +131,7 @@ make coverage          # whole crate, including untested paint code
 make coverage-html     # browsable report
 ```
 
-Current: **87.07%** core line coverage (84.45% region), 259 tests.
+Current: **87.43%** core line coverage (84.95% region), 329 tests.
 Whole-crate line coverage is lower, the difference being the egui paint code the
 gate excludes.
 
@@ -210,7 +210,7 @@ Flag these and stop; do not assume approval:
 | Architecture security premises; any change to them | ESI |
 | Pre-production security verification | ESI |
 | New category of personal data; privacy notice; consent | DPO |
-| Assessment of a system processing personal data under FGV control | DCI |
+| Assessment of a system processing personal data under the organisation's control | DCI |
 | Integration with a corporate system (AD, PKI, CA) | ESI |
 | Retention period for audit and logs | ESI |
 | Classification level of this system | ESI |

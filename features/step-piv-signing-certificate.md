@@ -38,7 +38,7 @@ fallback commands are in the plan, with the SAN limitation stated on the step.
 `ykman piv certificates request` accepts only `--subject` (an RFC 4514 DN) and
 `--hash-algorithm`. There is **no** option for a SAN
 (verified against ykman 5.9.2). So the fallback path can produce a CSR with
-`CN=Ana Silva,OU=ESI,O=FGV` and nothing else. Three ways out:
+`CN=Ana Silva,OU=IT,O=Example Organisation` and nothing else. Three ways out:
 
 | Option | How the SAN gets there | Cost |
 |---|---|---|

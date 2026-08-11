@@ -37,7 +37,7 @@ The response sequence, all of it recorded:
 4. If the key protected anything else (a database password via challenge-response,
    an SSH authorised key), list those dependencies so nothing is missed.
 5. Produce an incident note: serial, holder, what was on the key, what was revoked, and
-   when. The FGV norm treats a possible credential compromise as an incident to be
+   when. The norm treats a possible credential compromise as an incident to be
    reported to the ESI — the tool should produce that text, not leave it to memory.
 
 ### Returned

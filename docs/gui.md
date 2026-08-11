@@ -1,6 +1,6 @@
 # GUI
 
-egui/eframe 0.36. Seven screens plus the database chooser. The audience is an operator at a
+egui/eframe 0.36. Eight screens plus the database chooser. The audience is an operator at a
 desk with a key in hand, often mid-conversation with the person receiving it.
 
 ## egui 0.36 notes
@@ -142,6 +142,43 @@ be pasted into a ticket. Secrets render as `<FIDO2-PIN>`.
 "Execute on key" is present and **disabled**: the screen states its own limitation rather
 than implying capability it does not have.
 
+The template list offers the **newest version of each template in use**; *Manage
+templates…* opens the Templates screen on whichever one is selected.
+
+### Templates
+
+Where the bootstrap procedure itself is edited. Same argument as the Terms screen: the
+procedure is content the unit owns, so changing a step must not mean changing Rust.
+
+- **On record** lists every template version: name and id, version, how many steps are
+  selected by default, how many runs recorded it, badges (`offered` / `superseded` /
+  `retired`, plus `built-in`), and the date. Per row: *Edit*, *Duplicate*,
+  *Retire* / *Reinstate*, and *Remove*.
+- **Remove is disabled where it cannot be granted**, with the reason on the button — a
+  version a run recorded, or one this build ships (that one would be re-created on the next
+  open). Both point at retirement instead. When it is allowed, it asks first, in a panel
+  that says what goes and what stays.
+- **The editor** takes an id (fixed once stored — a run refers to it), a name, a
+  description, and the steps. Each step row carries its `enabled` and `required`
+  checkboxes, its id, ↑ / ↓ to change the order of execution, *Remove step*, and *Details*
+  — which opens the step id, its description and its parameters as `name = value` lines.
+  *Add a step* appends one of the twelve kinds **with the parameters that kind reads**
+  already filled in.
+- **A live verdict**, `plans` or the exact refusal, from a real `plan()` against a
+  fictitious holder and key. An unknown `{{variable}}`, a missing parameter, a duplicate
+  step id or a template with nothing enabled is caught at the desk — and the store applies
+  the same gate, so nothing unplannable can be saved.
+- **Save as new version** writes version *N+1* and never overwrites; *Reload stored
+  version* discards the edit; *Restore built-in steps* brings back what this build ships
+  (in the editor — nothing is stored until you save). Starting or duplicating a template
+  with unsaved changes is refused, naming both ways forward.
+- **Variables** lists every name a description or parameter may use, with the value the
+  draft check substitutes.
+
+The audit trail gets `template.created`, `template.changed`, `template.retired`,
+`template.reinstated` or `template.removed` — with the id, version, previous version, step
+count and run count, and never the procedure text.
+
 ### Terms
 
 Where the wording of the consignment term is edited — the term is institutional text
@@ -262,12 +299,15 @@ See [`../features/gui-shell.md`](../features/gui-shell.md) and
 
 Paint code is not unit tested. Everything behind a button lives in a `YkDistApp` method
 (`detect_keys`, `submit_holder`, `submit_distribution`, `return_key`, `build_plan`,
-`record_dry_run`, `verify_audit`, `save_term_template`) and is covered by the behaviour
-suites through the same store calls. If something in the UI is hard to test, that is the
-signal to move it down — not to skip the test.
+`record_dry_run`, `verify_audit`, `save_term_template`, `save_template`) and is covered by
+the behaviour suites through the same store calls. If something in the UI is hard to test,
+that is the signal to move it down — not to skip the test.
 
-The Terms screen is the current example of that rule: the paint code holds buffers and
-buttons, while the decisions — the next version number, what makes a template storable,
-which version a term is generated from, whether an edit is unsaved — are
-`term::next_version`, `TermTemplate::check`, `term::choose_template` and `term::is_edited`,
-all covered by `tests/unit_term.rs` and `tests/behaviour_terms_and_documents.rs`.
+The Terms and Templates screens are the current examples of that rule: the paint code holds
+buffers and buttons, while the decisions live below it and are covered by tests —
+`term::next_version` / `versioning::next_version`, `TermTemplate::check` /
+`BootstrapTemplate::check`, `term::choose_template` / `template::latest_per_id`,
+`term::is_edited` / `TemplateDraft::is_dirty`, and the whole editing model in
+`template::draft` (add, remove and move a step, parse the parameter lines). Covered by
+`tests/unit_term.rs`, `tests/unit_template.rs`,
+`tests/behaviour_terms_and_documents.rs` and `tests/behaviour_templates.rs`.

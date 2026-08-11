@@ -41,7 +41,7 @@ fn register_form(app: &mut YkDistApp, ui: &mut egui::Ui) {
             super::capped_input(left, &mut app.holder_form.email, MAX_TEXT, |input| {
                 input
                     .label("Corporate e-mail")
-                    .hint("name@fgv.br")
+                    .hint("name@example.org")
                     .id_salt("holder-email")
             });
             left.add_space(8.0);

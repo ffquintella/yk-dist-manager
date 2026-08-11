@@ -1,0 +1,97 @@
+<!--
+  yk-dist-manager — application icon.
+
+  The single source of truth for every raster asset: `make icons` renders this
+  file to the PNG sizes, the macOS .icns and the raw RGBA blob the window icon
+  is built from. Edit here, re-run `make icons`, commit both.
+
+  The mark: a box truck carrying a YubiKey. The cargo panel *is* the key seen
+  face-on — keyring slot at the top, gold touch contact in the middle, USB
+  contact block at the foot — because at 16 px the gold ring on a dark slab is
+  the one YubiKey cue that survives, and the truck silhouette is the one
+  distribution cue that survives. Nothing in the mark is text, so it needs no
+  translation.
+
+  Geometry for whoever edits it: the drawing occupies x 48–462, y 112–396 of a
+  512 canvas. That centres it and keeps the ~10% margin macOS and Windows both
+  crop into.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="YubiKey Distribution Manager">
+  <title>YubiKey Distribution Manager</title>
+
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#26374D"/>
+      <stop offset="1" stop-color="#0C131C"/>
+    </linearGradient>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F8FBFD"/>
+      <stop offset="1" stop-color="#D3E1EE"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2B3A4B"/>
+      <stop offset="1" stop-color="#111922"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFD469"/>
+      <stop offset="1" stop-color="#E5A017"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Backdrop. The rounded square is the icon; the mark never floats free, so
+       it reads the same on a light or a dark desktop. -->
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+
+  <!-- Motion: the truck is going somewhere. Muted, so it never competes with
+       the gold. -->
+  <g stroke="#7189A3" stroke-width="13" stroke-linecap="round" opacity="0.5">
+    <path d="M48 176 H94"/>
+    <path d="M48 218 H82"/>
+    <path d="M48 260 H94"/>
+  </g>
+
+  <!-- Chassis, under both box and cab, so the wheels have something to hang from. -->
+  <rect x="114" y="320" width="342" height="16" rx="8" fill="#0A1017"/>
+
+  <!-- Cargo box. -->
+  <rect x="104" y="112" width="196" height="212" rx="18" fill="url(#body)"/>
+
+  <!-- Cab: back wall, roof, windscreen rake, bonnet, bumper. -->
+  <path d="M300 324 V172 Q300 164 308 164 H380 Q388 164 392 171 L418 234
+           Q420 238 425 239 L446 243 Q454 245 454 253 V324 Z" fill="url(#body)"/>
+
+  <!-- Seam where the cab meets the box. Gone below ~64 px, which is the point. -->
+  <path d="M300 176 V320" stroke="#8FA3B8" stroke-width="4" opacity="0.3"/>
+
+  <!-- Glass. The same dark as the key, so the whole icon is two colours and a metal. -->
+  <path d="M366 182 L388 182 L410 230 L366 230 Z" fill="url(#panel)"
+        stroke="url(#panel)" stroke-width="7" stroke-linejoin="round"/>
+
+  <!-- Headlamp. -->
+  <circle cx="440" cy="298" r="8" fill="url(#gold)"/>
+
+  <!-- The YubiKey, as the panel on the side of the box. Slim enough that it
+       cannot be mistaken for a phone, and the touch ring nearly spans its
+       width so the gold is the first thing the eye lands on. -->
+  <rect x="164" y="130" width="76" height="176" rx="14" fill="url(#panel)"/>
+  <!-- Keyring slot, punched through to the body colour. -->
+  <rect x="190" y="141" width="24" height="12" rx="6" fill="#E6EEF6"/>
+  <!-- Touch contact. -->
+  <circle cx="202" cy="222" r="22" fill="none" stroke="url(#gold)" stroke-width="13"/>
+  <!-- USB contact block at the foot of the key. -->
+  <rect x="189" y="282" width="26" height="14" rx="3" fill="#93A9BF"/>
+
+  <!-- Wheels. Dark tyre, light rim, so they read against the dark backdrop. -->
+  <g fill="#0A1017" stroke="#DCE7F1" stroke-width="6">
+    <circle cx="178" cy="356" r="40"/>
+    <circle cx="414" cy="356" r="40"/>
+  </g>
+  <g fill="#DCE7F1">
+    <circle cx="178" cy="356" r="13"/>
+    <circle cx="414" cy="356" r="13"/>
+  </g>
+
+  <!-- Hairline bevel. Only visible at 128 px and up, where a flat edge looks cheap. -->
+  <rect x="1.5" y="1.5" width="509" height="509" rx="110.5" fill="none"
+        stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="3"/>
+</svg>

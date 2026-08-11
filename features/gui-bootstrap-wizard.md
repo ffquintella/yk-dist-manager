@@ -21,7 +21,11 @@ document nobody reads at the desk.
 **Selection, review and dry run shipped.** `src/ui/bootstrap.rs`:
 
 - Selection: key serial (typed or read from the attached key), holder, template, with
-  the template description shown.
+  the template description shown. The template list offers the **newest version of each
+  template in use** (`template::latest_per_id`) — an older version stays in the database
+  for the runs that applied it, but offering it for a new run would be offering a
+  superseded procedure. *Manage templates…* opens the Templates screen on the selected
+  template (`features/bootstrap-templates.md`).
 - Per-step checkboxes; required steps are shown as required and cannot be deselected.
 - Changing the template clears the step selection and the plan, so a stale plan cannot
   be executed against a different template.

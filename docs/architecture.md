@@ -16,7 +16,7 @@
                             │       │       │
               ┌─────────────▼─┐ ┌───▼────┐ ┌▼──────────────┐
               │ ui/*.rs       │ │ device │ │ template      │
-              │ seven screens │ │ trait  │ │ render + plan │
+              │ eight screens │ │ trait  │ │ render + plan │
               │ + unlock      │ │        │ │               │
               └───────────────┘ └───┬────┘ └───────┬───────┘
                                     │              │
@@ -44,15 +44,17 @@
 |---|---|---|
 | `domain` | Records and their rules: validation, lifecycle transitions, run tallies | Do I/O, know about SQL, egui or `ykman` |
 | `device` | Talking to hardware behind `YubiKeyBackend` | Know about the database or the GUI |
-| `template` | Templates, variable rendering, and turning a template into a plan | Execute anything, hold a secret value |
+| `template` | Templates, variable rendering, the editable draft, and turning a template into a plan | Execute anything, hold a secret value |
+| `versioning` | One answer to "what number does the next edit get?", shared by templates and terms | Know what is being versioned |
 | `store` | The SQLite file: schema, migrations, pragmas, CRUD, audit insertion | Contain business rules that belong in `domain` |
 | `audit` | The chain: entry shape, hashing, verification, the file sink | Depend on `store` (so `store` can use it, not the reverse) |
 | `logging` | The one logging entry point | Be bypassed by a hand-formatted line |
+| `branding` | The embedded application icon, and refusing a malformed one | Depend on an optional feature — the icon exists in every build |
 | `app` | State, cached views, and every mutation together with its audit entry | Paint |
 | `ui` | Painting, and only painting | Do I/O inside a paint closure |
 
 Everything except `app` and `ui` is headless and testable with no display and no key
-attached. That is what makes 76 tests possible without hardware.
+attached. That is what makes the whole test suite possible without hardware.
 
 ## Data flow of one hand-over
 

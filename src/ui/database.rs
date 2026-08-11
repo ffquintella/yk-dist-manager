@@ -51,6 +51,7 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
                         ui.add_space(10.0);
                     }
 
+                    locked(app, ui);
                     recent(app, ui);
                     chooser(app, ui);
                     ui.add_space(14.0);
@@ -60,6 +61,77 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
             ui.add_space(40.0);
         });
     });
+}
+
+/// The refusal an operator gets when another workstation has the register.
+///
+/// A card rather than a line, because it carries an action nobody should take by
+/// accident: breaking a lock that a live session still holds is how a sync folder
+/// produces two divergent registers, so the button appears only once the holder
+/// has gone silent long enough to count as abandoned, and it says whose lock it is
+/// breaking.
+fn locked(app: &mut YkDistApp, ui: &mut egui::Ui) {
+    let Some(locked) = app.db_form.locked.as_ref() else {
+        return;
+    };
+    let path = locked.path.clone();
+    let holder = locked.holder.clone();
+    let stale = locked.stale;
+    let same_host = locked.same_host;
+    let mut request = None;
+
+    super::titled_card(ui, "In use by another workstation", |ui| {
+        super::mono(ui, &path.display().to_string());
+        ui.add_space(6.0);
+        super::faint(ui, &holder);
+        if same_host {
+            super::hint(
+                ui,
+                "That is this computer — the database is probably open in another window of \
+                 this application.",
+            );
+        }
+        ui.add_space(10.0);
+
+        if stale {
+            super::notice(
+                ui,
+                CalloutTone::Warning,
+                "That session has not refreshed its lock for over fifteen minutes, so it is \
+                 probably gone — a crash, a closed laptop, or a machine switched off. If you can \
+                 confirm nobody is working in this database, you can take the lock over. If that \
+                 operator is mid-hand-over, taking it over risks two divergent registers.",
+            );
+            ui.add_space(10.0);
+            if ui
+                .add(Button::new("Take the lock over").accent(Accent::Red))
+                .on_hover_text("records who was holding it, in the audit trail")
+                .clicked()
+            {
+                request = Some(DbRequest::TakeOverLock(path.clone()));
+            }
+        } else {
+            super::notice(
+                ui,
+                CalloutTone::Neutral,
+                "That session is alive — it refreshed its lock in the last few minutes. Wait for \
+                 it to close the database, or ask that operator to.",
+            );
+            ui.add_space(10.0);
+            if ui
+                .add(Button::new("Try again").outline())
+                .on_hover_text("check whether the lock has been released")
+                .clicked()
+            {
+                request = Some(DbRequest::Open(path.clone()));
+            }
+        }
+    });
+    ui.add_space(14.0);
+
+    if let Some(request) = request {
+        app.db_request = Some(request);
+    }
 }
 
 fn recent(app: &mut YkDistApp, ui: &mut egui::Ui) {

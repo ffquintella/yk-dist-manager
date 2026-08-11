@@ -52,7 +52,7 @@ The YubiKey's OpenPGP applet holds three keys: `SIG` (signature), `DEC` (decrypt
 
 ### The identity binding
 
-The e-mail lives in the **user id** of the OpenPGP key: `Ana Silva <ana.silva@fgv.br>`.
+The e-mail lives in the **user id** of the OpenPGP key: `Ana Silva <ana.silva@example.org>`.
 This is set at generation time. Consequences that differ from PIV:
 
 - The UID is part of the key material's self-signature, so getting it wrong means

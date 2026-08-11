@@ -1,6 +1,6 @@
 //! Settings: operator identity, appearance, database location and health.
 
-use elegance::{Accent, Button, Select};
+use elegance::{Accent, Button, CalloutTone, Select};
 
 use crate::app::{DbRequest, YkDistApp};
 use crate::domain::MAX_TEXT;
@@ -46,13 +46,30 @@ fn identity(app: &mut YkDistApp, ui: &mut egui::Ui) {
                 identity_changed = true;
             }
             if super::capped_input(right, &mut app.org, MAX_TEXT, |input| {
-                input.label("Organisation").id_salt("settings-org")
+                input
+                    .label("Organisation")
+                    .hint("your unit or institution — it reaches the certificate subject")
+                    .id_salt("settings-org")
             })
             .lost_focus()
             {
                 identity_changed = true;
             }
         });
+
+        // The organisation is not something this application can know, and it is
+        // not cosmetic: `{{org}}` is interpolated into the PIV certificate subject
+        // and the FIDO2 relying-party id. So the placeholder is called out rather
+        // than left to be discovered on a certificate.
+        if app.org.trim() == crate::app::DEFAULT_ORG || app.org.trim().is_empty() {
+            ui.add_space(8.0);
+            super::notice(
+                ui,
+                CalloutTone::Warning,
+                "Set the organisation before bootstrapping a key: it goes into the certificate \
+                 subject and the FIDO2 relying-party id of every key this tool prepares.",
+            );
+        }
 
         ui.add_space(12.0);
         appearance(app, ui);
@@ -109,10 +126,29 @@ fn database_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
                             "network share — rollback journal, synchronous=FULL, 20s busy timeout"
                         }
                         Some(Location::LocalDisk) => "local disk — WAL, synchronous=NORMAL",
+                        Some(Location::CloudSync) => {
+                            "cloud-sync folder — rollback journal, synchronous=FULL, plus a \
+                             single-writer lock file"
+                        }
                         None => "—",
                     },
                 );
                 ui.end_row();
+
+                // The lock is the whole answer to "can two of us use this?", so
+                // it gets a row of its own rather than a footnote.
+                if let Some(lease) = app.store.as_ref().and_then(|s| s.lease()) {
+                    ui.label("Single-writer lock");
+                    ui.vertical(|ui| {
+                        ui.add(elegance::Badge::new(
+                            "held by this workstation",
+                            elegance::BadgeTone::Ok,
+                        ));
+                        super::faint(ui, &lease.holder().to_string());
+                        super::mono(ui, &lease.lock_file().display().to_string());
+                    });
+                    ui.end_row();
+                }
 
                 ui.label("Password protection");
                 match app.store.as_ref().map(|s| s.is_encrypted()) {
@@ -137,14 +173,59 @@ fn database_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
             });
             });
 
-        // A cloud-sync folder is a data-loss risk, not a note in a table.
+        // A cloud-sync folder is a data-loss risk, not a note in a table — and
+        // what the lock does and does not cover has to be said in the same breath,
+        // or "locked" reads as "solved".
         if app.store.as_ref().is_some_and(|s| s.on_cloud_sync()) {
+            ui.add_space(10.0);
+            let locked = app.store.as_ref().is_some_and(|s| s.lease().is_some());
+            if locked {
+                super::notice(
+                    ui,
+                    CalloutTone::Warning,
+                    "This database is in a cloud-sync folder. One workstation at a time may open \
+                     it: this session holds the lock file next to the database, and another \
+                     computer is refused by name until it is released. Close the database (or the \
+                     application) before working on it elsewhere, and give the sync client time \
+                     to finish uploading. The lock only binds workstations running this tool — a \
+                     network share, or a local file with a scheduled backup, is still the safer \
+                     home.",
+                );
+            } else {
+                super::error_label(
+                    ui,
+                    "this database is in a cloud-sync folder and no single-writer lock is held — \
+                     a sync client can copy the file mid-write, and resolves a clash by keeping \
+                     both copies rather than merging. Reopen it without the lock disabled, move \
+                     it to a network share, or keep it local and back it up.",
+                );
+            }
+        }
+
+        // Copies a sync client could not merge: the register may already have
+        // forked, and that is not a warning to leave in a log file.
+        let conflicts: Vec<String> = app
+            .store
+            .as_ref()
+            .map(|store| {
+                store
+                    .conflict_copies()
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !conflicts.is_empty() {
             ui.add_space(10.0);
             super::error_label(
                 ui,
-                "this database is in a cloud-sync folder — a sync client can copy the file \
-                 mid-write, and resolves a clash by keeping both copies rather than merging. \
-                 Move it to a network share, or keep it local and back it up.",
+                &format!(
+                    "the sync client left {} copy/copies it could not merge next to this \
+                     database: {}. Two operators may have written to different versions of the \
+                     register — compare them before trusting either.",
+                    conflicts.len(),
+                    conflicts.join(", ")
+                ),
             );
         }
 

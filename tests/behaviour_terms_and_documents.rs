@@ -34,7 +34,7 @@ impl World {
         });
         self.store.upsert_key(&key).unwrap();
 
-        let holder = Holder::new("Ana Silva", "ana.silva@fgv.br", "ESI", "12345")
+        let holder = Holder::new("Ana Silva", "ana.silva@example.org", "ESI", "12345")
             .unwrap()
             .with_optional("123.456.789-00", "+55 21 99999-0000", "")
             .unwrap();
@@ -81,10 +81,10 @@ fn scenario_generate_the_term_for_a_hand_over_in_portuguese() {
         &holder,
         &key,
         Some(&record),
-        "fgv-standard 1 — FIDO2 PIN",
+        "org-standard 1 — FIDO2 PIN",
         "Transport secret, holder must change it on first use",
         "felipe",
-        "FGV",
+        "Example Organisation",
     );
     let text = render_term(template, &ctx).unwrap();
 
@@ -110,10 +110,10 @@ fn scenario_the_same_hand_over_in_english() {
         &holder,
         &key,
         Some(&record),
-        "fgv-standard 1",
+        "org-standard 1",
         "custody",
         "felipe",
-        "FGV",
+        "Example Organisation",
     );
     let text = render_term(template, &ctx).unwrap();
 
@@ -200,10 +200,10 @@ fn scenario_the_operator_edits_the_wording_and_the_next_term_uses_it() {
         &holder,
         &key,
         Some(&record),
-        "fgv-standard 1",
+        "org-standard 1",
         "Transport secret, holder must change it on first use",
         "felipe",
-        "FGV",
+        "Example Organisation",
     );
     let text = render_term(chosen, &ctx).unwrap();
     assert!(text.contains("treinamento presencial"));
@@ -273,7 +273,7 @@ fn scenario_a_unit_adds_a_language_through_the_editor() {
     let chosen = choose_template(&templates, "consignment", "es").unwrap();
     assert_eq!(chosen.language, "es");
 
-    let holder = Holder::new("Carlos Ruiz", "carlos.ruiz@fgv.br", "ESI", "").unwrap();
+    let holder = Holder::new("Carlos Ruiz", "carlos.ruiz@example.org", "ESI", "").unwrap();
     let key = YubiKeyRecord::from_device(&DeviceInfo {
         serial: 12_345_678,
         model: "YubiKey 5C".into(),
@@ -284,7 +284,15 @@ fn scenario_a_unit_adds_a_language_through_the_editor() {
     });
     let text = render_term(
         chosen,
-        &TermContext::from_records(&holder, &key, None, "none", "custody", "felipe", "FGV"),
+        &TermContext::from_records(
+            &holder,
+            &key,
+            None,
+            "none",
+            "custody",
+            "felipe",
+            "Example Organisation",
+        ),
     )
     .unwrap();
     assert!(text.contains("Nombre: Carlos Ruiz"));
@@ -519,14 +527,14 @@ fn scenario_document_counts_drive_the_missing_term_badge() {
 fn scenario_optional_holder_fields_are_filled_in_not_blanked_by_a_later_edit() {
     // Given a holder whose identification number is on file
     let world = World::new();
-    let holder = Holder::new("Ana Silva", "ana.silva@fgv.br", "ESI", "")
+    let holder = Holder::new("Ana Silva", "ana.silva@example.org", "ESI", "")
         .unwrap()
         .with_optional("123.456.789-00", "+55 21 99999-0000", "Rua A, 1")
         .unwrap();
     world.store.insert_holder(&holder).unwrap();
 
     // When the same person is registered again with only the required fields
-    let again = Holder::new("Ana Silva Souza", "ana.silva@fgv.br", "ESI", "").unwrap();
+    let again = Holder::new("Ana Silva Souza", "ana.silva@example.org", "ESI", "").unwrap();
     world.store.insert_holder(&again).unwrap();
 
     // Then the optional data is not lost — a term generated later still has it

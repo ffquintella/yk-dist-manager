@@ -13,7 +13,7 @@ document-signing certificate without a matching `rfc822Name` is not usable by th
 mail client it is meant for.
 
 Everything beyond that is personal data we would be holding without a purpose.
-LGPD minimisation is the reason the record is this short, and the FGV norm requires
+LGPD minimisation is the reason the record is this short, and the norm requires
 documenting which tables hold personal data — see
 `docs/security-and-compliance.md`.
 
@@ -116,7 +116,7 @@ a later phase rather than a startup dependency.
 
 ## Open questions and gates
 
-- **DPO gate**: this is personal data under FGV control. The privacy notice, the
+- **DPO gate**: this is personal data under the organisation's control. The privacy notice, the
   lawful basis and the retention period are the DPO's call, and the DCI assesses the
   system. Do not add data categories before that.
 - Whether `registration` is required is a per-unit decision; it is optional in the

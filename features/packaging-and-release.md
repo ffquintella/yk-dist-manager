@@ -129,8 +129,8 @@ identifies the exact build.
 ## Audit events
 
 None from the app itself. Release actions are recorded in Git and CI, and the norm's
-change-document requirement is satisfied by the changelog plus the FGV change record
-(`features/fgv-compliance.md`).
+change-document requirement is satisfied by the changelog plus the change record
+(`features/compliance.md`).
 
 ## Tests
 

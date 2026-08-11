@@ -101,7 +101,7 @@ is rejected.
 
 | # | Phase | State | Notes |
 |---|---|---|---|
-| 1 | Shell, six screens, unlock, status bar | Done | |
+| 1 | Shell, eight screens, unlock, status bar | Done | Inventory, Holders, Distribution, Bootstrap, Templates, Terms, Audit, Settings |
 | 2 | Deferred-mutation pattern in tables | Done | avoids borrow conflicts and mid-paint writes |
 | 3 | Search / filter on Inventory, Holders, Distribution | Todo | the tables will not scale |
 | 4 | Sortable columns and pagination | Todo | consider `egui_extras::TableBuilder` |

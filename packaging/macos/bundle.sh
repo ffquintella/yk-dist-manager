@@ -16,7 +16,7 @@
 #   packaging/macos/bundle.sh [--release] [--dmg] [--sign IDENTITY]
 #
 # Environment:
-#   YKDM_BUNDLE_ID   bundle identifier (default: br.fgv.yk-dist-manager)
+#   YKDM_BUNDLE_ID   bundle identifier (default: org.example.yk-dist-manager)
 #   YKDM_FEATURES    cargo features (default: native-device,encrypted-db + defaults)
 #   YKDM_COPYRIGHT   NSHumanReadableCopyright
 #
@@ -58,7 +58,7 @@ fi
 
 APP_NAME="YubiKey Distribution Manager"
 BINARY="yk-dist-manager"
-IDENTIFIER="${YKDM_BUNDLE_ID:-br.fgv.yk-dist-manager}"
+IDENTIFIER="${YKDM_BUNDLE_ID:-org.example.yk-dist-manager}"
 FEATURES="${YKDM_FEATURES:-native-device,encrypted-db}"
 COPYRIGHT="${YKDM_COPYRIGHT:-Fundação Getulio Vargas}"
 
@@ -94,9 +94,10 @@ sed -e "s|@VERSION@|$VERSION|g" \
 # look for it.
 printf 'APPL????' >"$APP/Contents/PkgInfo"
 
-# An icon is optional: drop an .icns at packaging/macos/icon.icns and it is picked
-# up. No placeholder is invented — a made-up logo on an institutional tool is
-# worse than the generic one.
+# The icon is generated from assets/logo.svg by assets/render-icons.sh (`make
+# icons`) and committed, so a machine without a rasteriser still bundles an icon.
+# It stays optional here: if the file is absent the bundle is still valid, just
+# generic. No placeholder is invented on the fly.
 if [[ -f packaging/macos/icon.icns ]]; then
 	cp packaging/macos/icon.icns "$APP/Contents/Resources/icon.icns"
 	/usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string icon" \

@@ -60,6 +60,14 @@ fn config_treats_an_empty_password_as_no_password() {
 fn location_labels_describe_the_locking_strategy() {
     assert!(Location::LocalDisk.label().contains("WAL"));
     assert!(Location::NetworkShare.label().contains("rollback"));
+    // A sync folder needs the share's journal mode *and* the lock file, and the
+    // label is what tells the operator which one they are getting.
+    assert!(Location::CloudSync.label().contains("rollback"));
+    assert!(Location::CloudSync.label().contains("single-writer lock"));
+
+    assert!(Location::CloudSync.requires_lease());
+    assert!(!Location::NetworkShare.requires_lease());
+    assert!(!Location::LocalDisk.requires_lease());
 }
 
 #[test]
@@ -161,7 +169,7 @@ fn returning_an_unknown_distribution_is_not_found() {
 #[test]
 fn a_distribution_for_an_unknown_key_violates_the_foreign_key() {
     let store = Store::open_in_memory().unwrap();
-    let holder = Holder::new("Ana", "ana@fgv.br", "ESI", "").unwrap();
+    let holder = Holder::new("Ana", "ana@example.org", "ESI", "").unwrap();
     store.insert_holder(&holder).unwrap();
 
     let orphan = DistributionRecord {
@@ -363,11 +371,23 @@ fn a_v1_database_migrates_forward_keeping_its_rows() {
                  id TEXT PRIMARY KEY, full_name TEXT NOT NULL, email TEXT NOT NULL UNIQUE,
                  unit TEXT NOT NULL DEFAULT '', registration TEXT NOT NULL DEFAULT '',
                  active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
+             -- v1 shipped the templates table without `retired_at`; v4 adds it,
+             -- so the fixture has to carry the old shape for the ALTER to be
+             -- what it will be in the field.
+             CREATE TABLE templates (
+                 id TEXT NOT NULL, version TEXT NOT NULL, name TEXT NOT NULL,
+                 body TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (id, version));
+             CREATE TABLE bootstrap_runs (
+                 id TEXT PRIMARY KEY, key_serial INTEGER NOT NULL, holder_id TEXT,
+                 template_id TEXT NOT NULL, template_version TEXT NOT NULL,
+                 operator TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT,
+                 status TEXT NOT NULL, steps TEXT NOT NULL DEFAULT '[]',
+                 custody TEXT NOT NULL DEFAULT '');
              INSERT INTO keys VALUES ('11111111-1111-1111-1111-111111111111', 20423633,
                  'YubiKey 5 NFC', '5.4.3', 'Keychain (USB-A)', 0, '[\"FIDO2\"]', 'in_stock',
                  '', '', '2026-08-01T10:00:00+00:00', '2026-08-01T10:00:00+00:00');
              INSERT INTO holders VALUES ('22222222-2222-2222-2222-222222222222', 'Ana Silva',
-                 'ana@fgv.br', 'ESI', '', 1, '2026-08-01T10:00:00+00:00');",
+                 'ana@example.org', 'ESI', '', 1, '2026-08-01T10:00:00+00:00');",
         )
         .unwrap();
         conn.pragma_update(None, "user_version", 1).unwrap();
@@ -389,6 +409,13 @@ fn a_v1_database_migrates_forward_keeping_its_rows() {
 
     // The new tables exist and are usable.
     assert_eq!(store.seed_builtin_terms().unwrap(), 2);
+
+    // v4's column arrived: a template can be retired, which the old shape could
+    // not express.
+    store.seed_builtin_templates().unwrap();
+    let catalogue = store.template_catalogue().unwrap();
+    assert!(!catalogue.is_empty(), "templates carried through v4");
+    assert!(catalogue.iter().all(|stored| !stored.is_retired()));
 }
 
 #[test]
@@ -398,7 +425,7 @@ fn a_cloud_sync_folder_is_recognised_whatever_the_client() {
 
     // The real path that prompted this check, from a --diagnose report.
     assert!(looks_like_cloud_sync(Path::new(
-        "/Users/felipe/Library/CloudStorage/OneDrive-FGV/ykman/yk-dist-manager-v1.sqlite3"
+        "/Users/felipe/Library/CloudStorage/OneDrive-Contoso/ykman/yk-dist-manager-v1.sqlite3"
     )));
 
     for path in [
@@ -406,7 +433,7 @@ fn a_cloud_sync_folder_is_recognised_whatever_the_client() {
         "/Users/x/Dropbox/ti/keys.sqlite3",
         "/Users/x/Google Drive/keys.sqlite3",
         "/Users/x/Library/Mobile Documents/com~apple~CloudDocs/keys.sqlite3",
-        "C:\\Users\\x\\OneDrive - FGV\\keys.sqlite3",
+        "C:\\Users\\x\\OneDrive - Contoso\\keys.sqlite3",
         "/home/x/pCloud Drive/keys.sqlite3",
     ] {
         assert!(looks_like_cloud_sync(Path::new(path)), "missed: {path}");
@@ -428,18 +455,23 @@ fn a_cloud_sync_folder_is_recognised_whatever_the_client() {
 fn a_cloud_sync_database_avoids_wal_and_says_so() {
     use std::path::Path;
 
-    // Classified with the shares: WAL's shared-memory sidecars cannot survive a
-    // sync client, so the journal mode must be the conservative one.
+    // Its own classification, taking the shares' pragmas: WAL's shared-memory
+    // sidecars cannot survive a sync client, so the journal mode must be the
+    // conservative one — and the lock file is what makes two operators safe.
     assert_eq!(
         Location::detect(Path::new("/Users/x/OneDrive/keys.sqlite3")),
-        Location::NetworkShare
+        Location::CloudSync
     );
 
     // And the warning reaches the operator through the status line.
     let dir = tempfile::tempdir().unwrap();
-    let cloudish = dir.path().join("OneDrive-FGV");
+    let cloudish = dir.path().join("OneDrive-Contoso");
     std::fs::create_dir_all(&cloudish).unwrap();
-    let store = Store::open(&StoreConfig::new(cloudish.join("keys.sqlite3"))).unwrap();
+    let store = Store::open(
+        &StoreConfig::new(cloudish.join("keys.sqlite3"))
+            .with_sync_policy(yk_dist_manager::store::SyncPolicy::immediate()),
+    )
+    .unwrap();
 
     assert!(store.on_cloud_sync());
     assert!(

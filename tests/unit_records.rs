@@ -17,7 +17,7 @@ fn record(distributed_days_ago: i64, returned_days_ago: Option<i64>) -> Distribu
         key_id: uuid::Uuid::new_v4(),
         key_serial: 20_423_633,
         holder_id: uuid::Uuid::new_v4(),
-        holder_display: "Ana Silva <ana.silva@fgv.br>".into(),
+        holder_display: "Ana Silva <ana.silva@example.org>".into(),
         distributed_at: now - Duration::days(distributed_days_ago),
         distributed_by: "felipe".into(),
         method: DeliveryMethod::InPerson,
@@ -98,7 +98,7 @@ fn run_status_serialises_for_the_database() {
     assert_eq!(decoded, RunStatus::Aborted);
 }
 
-/// A template exercising the branches `fgv-standard` does not: an OTP slot
+/// A template exercising the branches `org-standard` does not: an OTP slot
 /// credential, and an escrowed (rather than PIN-protected) management key.
 fn variant_template() -> BootstrapTemplate {
     BootstrapTemplate {
@@ -185,7 +185,7 @@ fn a_plan_without_a_serial_omits_the_device_selector() {
 
 #[test]
 fn the_verify_step_names_what_it_reads_back() {
-    let commands = plan(&BootstrapTemplate::default_fgv(), &ctx()).unwrap();
+    let commands = plan(&BootstrapTemplate::org_standard(), &ctx()).unwrap();
     let verify = commands
         .iter()
         .find(|c| c.kind == StepKind::Verify)
@@ -196,7 +196,7 @@ fn the_verify_step_names_what_it_reads_back() {
 
 #[test]
 fn native_steps_report_the_native_call_as_their_detail() {
-    let commands = plan(&BootstrapTemplate::default_fgv(), &ctx()).unwrap();
+    let commands = plan(&BootstrapTemplate::org_standard(), &ctx()).unwrap();
     let keygen = commands
         .iter()
         .find(|c| c.kind == StepKind::PivKeygen)
@@ -210,8 +210,8 @@ fn native_steps_report_the_native_call_as_their_detail() {
 }
 
 fn ctx() -> RenderContext {
-    let holder = Holder::new("Ana Silva", "ana.silva@fgv.br", "ESI", "").unwrap();
-    RenderContext::for_holder(&holder, 20_423_633, "felipe", "FGV")
+    let holder = Holder::new("Ana Silva", "ana.silva@example.org", "ESI", "").unwrap();
+    RenderContext::for_holder(&holder, 20_423_633, "felipe", "Example Organisation")
 }
 
 #[test]

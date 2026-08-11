@@ -20,7 +20,7 @@ fn versioned(language: &str, version: &str, body: &str) -> TermTemplate {
 }
 
 fn holder_full() -> Holder {
-    Holder::new("Ana Silva", "ana.silva@fgv.br", "ESI", "12345")
+    Holder::new("Ana Silva", "ana.silva@example.org", "ESI", "12345")
         .unwrap()
         .with_optional(
             "123.456.789-00",
@@ -31,7 +31,7 @@ fn holder_full() -> Holder {
 }
 
 fn holder_minimal() -> Holder {
-    Holder::new("Bruno Costa", "bruno.costa@fgv.br", "ESI", "").unwrap()
+    Holder::new("Bruno Costa", "bruno.costa@example.org", "ESI", "").unwrap()
 }
 
 fn key() -> YubiKeyRecord {
@@ -50,10 +50,10 @@ fn ctx(holder: &Holder) -> TermContext {
         holder,
         &key(),
         None,
-        "fgv-standard 1 — FIDO2 PIN, PIV certificate import",
+        "org-standard 1 — FIDO2 PIN, PIV certificate import",
         "Transport secret, holder must change it on first use",
         "felipe",
-        "FGV",
+        "Example Organisation",
     )
 }
 
@@ -79,7 +79,7 @@ fn a_term_carries_the_name_and_identification_number_from_the_record() {
     assert!(text.contains("123.456.789-00"), "{text}");
     assert!(text.contains("Número de identificação"), "{text}");
     assert!(text.contains("20423633"), "the key serial must appear");
-    assert!(text.contains("ana.silva@fgv.br"));
+    assert!(text.contains("ana.silva@example.org"));
 }
 
 #[test]
@@ -138,7 +138,7 @@ fn the_english_term_says_identification_number_too() {
 fn the_term_states_what_was_applied_and_the_custody_model() {
     let holder = holder_full();
     let text = render_term(&TermTemplate::consignment_pt_br(), &ctx(&holder)).unwrap();
-    assert!(text.contains("fgv-standard 1"));
+    assert!(text.contains("org-standard 1"));
     assert!(text.contains("Transport secret"));
     assert!(
         text.contains("provisório"),
@@ -270,7 +270,7 @@ fn a_key_known_only_by_serial_still_produces_a_term() {
         "nothing recorded",
         "Transport secret, holder must change it on first use",
         "felipe",
-        "FGV",
+        "Example Organisation",
     );
 
     let text = render_term(&TermTemplate::consignment_pt_br(), &context).unwrap();

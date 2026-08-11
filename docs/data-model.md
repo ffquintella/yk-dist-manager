@@ -45,7 +45,7 @@ Either way the `audit` entries stay — the trail is append-only by trigger, so
 ## `holders` — the people
 
 **This is the personal-data table.** Any change here updates
-[security-and-compliance.md](security-and-compliance.md) and the FGV data documentation.
+[security-and-compliance.md](security-and-compliance.md) and the organisation's data documentation.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -112,16 +112,36 @@ Indexes: `idx_distributions_serial`, `idx_distributions_holder`, `idx_runs_seria
 
 | Column | Type | Notes |
 |---|---|---|
-| `id` | TEXT | e.g. `fgv-standard` |
+| `id` | TEXT | e.g. `org-standard`; lower-case, digits and hyphens (`template::check_id`) |
 | `version` | TEXT | e.g. `1` |
 | `name` | TEXT | Display name |
 | `body` | TEXT (JSON) | The full `BootstrapTemplate` |
 | `updated_at` | TEXT | |
+| `retired_at` | TEXT NULL | Set: withdrawn from the wizard, kept on record (v4) |
 | | | **PRIMARY KEY (`id`, `version`)** |
 
 An edited procedure is a new *version*, never a mutation of one that has already run.
+The **Templates** screen writes here through `Store::save_template_version`, which — like
+its term counterpart — reads the versions on record for that id and inserts one past the
+highest number, so the version a bootstrap run recorded stays exactly as it was and the
+number on the operator's screen cannot decide what gets written. The id itself is
+immutable once stored: a run refers to it.
+
 Built-ins are seeded idempotently and never overwrite an edited template of the same id and
 version.
+
+`retired_at` is why the wizard and the catalogue read different things:
+`Store::templates()` returns the rows where it is NULL (what may be offered), and
+`Store::template_catalogue()` returns every row with its run count (what the Templates
+screen manages). It is a **column and not a field in `body`** because `body` is the
+template format — shared with the future import/export — while retirement is this
+deployment's opinion about a template, and because it has to be queryable. Retirement is
+also what makes a withdrawal survive the built-in seeding that runs on every open: seeding
+asks whether `(id, version)` exists, not whether it is in use.
+
+`Store::delete_template` deletes a row outright, and refuses when a bootstrap run recorded
+that version or when this build ships it — see
+[`../features/bootstrap-templates.md`](../features/bootstrap-templates.md).
 
 ## `term_templates` — the consignment term, per language
 
@@ -211,12 +231,13 @@ Shipped so far:
 | v1 | `keys`, `holders`, `bootstrap_runs`, `distributions`, `templates`, `audit` |
 | v2 | `keys.serial_source` — how a serial was learned |
 | v3 | optional holder fields, `term_templates`, `documents` |
+| v4 | `templates.retired_at` — a procedure can be withdrawn without being deleted |
 
 A test builds a v1 database by hand and opens it with the current build, asserting the
-chain carries it to v3 without touching the rows (`a_v1_database_migrates_forward_keeping_its_rows`).
+chain carries it to v4 without touching the rows (`a_v1_database_migrates_forward_keeping_its_rows`).
 
-Planned: **v4** — per-step rows for `bootstrap_runs` (queryable step outcomes);
-**v5** — a `batches` table for bulk enrolment.
+Planned: **v5** — per-step rows for `bootstrap_runs` (queryable step outcomes);
+**v6** — a `batches` table for bulk enrolment.
 
 ## Personal data summary
 

@@ -53,7 +53,7 @@ integration point is an export plus a record — not a write into `authorized_ke
 ### Interaction with the rest of the template
 
 Adding this to the default template means a third credential and possibly a third PIN
-prompt during hand-over. It belongs in a separate template (`fgv-sysadmin`), not bolted
+prompt during hand-over. It belongs in a separate template (`org-sysadmin`), not bolted
 onto the standard one.
 
 ## Phases
@@ -61,7 +61,7 @@ onto the standard one.
 | # | Phase | State | Notes |
 |---|---|---|---|
 | 1 | Decide the mechanism (`ed25519-sk` vs PIV 9a) | Todo | depends on how SSH access is granted |
-| 2 | `StepKind::SshCredential` + template `fgv-sysadmin` | Todo | separate template, not the default |
+| 2 | `StepKind::SshCredential` + template `org-sysadmin` | Todo | separate template, not the default |
 | 3 | Resident `ed25519-sk` credential creation | Todo | reuses the FIDO2 credential machinery |
 | 4 | Public-key export in `authorized_keys` format | Todo | the deliverable to whoever manages access |
 | 5 | PIV 9a alternative with touch policy and certificate | Todo | for X.509-based access |

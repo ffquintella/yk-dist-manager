@@ -29,6 +29,11 @@ src/
   store/         the single SQLite file: schema, migrations, CRUD, audit insert
   audit/         hash chain, verification, file sink
   logging.rs     the one logging entry point
+  branding.rs    the embedded window icon
+assets/
+  logo.svg         the only hand-drawn artwork; everything else is rendered from it
+  render-icons.sh  `make icons`: PNGs, the macOS .icns, the embedded RGBA blob
+  icons/           generated, and committed — see below
 tests/
   unit_*.rs        one behaviour per test
   behaviour_*.rs   one Given/When/Then scenario per test
@@ -56,6 +61,19 @@ make bundle          # assemble target/bundle/YubiKey Distribution Manager.app
 make verify-bundle   # layout, plist, version, signature, and the binary's own --diagnose
 make run-bundled
 ```
+
+Changing the icon ([application-icon.md](../features/application-icon.md)):
+
+```bash
+make icons           # renders assets/logo.svg to every size, and checks the blob
+```
+
+`assets/logo.svg` is the only artwork edited by hand. Everything the script writes
+is generated *and* committed, because `make bundle` has to produce an icon on a
+machine with no rasteriser and `include_bytes!` needs the blob at compile time.
+Edit the SVG, run the target, commit both — a stale blob fails
+`src/branding.rs`'s tests, not the launch. The script needs
+`brew install librsvg imagemagick`.
 
 Feature combinations that must keep compiling:
 
@@ -89,7 +107,14 @@ cargo test --features native-device --test hardware_native -- --ignored --nocapt
 1. **Write the spec first**: `features/step-<name>.md`, with phases, audit events and tests.
    Add the row to `roadmap.md`.
 2. `StepKind` in [`src/domain/bootstrap.rs`](../src/domain/bootstrap.rs): add the variant, its
-   `label()`, and whether it `sets_secret()`.
+   `label()`, its `slug()` (the default step id), its place in `ALL` — which is the order the
+   Templates screen offers — and whether it `sets_secret()`.
+2b. `TemplateStep::for_kind()` in [`src/template/mod.rs`](../src/template/mod.rs): the
+   description and **the parameters this kind reads**, with the values the standard procedure
+   uses. This is what "Add a step" inserts, and
+   `a_step_added_by_hand_carries_the_parameters_its_kind_reads` asserts that a freshly added
+   step of every kind plans — so a kind whose parameters are only known to `plan_step` fails
+   the suite rather than surprising an operator.
 3. `native_op()` in [`src/template/plan.rs`](../src/template/plan.rs): declare the native call,
    the crate, the feature flag, and honestly whether it is `available`.
 4. `plan_step()`: build the `ykman` fallback argv (secrets as `Arg::Secret`) and the note

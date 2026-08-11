@@ -1,6 +1,6 @@
 //! The **single** logging entry point for the application.
 //!
-//! FGV G-002 fixes the operational log format:
+//! Guide G-002 fixes the operational log format:
 //!
 //! ```text
 //! [dd/mm/aaaa] hh:mm:ss ; evento ; detalhes

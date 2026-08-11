@@ -36,7 +36,7 @@ work.
 A credential created by this tool is created against an **RP id we choose**. That is
 useful and limited, and the limits must be stated plainly:
 
-- A credential for RP `fgv.br` created here **is** a real discoverable credential on
+- A credential for RP `example.org` created here **is** a real discoverable credential on
   the key, and is what a subsequent enrolment against a service on that origin can
   use — but only if that service accepts a pre-registered credential (i.e. it is our
   own relying party, or it supports enterprise enrolment).

@@ -27,7 +27,7 @@ fn the_settings_file_round_trips_and_survives_corruption() {
     settings.remember(Path::new("/Volumes/ti-share/keys.sqlite3"));
     settings.remember(Path::new("/Users/felipe/local.sqlite3"));
     settings.operator = "felipe".into();
-    settings.org = "FGV".into();
+    settings.org = "Example Organisation".into();
     settings.save().expect("saves");
 
     let reloaded = AppSettings::load();
@@ -38,7 +38,7 @@ fn the_settings_file_round_trips_and_survives_corruption() {
     );
     assert_eq!(reloaded.recent_databases.len(), 2);
     assert_eq!(reloaded.operator, "felipe");
-    assert_eq!(reloaded.org, "FGV");
+    assert_eq!(reloaded.org, "Example Organisation");
 
     // A password must never end up here: the file sits next to the database, so
     // storing one would defeat encrypting it.

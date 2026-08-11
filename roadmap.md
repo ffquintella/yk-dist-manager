@@ -30,15 +30,41 @@ deployment.
 | State | Count |
 |---|---|
 | Done | 9 |
-| In progress | 9 |
+| In progress | 10 |
 | Todo | 20 |
-| **Total tracked items** | **38** (across 35 specs — two items share a spec) |
+| **Total tracked items** | **39** (across 36 specs — two items share a spec) |
 
-Released: **v0.4.0**. Current wave: **Wave 1 — native execution.**
+Released: **v0.5.0**. Current wave: **Wave 1 — native execution.**
 
-**Out of turn in v0.4.0** (AGENTS.md §1 asks for the reason, in this file, in the same
-commit): the Inventory screen gained an **observation** per key and a **confirmed
-removal** of a registered key, both requested by the operator who will run the tool.
+**Out of turn, unreleased** (AGENTS.md §1 asks for the reason, in this file, in the
+same commit): the **Templates screen** — phase 2 of
+[`features/bootstrap-templates.md`](features/bootstrap-templates.md), plus add /
+duplicate / retire / remove — was built at the request of the operator who will run
+the tool. It belongs to Wave 0, which is not finished, rather than to Wave 1, and it
+was worth taking now for the same reason the Terms editor was: the procedure is
+content somebody else owns. "Templates are data, not code" was only true for a
+reader of the source — changing a step meant editing Rust and shipping a build, so
+in practice the procedure was as hard-coded as if it had been a constant. It also
+front-runs the executor usefully: the pre-save gate (`check()` plans every template
+against sample data) is the same gate a run will need, and it is now covered by
+tests before anything writes to a key. Schema **v4** (`templates.retired_at`) ships
+with a migration.
+
+**Also out of turn, unreleased**: an **application icon**
+([`features/application-icon.md`](features/application-icon.md)), requested by the
+same operator. It belongs to Wave 0 alongside the GUI shell, and it is small: one
+SVG, a render script, and 30 lines embedding the result. Taken now because it is
+cheap and because the alternative was shipping a bundle with a placeholder icon —
+during a hand-over the tool sits beside the register, the term to sign and a
+terminal, and an application identified by reading its title bar is one that gets
+mis-clicked. The mark is deliberately institution-neutral, consistent with v0.5.0
+removing every organisation name from the build: replacing it is one SVG and
+`make icons`. Whether the organisation running the tool wants its own identity
+there is recorded as an open gate in the feature file, not decided here.
+
+**Out of turn in v0.4.0**: the Inventory screen gained an **observation** per key and
+a **confirmed removal** of a registered key, both requested by the operator who will
+run the tool.
 Neither belongs to Wave 1, and both were cheap and self-contained — the `notes` column
 has existed since schema v1 with nothing in the GUI to fill it, and removal needed one
 store method with its refusal. They are recorded as Phase 9 of
@@ -50,8 +76,9 @@ Wave 0 (foundation) is in place, and v0.2.1–v0.2.2 add the paperwork and intak
 of the job: choosing or creating the database file, recording serials from a barcode,
 generating the consignment term in the holder's language, and filing the signed copy
 against the hand-over — and, from the Terms screen, editing that term's wording per
-language. 258 tests pass (plus 2 read-only hardware tests), with 87.07% line coverage of
-the headless core.
+language. The Templates screen now does the same for the bootstrap procedure itself.
+329 tests pass (plus 2 read-only hardware tests), with 87.43% line coverage of the
+headless core.
 
 Camera scanning is a default feature, and on macOS it needs the bundled application:
 an unbundled build refuses with an explanation rather than aborting (v0.2.2). Two
@@ -79,7 +106,7 @@ Everything needed before a single byte is written to a key.
 | `[/]` | Native device transport | [spec](features/native-device-transport.md) — `yubikey` over PC/SC reads serial + firmware from a real key today (verified against 5 NFC / fw 5.4.3, agrees with `ykman`). FIDO2 and OTP transports are Wave 1. |
 | `[x]` | `ykman` fallback + parsers | [spec](features/ykman-fallback.md) — argv-only subprocess, typed errors, parsers unit-tested against recorded output of ykman 5.9.2. |
 | `[/]` | Device detection | [spec](features/device-detection.md) — read-on-demand works; hot-plug polling and multi-key selection pending. |
-| `[/]` | Single-file SQLite storage | [spec](features/storage-sqlite-single-file.md) — schema **v3**, `user_version` migrations (v1→v3 tested), WAL locally / rollback journal on a share, `VACUUM INTO` backup, `integrity_check`. |
+| `[/]` | Single-file SQLite storage | [spec](features/storage-sqlite-single-file.md) — schema **v4**, `user_version` migrations (v1→v4 tested), WAL locally / rollback journal on a share, `VACUUM INTO` backup, `integrity_check`. |
 | `[x]` | Choosing / creating the database file | [spec](features/database-selection.md) — strict `open_existing` vs `create_new` (a typo can no longer create an empty database), recent-database list, native dialogs, switch from Settings. |
 | `[ ]` | Optional database password | [spec](features/db-password-and-encryption.md) — `encrypted-db` feature wires `PRAGMA key`; unlock screen exists. KDF parameters, password change and re-key are Todo. |
 | `[x]` | Logging | [spec](features/logging.md) — one entry point, three levels, G-002 line format, no hand-built log lines. |
@@ -88,11 +115,12 @@ Everything needed before a single byte is written to a key.
 | `[x]` | Serial from a barcode | [spec](features/serial-scanning.md) — camera decoding via `rxing` + `nokhwa`, a USB-wedge/typed path that needs no features, and provenance that only ever improves. |
 | `[x]` | Holder registry | [spec](features/holder-registry.md) — minimal personal data, validated e-mail, RFC 4514 subject derivation, plus optional identification number, phone and address. |
 | `[x]` | Distribution records | [spec](features/distribution-records.md) — hand-over, operator, delivery method, receipt reference, linked bootstrap run, return without rewriting history. |
-| `[/]` | Bootstrap templates | [spec](features/bootstrap-templates.md) — versioned templates, `{{variable}}` rendering, two built-ins, validation. A GUI editor and template signing are pending. |
+| `[/]` | Bootstrap templates | [spec](features/bootstrap-templates.md) — versioned templates, `{{variable}}` rendering, two built-ins, validation, and a **Templates screen**: add, duplicate, edit (always as a new version), retire / reinstate, remove. A draft is refused unless it *plans* against sample data. Import/export, signing and per-key applicability rules are pending. |
 | `[/]` | Bootstrap planner | [spec](features/bootstrap-engine.md) — plan with per-step transport (native / ykman / manual) and secret placeholders; dry runs recorded. **The executor is Wave 1.** |
-| `[/]` | GUI shell | [spec](features/gui-shell.md) — seven screens, unlock screen, status bar, egui 0.36 `App::ui`, themed with `egui-elegance` (four palettes, the choice persisted) and laid out fluidly (one gutter, full-width cards, columns that split the page, tables that contain their own overflow). Search, keyboard flow and window-state persistence still open. |
-| `[/]` | Bootstrap wizard | [spec](features/gui-bootstrap-wizard.md) — selection, per-step opt-out, plan review, dry run. Execution progress view pending. |
-| `[/]` | Testing strategy | [spec](features/testing-strategy.md) — 258 tests across unit + behaviour suites, mock backend, recorded fixtures, ignored hardware tests; 87.07% core line coverage. The gate is not yet enforced in CI. |
+| `[/]` | GUI shell | [spec](features/gui-shell.md) — eight screens, unlock screen, status bar, egui 0.36 `App::ui`, themed with `egui-elegance` (four palettes, the choice persisted) and laid out fluidly (one gutter, full-width cards, columns that split the page, tables that contain their own overflow). Search, keyboard flow and window-state persistence still open. |
+| `[/]` | Bootstrap wizard | [spec](features/gui-bootstrap-wizard.md) — selection (the newest version of each template in use), per-step opt-out, plan review, dry run, and a link to the Templates screen. Execution progress view pending. |
+| `[/]` | Application icon | [spec](features/application-icon.md) — one SVG (a box truck carrying a YubiKey), `make icons` rendering the PNGs, the macOS `.icns` and the RGBA blob the binary embeds; window, dock and bundle icons done. A Windows `.ico` resource and a Linux `hicolor` install wait on there being Windows and Linux packaging. |
+| `[/]` | Testing strategy | [spec](features/testing-strategy.md) — 329 tests across unit + behaviour suites, mock backend, recorded fixtures, ignored hardware tests; 87.43% core line coverage. The gate is not yet enforced in CI. |
 
 ### Paperwork
 
@@ -134,7 +162,7 @@ The point of the tool: apply the template to a key, safely, with evidence.
 | `[ ]` | OpenPGP signing subkey | [spec](features/step-openpgp-signing-subkey.md) — **not the chosen mechanism** (PIV 9c is, decided 2026-08-10). Kept specified for a unit that signs Git commits or `gpg` mail; unscheduled. |
 | `[ ]` | SSH authentication via PIV | [spec](features/ssh-authentication.md) — slot 9a plus PKCS#11 for SSH, for units that want it. |
 | `[/]` | Packaging & release | [spec](features/packaging-and-release.md) — the **macOS bundle is done** (`make bundle` / `verify-bundle` / `dmg`), which is what makes camera scanning work there. Developer ID signing + notarisation, Windows, Linux and CI remain, as does the `block` 0.1.6 resolution. |
-| `[ ]` | FGV compliance artefacts | [spec](features/fgv-compliance.md) — classification proposal, system registration, data documentation, change/homologation records. |
+| `[ ]` | Compliance artefacts | [spec](features/compliance.md) — classification proposal, system registration, data documentation, change/homologation records. |
 | `[ ]` | CI & coverage gate | [spec](features/testing-strategy.md) — fmt + clippy + tests + `cargo llvm-cov` with an 80% floor, enforced on every push. |
 
 ---
@@ -222,4 +250,8 @@ Decisions that change what gets built, and are not the implementer's to make.
 | 2026-08-10 | An edited term is stored as a **new version numbered by the database**, and generation takes the newest | The editor cannot be allowed to overwrite wording a holder has signed, and the version on the operator's screen must not decide what is written — two workstations editing the same term would otherwise both produce "version 2". The store reads what is on record and adds one |
 | 2026-08-11 | An observation is stored on the key, and audited by *shape* rather than by content | The one field no device can supply is the operator's, and it is the one field that sometimes needs correcting. The audit chain refuses `UPDATE` and `DELETE` by trigger, so quoting the text into it would make a mistyped observation permanent and put uncontrolled free text in the immutable record — the entry says set / cleared / changed and how long, which is what a reviewer needs to follow the register |
 | 2026-08-11 | A registered key can be **removed**, but only while no history refers to it — and removal is not the lifecycle exit | Intake produces mistakes (a mis-typed serial, a label scanned twice) and a register nobody can correct gets worked around in a spreadsheet. But a hand-over or a bootstrap run pointing at a serial nobody can look up is not a register, so `delete_key` refuses those and names retirement instead, which keeps the record. The audit entries outlive the row either way |
+| 2026-08-11 | The application carries **no institution's name** — the organisation is the operator's setting, and the built-in procedure is `org-standard` | A tool that hard-codes one unit's name is that unit's tool; a tool whose default template says `{{org}}` is anybody's. The name also is not decoration: it reaches a PIV certificate subject and a FIDO2 relying-party id, so it has to come from the deployment. The security rules keep citing NRM and G-002 — those are requirements, and describing them without naming the organisation costs nothing. Renaming the built-in id was done by *adding* the new id, never by rewriting the id a bootstrap run recorded |
+| 2026-08-11 | A bootstrap template is edited **only** by storing a new version, and its id is immutable once stored | A run records `(template_id, template_version)`, so overwriting a version would rewrite what a key was told to have applied to it, and renaming an id would orphan every run that referred to it. The number comes from the database, not from the operator's screen — two workstations editing the same template would otherwise both produce "version 2". Same rule, and now the same code, as the consignment term |
+| 2026-08-11 | A template is **retired** rather than deleted once anything refers to it — and a built-in can only ever be retired | Three facts collide: a register must be correctable, a run's procedure must stay explainable, and the application re-seeds its built-ins on every open. So removal is kept for the case it is honest in (a procedure typed by mistake, nothing referring to it), and everything else is retirement: withdrawn from the wizard, kept in the database, and *not* undone by the next launch. Deleting a built-in would only have looked like it worked, which is worse than a refusal that names the operation that lasts |
+| 2026-08-11 | A draft template must **plan** before it can be stored | `check()` runs a real `plan()` against a fictitious holder and key, including the steps that arrive disabled. An unknown `{{variable}}` or a missing `slot` is a refusal at the desk, by the person who typed it, instead of a failure in front of a key with a holder waiting — and because the store applies the same gate, nothing in the database can fail to plan. The cost is that the sample context has to be able to supply every documented variable, which a test asserts |
 | 2026-08-10 | The layout is fluid — the page decides width, and a wide table scrolls inside its own card | A card is an `egui::Frame`, so it was as wide as whatever was inside it: the Inventory table filled the window while the Holders form stopped at two 340px columns, and no two screens lined up. Making the *page* horizontally scrollable would have been the other fix, but then every card on a screen becomes as wide as the widest table on it — so the overflow is contained in `ui::table` and the body scrolls vertically only |

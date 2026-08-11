@@ -3,7 +3,7 @@
 ## Summary
 
 One logging entry point for the whole application, three levels, and the log line
-format that FGV G-002 specifies.
+format that guide G-002 specifies.
 
 ## Motivation
 

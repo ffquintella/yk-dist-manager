@@ -7,7 +7,7 @@ use yk_dist_manager::store::Store;
 use yk_dist_manager::template::{BootstrapTemplate, RenderContext, Transport, plan};
 
 fn holder() -> Holder {
-    Holder::new("Ana Silva", "ana.silva@fgv.br", "ESI", "").unwrap()
+    Holder::new("Ana Silva", "ana.silva@example.org", "ESI", "").unwrap()
 }
 
 #[test]
@@ -18,8 +18,8 @@ fn scenario_operator_plans_a_bootstrap_for_a_named_holder() {
     let holder = holder();
 
     // When the standard template is planned for them
-    let ctx = RenderContext::for_holder(&holder, info.serial, "felipe", "FGV");
-    let commands = plan(&BootstrapTemplate::default_fgv(), &ctx).unwrap();
+    let ctx = RenderContext::for_holder(&holder, info.serial, "felipe", "Example Organisation");
+    let commands = plan(&BootstrapTemplate::org_standard(), &ctx).unwrap();
 
     // Then every step the roadmap promises is present, bound to this person
     let kinds: Vec<StepKind> = commands.iter().map(|c| c.kind).collect();
@@ -43,7 +43,7 @@ fn scenario_operator_plans_a_bootstrap_for_a_named_holder() {
         csr.note
             .as_deref()
             .unwrap_or("")
-            .contains("ana.silva@fgv.br"),
+            .contains("ana.silva@example.org"),
         "the certificate must carry the holder's e-mail"
     );
 }
@@ -51,8 +51,8 @@ fn scenario_operator_plans_a_bootstrap_for_a_named_holder() {
 #[test]
 fn scenario_the_plan_never_shows_a_pin() {
     // Given a planned bootstrap
-    let ctx = RenderContext::for_holder(&holder(), 20_423_633, "felipe", "FGV");
-    let commands = plan(&BootstrapTemplate::default_fgv(), &ctx).unwrap();
+    let ctx = RenderContext::for_holder(&holder(), 20_423_633, "felipe", "Example Organisation");
+    let commands = plan(&BootstrapTemplate::org_standard(), &ctx).unwrap();
 
     // Then every secret is a placeholder, in the command and in the detail line
     for command in &commands {
@@ -68,7 +68,7 @@ fn scenario_the_plan_never_shows_a_pin() {
 #[test]
 fn scenario_operator_deselects_the_optional_steps() {
     // Given the standard template with its optional steps turned off
-    let mut template = BootstrapTemplate::default_fgv();
+    let mut template = BootstrapTemplate::org_standard();
     for step in &mut template.steps {
         if !step.required {
             step.enabled = false;
@@ -76,7 +76,7 @@ fn scenario_operator_deselects_the_optional_steps() {
     }
 
     // When it is planned
-    let ctx = RenderContext::for_holder(&holder(), 20_423_633, "felipe", "FGV");
+    let ctx = RenderContext::for_holder(&holder(), 20_423_633, "felipe", "Example Organisation");
     let commands = plan(&template, &ctx).unwrap();
 
     // Then the deselected steps are absent, and the required ones remain
@@ -94,8 +94,8 @@ fn scenario_a_recorded_run_says_what_was_applied() {
     let store = Store::open_in_memory().unwrap();
     let holder = holder();
     store.insert_holder(&holder).unwrap();
-    let ctx = RenderContext::for_holder(&holder, 20_423_633, "felipe", "FGV");
-    let template = BootstrapTemplate::default_fgv();
+    let ctx = RenderContext::for_holder(&holder, 20_423_633, "felipe", "Example Organisation");
+    let template = BootstrapTemplate::org_standard();
     let commands = plan(&template, &ctx).unwrap();
 
     // When the run completes with every step applied
@@ -129,7 +129,7 @@ fn scenario_a_recorded_run_says_what_was_applied() {
 
     let stored = store.runs().unwrap();
     assert_eq!(stored.len(), 1);
-    assert_eq!(stored[0].template_id, "fgv-standard");
+    assert_eq!(stored[0].template_id, "org-standard");
     assert_eq!(stored[0].custody, "sealed envelope 2026-08-10");
     assert!(stored[0].summary().contains("FIDO2 PIN"));
     assert!(stored[0].summary().contains("PIV certificate import"));
@@ -141,7 +141,7 @@ fn scenario_a_failed_step_marks_the_whole_run_failed() {
     let mut run = BootstrapRun::new(
         20_423_633,
         None,
-        "fgv-standard",
+        "org-standard",
         "1",
         "felipe",
         vec![
@@ -164,7 +164,7 @@ fn scenario_a_run_with_pending_steps_is_still_running() {
     let mut run = BootstrapRun::new(
         20_423_633,
         None,
-        "fgv-standard",
+        "org-standard",
         "1",
         "felipe",
         vec![
@@ -180,7 +180,7 @@ fn scenario_a_run_with_pending_steps_is_still_running() {
 #[test]
 fn scenario_a_dry_run_records_intent_without_claiming_anything_was_applied() {
     // Given a plan that was reviewed but not executed
-    let ctx = RenderContext::for_holder(&holder(), 20_423_633, "felipe", "FGV");
+    let ctx = RenderContext::for_holder(&holder(), 20_423_633, "felipe", "Example Organisation");
     let commands = plan(&BootstrapTemplate::fido_only(), &ctx).unwrap();
     let steps: Vec<StepOutcome> = commands
         .iter()
@@ -205,8 +205,8 @@ fn scenario_a_dry_run_records_intent_without_claiming_anything_was_applied() {
 #[test]
 fn scenario_credential_creation_cannot_fall_back_to_ykman() {
     // Given the credential step
-    let ctx = RenderContext::for_holder(&holder(), 20_423_633, "felipe", "FGV");
-    let commands = plan(&BootstrapTemplate::default_fgv(), &ctx).unwrap();
+    let ctx = RenderContext::for_holder(&holder(), 20_423_633, "felipe", "Example Organisation");
+    let commands = plan(&BootstrapTemplate::org_standard(), &ctx).unwrap();
     let credential = commands
         .iter()
         .find(|c| c.kind == StepKind::Fido2Credential)

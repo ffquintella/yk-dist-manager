@@ -67,14 +67,14 @@ fn lifecycle_transitions_are_restricted() {
 #[test]
 fn holder_requires_name_email_and_unit() {
     assert!(matches!(
-        Holder::new("", "ana@fgv.br", "ESI", "").unwrap_err(),
+        Holder::new("", "ana@example.org", "ESI", "").unwrap_err(),
         ValidationError::Missing("full_name")
     ));
     assert!(matches!(
-        Holder::new("Ana", "ana@fgv.br", "", "").unwrap_err(),
+        Holder::new("Ana", "ana@example.org", "", "").unwrap_err(),
         ValidationError::Missing("unit")
     ));
-    assert!(Holder::new("Ana", "ana@fgv.br", "ESI", "").is_ok());
+    assert!(Holder::new("Ana", "ana@example.org", "ESI", "").is_ok());
 }
 
 #[test]
@@ -82,19 +82,23 @@ fn email_validation_rejects_malformed_addresses() {
     for bad in [
         "ana",
         "ana@",
-        "@fgv.br",
-        "ana@fgv",
-        "ana@@fgv.br",
-        "ana@fgv..br",
-        "ana@.fgv.br",
-        "ana space@fgv.br",
+        "@example.org",
+        "ana@example",
+        "ana@@example.org",
+        "ana@example..org",
+        "ana@.example.org",
+        "ana space@example.org",
     ] {
         assert!(
             validate_email(bad).is_err(),
             "`{bad}` should have been rejected"
         );
     }
-    for good in ["ana@fgv.br", "ana.maria+key@mail.fgv.br", "a_b-c%d@fgv.br"] {
+    for good in [
+        "ana@example.org",
+        "ana.maria+key@mail.example.org",
+        "a_b-c%d@example.org",
+    ] {
         assert!(validate_email(good).is_ok(), "`{good}` should be accepted");
     }
 }
@@ -103,16 +107,16 @@ fn email_validation_rejects_malformed_addresses() {
 fn oversized_input_is_refused() {
     let long = "a".repeat(MAX_TEXT + 1);
     assert!(matches!(
-        Holder::new(&long, "ana@fgv.br", "ESI", "").unwrap_err(),
+        Holder::new(&long, "ana@example.org", "ESI", "").unwrap_err(),
         ValidationError::TooLong { .. }
     ));
 }
 
 #[test]
 fn certificate_subject_is_rfc4514_and_excludes_the_email() {
-    let holder = Holder::new("Ana Silva", "ana.silva@fgv.br", "ESI", "").unwrap();
-    let subject = holder.certificate_subject("FGV", "ESI");
-    assert_eq!(subject, "CN=Ana Silva,OU=ESI,O=FGV");
+    let holder = Holder::new("Ana Silva", "ana.silva@example.org", "ESI", "").unwrap();
+    let subject = holder.certificate_subject("Example Organisation", "IT");
+    assert_eq!(subject, "CN=Ana Silva,OU=IT,O=Example Organisation");
     assert!(
         !subject.contains('@'),
         "the e-mail belongs in the rfc822Name SAN, not the DN"
