@@ -61,6 +61,13 @@ yubikey = { version = "0.8", optional = true }
 # a `SubjectPublicKeyInfo` from a *different* crate version and the types do not
 # unify — which is exactly what happened when this was first pinned to 0.3.
 x509-cert = { version = "0.2.5", optional = true }
+# The PIV management key, which the `yubikey` crate cannot set on firmware 5.7+:
+# its MgmKey is a 24-byte 3DES type, and 5.7 removed 3DES and defaults the slot
+# to AES-192. `mod transaction` is private there, so the GENERAL AUTHENTICATE
+# exchange is done on our own PC/SC connection instead — see
+# `device::piv_mgm`. Both crates are already in the graph via `yubikey`.
+pcsc = { version = "2.9", optional = true }
+aes = { version = "0.9", optional = true }
 ctap-hid-fido2 = { version = "3.5", optional = true }
 hidapi = { version = "2.6", optional = true }
 
@@ -123,7 +130,7 @@ encrypted-db = ["rusqlite/bundled-sqlcipher-vendored-openssl"]
 # dead. Turned on deliberately, with the reasoning and the alternatives recorded
 # in `features/step-piv-pin-puk-management-key.md`, and every operation
 # exercised against a dedicated test key before it is relied on.
-native-piv = ["dep:yubikey", "dep:x509-cert", "yubikey/untested"]
+native-piv = ["dep:yubikey", "dep:x509-cert", "dep:pcsc", "dep:aes", "yubikey/untested"]
 # FIDO2 / CTAP2 over USB HID.
 native-fido = ["dep:ctap-hid-fido2"]
 # Yubico OTP slot configuration over USB HID.

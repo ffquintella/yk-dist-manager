@@ -58,6 +58,10 @@ use crate::secret::Secret;
 /// "this key has not been configured yet".
 const FACTORY_PIN: &[u8] = b"123456";
 const FACTORY_PUK: &[u8] = b"12345678";
+/// The published factory management key, for the same reason as the two above.
+const FACTORY_MANAGEMENT_KEY: &[u8] = &[
+    1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8,
+];
 
 /// PIV writes against one key, selected by serial.
 ///
@@ -222,33 +226,51 @@ impl PivWriter for NativePiv {
         current: Option<&Secret>,
         new: &Secret,
         protect: bool,
-        pin: &Secret,
+        _pin: &Secret,
     ) -> Result<()> {
         const OP: &str = "piv.set_management_key";
-        let mut key = self.open(serial, OP)?;
 
-        let current_key = match current {
-            Some(secret) => decode_mgm(secret.expose(), OP)?,
-            None => MgmKey::default(),
+        // Not the `yubikey` crate. Its MgmKey is a 24-byte 3DES type and its
+        // authenticate sends a 3DES algorithm id, which firmware 5.7 rejects
+        // outright — measured, not assumed. `super::piv_mgm` reads the slot's
+        // actual algorithm and speaks that.
+        let current_bytes = match current {
+            Some(secret) => Some(
+                hex::decode(secret.expose()).map_err(|_| WriteError::Failed {
+                    operation: OP,
+                    reason: "the current management key is not hex".into(),
+                })?,
+            ),
+            None => None,
         };
-        key.authenticate(current_key)
-            .map_err(|e| Self::classify(OP, e, None))?;
+        let new_bytes = hex::decode(new.expose()).map_err(|_| WriteError::Failed {
+            operation: OP,
+            reason: "the generated management key is not hex".into(),
+        })?;
 
-        let new_key = decode_mgm(new.expose(), OP)?;
-
-        if protect {
-            // Model B's preferred form: the key lives on the card under the PIN,
-            // so there is nothing to hand over and nothing to retain.
-            key.verify_pin(pin.expose().as_bytes())
-                .map_err(|e| Self::classify(OP, e, None))?;
-            new_key
-                .set_protected(&mut key)
-                .map_err(|e| Self::classify(OP, e, None))?;
+        let store = if protect {
+            super::piv_mgm::ProtectedStore::OnCardUnderPin
         } else {
-            new_key
-                .set_manual(&mut key, false)
-                .map_err(|e| Self::classify(OP, e, None))?;
-        }
+            super::piv_mgm::ProtectedStore::NotStored
+        };
+
+        let algorithm = super::piv_mgm::set_management_key(
+            serial,
+            current_bytes.as_deref(),
+            &new_bytes,
+            // The published factory default, supplied by the caller so the
+            // constant stays in one documented place.
+            FACTORY_MANAGEMENT_KEY,
+            store,
+            false,
+        )?;
+
+        tracing::info!(
+            event = "piv.management_key.set",
+            serial,
+            algorithm = algorithm.label(),
+            protected = protect
+        );
         Ok(())
     }
 
@@ -338,17 +360,6 @@ impl PivWriter for NativePiv {
             )
             .map_err(|e| Self::classify(OP, e, None))
     }
-}
-
-fn decode_mgm(hex_value: &str, operation: &'static str) -> Result<MgmKey> {
-    let bytes = hex::decode(hex_value).map_err(|_| WriteError::Failed {
-        operation,
-        reason: "a management key must be hex".into(),
-    })?;
-    MgmKey::from_bytes(bytes).map_err(|e| WriteError::Failed {
-        operation,
-        reason: format!("not a usable management key: {e}"),
-    })
 }
 
 fn encode_public_key(

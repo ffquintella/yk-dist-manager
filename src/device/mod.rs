@@ -23,6 +23,8 @@ pub mod native;
 pub mod native_fido;
 #[cfg(feature = "native-piv")]
 pub mod native_piv;
+#[cfg(feature = "native-piv")]
+pub mod piv_mgm;
 pub mod write;
 pub mod ykman;
 

@@ -234,3 +234,39 @@ Two further consequences worth recording:
 step.** A mixed-transport step is honest — the plan shows it — and the native PIN
 and PUK writes, which are the ones carrying secrets on a command line, stay
 native.
+
+## Re-implemented, and it works (2026-08-11)
+
+Rather than vendor the crate or fall back to `ykman`, the **one broken function**
+was re-implemented: [`src/device/piv_mgm.rs`](../src/device/piv_mgm.rs) speaks
+`GENERAL AUTHENTICATE` to the card over its own PC/SC connection, reads the
+management slot's **actual** algorithm from `GET METADATA` instead of assuming
+3DES, and does the mutual-authentication exchange with AES.
+
+Verified against the test key (5C NFC, 5.7.4, serial 36668917). After the run
+`ykman piv info` no longer reports *"Using default Management key"* — nor default
+PIN or PUK. The AES-192 path authenticates and writes.
+
+Three decisions in it worth keeping:
+
+* **The algorithm is read, never assumed.** Guessing the cipher makes every
+  exchange fail in a way indistinguishable from a wrong key — which is exactly
+  the trap the crate fell into, and how an hour was spent proving the key was
+  fine.
+* **Mutual authentication, not one-way.** The card returns our challenge
+  encrypted and it is checked. A card that cannot prove it holds the current
+  management key is not one to write a new key into.
+* **The scope is one function.** `change_pin`, `change_puk` and the metadata
+  read were measured working through the crate and stay there. This is not a
+  reimplementation of PIV.
+
+### Still open
+
+* `piv_state` reports `management_key_changed: false` even after a successful
+  change, because that flag comes from the crate's `piv::metadata` on the
+  management slot, which disagrees with `ykman`. The write is right and the
+  *read* is wrong; it should move to `piv_mgm` alongside the rest.
+* `generate_key` and `import_certificate` still authenticate through the crate's
+  `MgmKey::get_protected`, so they fail on 5.7 for the original reason. They need
+  the same treatment — the exchange now exists, so it is a rewiring rather than
+  new protocol work.
