@@ -54,6 +54,13 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 # libpcsclite/hidraw on Linux, WinSCard on Windows), so the transports live
 # behind a feature flag while the roadmap's Wave 1 lands them.
 yubikey = { version = "0.8", optional = true }
+# The SubjectPublicKeyInfo that `piv::generate` returns, so a generated public
+# key can be encoded. Pinned to the version `yubikey` already resolves, so this
+# adds a name to the build rather than a package.
+# Must match the version `yubikey` resolves (0.2.x), or `piv::generate` returns
+# a `SubjectPublicKeyInfo` from a *different* crate version and the types do not
+# unify — which is exactly what happened when this was first pinned to 0.3.
+x509-cert = { version = "0.2.5", optional = true }
 ctap-hid-fido2 = { version = "3.5", optional = true }
 hidapi = { version = "2.6", optional = true }
 
@@ -107,7 +114,16 @@ camera = ["barcode", "dep:nokhwa"]
 # (`PRAGMA key`). Off by default because it vendors and builds OpenSSL.
 encrypted-db = ["rusqlite/bundled-sqlcipher-vendored-openssl"]
 # PIV over PC/SC with the `yubikey` crate.
-native-piv = ["dep:yubikey"]
+#
+# NOTE: this enables `yubikey/untested`, which is upstream's own name for the
+# feature gating every mutating PIV call (change_pin, change_puk, and the three
+# MgmKey setters). Their read paths are not gated; it is precisely the writes
+# whose failure mode is worst that upstream declines to vouch for, and a
+# management key set to a value nobody holds leaves the applet administratively
+# dead. Turned on deliberately, with the reasoning and the alternatives recorded
+# in `features/step-piv-pin-puk-management-key.md`, and every operation
+# exercised against a dedicated test key before it is relied on.
+native-piv = ["dep:yubikey", "dep:x509-cert", "yubikey/untested"]
 # FIDO2 / CTAP2 over USB HID.
 native-fido = ["dep:ctap-hid-fido2"]
 # Yubico OTP slot configuration over USB HID.

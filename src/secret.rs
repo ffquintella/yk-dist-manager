@@ -57,8 +57,19 @@ pub const PIV_PIN_LENGTH: usize = 8;
 /// The OTP slot access code is exactly six bytes, rendered as twelve hex digits.
 pub const OTP_ACCESS_CODE_BYTES: usize = 6;
 
-/// A PIV management key is AES-256.
-pub const MANAGEMENT_KEY_BYTES: usize = 32;
+/// A PIV management key is 24 bytes.
+///
+/// `features/secrets-custody.md` says "random AES-256", and that is not
+/// reachable: the PIV management key slot takes a 24-byte key (3DES
+/// historically, AES-192 on current firmware — the reference key reports
+/// `Management key algorithm: AES192`), and the `yubikey` crate's `MgmKey` is a
+/// fixed `[u8; 24]`. Generating 32 bytes would simply fail to load.
+///
+/// This is not a weakening in practice: the management key is generated
+/// randomly and `--protect`ed onto the card under the PIN, so it is never
+/// handed over, never retained, and never guessed at. 192 bits of CSPRNG output
+/// that nobody holds is not the weak link in this procedure.
+pub const MANAGEMENT_KEY_BYTES: usize = 24;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SecretError {
@@ -402,9 +413,13 @@ mod tests {
     }
 
     #[test]
-    fn the_management_key_is_a_random_aes_256_value() {
+    fn the_management_key_is_the_length_the_piv_slot_takes() {
+        // 24 bytes, not the 32 the spec first asked for: the applet's management
+        // key slot is 24 bytes wide (AES-192 on current firmware), so a 32-byte
+        // key cannot be loaded at all. See MANAGEMENT_KEY_BYTES.
         let secret = Secret::generate(SecretKind::PivManagementKey, 0).unwrap();
-        assert_eq!(secret.len(), MANAGEMENT_KEY_BYTES * 2);
+        assert_eq!(secret.len(), 48, "24 bytes rendered as hex");
+        assert!(secret.expose().chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]

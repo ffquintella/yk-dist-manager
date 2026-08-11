@@ -117,6 +117,13 @@ pub struct ExecutionRequest<'a> {
     pub relying_party: String,
     /// Subject and SAN for the CSR, already rendered by the planner's context.
     pub certificate_subject: String,
+    /// The rendered `rfc822Name` SAN for this holder.
+    ///
+    /// Produced by [`crate::san::SanPolicy::render`] from the deployment's
+    /// settings, so the value here is already the one the CA should see. When
+    /// the policy says the CA injects it
+    /// ([`crate::san::SanSource::CaProfile`]), this is what the issued
+    /// certificate is *checked against* rather than what is sent.
     pub certificate_email: String,
     /// The holder's display name, for the credential's user entry.
     pub holder_display: String,

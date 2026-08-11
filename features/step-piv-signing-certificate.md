@@ -156,3 +156,60 @@ future audit checks what was issued.
 - `docs/bootstrap-procedure.md`, `docs/yubikey-reference.md`
 - [RFC 5280 §4.2.1.6 (SAN)](https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.6),
   [RFC 8551 (S/MIME)](https://www.rfc-editor.org/rfc/rfc8551)
+
+## The SAN is configurable, because the CA decides where it comes from (2026-08-11)
+
+Roadmap open question 1 — *which CA issues this certificate?* — is still open, and
+it does not only decide who signs. It decides **where the SAN comes from**, and
+that changes what the tool has to do:
+
+| CA arrangement | Where the `rfc822Name` comes from |
+|---|---|
+| Internal CA taking our CSR | The request we build — so the CSR builder is required |
+| Enterprise CA with a certificate profile | The CA injects it from a directory lookup, and ignores what the request asked for |
+| A CA taking the SAN as a separate attribute | Neither: it travels beside the CSR, in a form field or a ticket |
+
+Hard-coding any one of those makes the other two unreachable, and the question
+cannot be answered by the implementer. So the SAN is now **a setting**
+([`src/san.rs`](../src/san.rs), `AppSettings::san`):
+
+* `pattern` — rendered with the same variables as a bootstrap template,
+  defaulting to `{{holder.email}}`, which is what this spec requires. A
+  deployment whose CA wants an alias domain or a different form changes it here
+  rather than editing every template.
+* `source` — `request` (the tool puts it in the CSR), `ca-profile` (the CA
+  injects it; the rendered value is what the issued certificate is *checked
+  against*), or `out-of-band` (the operator pastes it into the CA's form).
+
+It lives in settings rather than in a template because it follows from the
+deployment's CA, not from the procedure being run: every template on one
+deployment wants the same answer. A template may still override `san_email` for
+the unit that genuinely needs two procedures with different SANs.
+
+Validation happens at **render** time, not at configuration time, because a
+pattern is only wrong for some holders: `{{holder.email}}` is fine until it meets
+a record without one. A pattern that renders to a name, a DN fragment or a
+leftover `{{placeholder}}` is refused — those are the failures that actually
+happen.
+
+### Checking what came back
+
+Every one of the three routes can silently produce a certificate with the wrong
+SAN or none at all, and the result installs cleanly and looks right everywhere
+except when it is used to sign. `san::extraction_guide` is the operator-facing
+instructions, shown in the tool rather than only here, and it covers:
+
+```
+openssl x509 -in holder.crt -noout -ext subjectAltName
+
+X509v3 Subject Alternative Name:
+    email:ana.silva@example.org
+```
+
+...reading it straight off the key without a file
+(`ykman piv certificates export 9c - | openssl x509 -noout -ext subjectAltName`),
+checking the CSR before it is sent, and the three failures worth naming: no SAN
+at all, an `email:` that disagrees with the register, and a `DNS:`/`otherName:`
+where an `email:` was needed — a UPN
+(`otherName 1.3.6.1.4.1.311.20.2.3`) is common on enterprise CAs and is **not** a
+substitute for an `rfc822Name`.

@@ -312,6 +312,12 @@ pub fn perform(
                 ));
             };
             let subject = text(params, "subject").unwrap_or(ctx.certificate_subject.to_owned());
+            // The SAN comes from the deployment's policy (`crate::san`), already
+            // rendered into the context, not from the template: which form it
+            // takes follows from *which CA* issues the certificate, and that is
+            // one answer per deployment rather than one per procedure. A
+            // template may still override it, for the unit that genuinely needs
+            // two procedures with different SANs.
             let san = text(params, "san_email").unwrap_or(ctx.certificate_email.to_owned());
             let csr =
                 transports

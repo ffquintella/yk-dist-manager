@@ -21,6 +21,8 @@ pub mod mock;
 pub mod native;
 #[cfg(feature = "native-fido")]
 pub mod native_fido;
+#[cfg(feature = "native-piv")]
+pub mod native_piv;
 pub mod write;
 pub mod ykman;
 

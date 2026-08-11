@@ -72,6 +72,13 @@ pub struct AppSettings {
     pub operator: String,
     /// Organisation, used in certificate subjects.
     pub org: String,
+    /// How the signing certificate's `rfc822Name` SAN is produced.
+    ///
+    /// Here rather than in a template because it follows from *which CA* the
+    /// deployment uses (roadmap open question 1), not from which procedure is
+    /// being run: every template on a given deployment wants the same answer.
+    /// See [`crate::san`].
+    pub san: crate::san::SanPolicy,
     /// Chosen palette, one of [`THEMES`]. Cosmetic only — nothing about the
     /// record depends on it.
     pub theme: String,
@@ -121,6 +128,7 @@ impl AppSettings {
             recent_shares: Vec::new(),
             operator: default_operator(),
             org: String::new(),
+            san: crate::san::SanPolicy::default(),
             theme: DEFAULT_THEME.to_owned(),
         }
     }

@@ -188,3 +188,49 @@ not the implementer's. Recorded here rather than decided.
 The rest of the step — reading whether the PIN, PUK and management key are still
 factory default via `GET METADATA` (firmware 5.2.3+), so idempotency never costs
 a retry — is unaffected and can land either way.
+
+## Hardware result 2026-08-11: the crate cannot do 5.7 management keys at all
+
+`untested` was enabled deliberately and the operations were run against the test
+key (5C NFC, firmware 5.7.4, serial 36668917). The result is sharper than
+"untested":
+
+| Operation | Result |
+|---|---|
+| `change_pin` + `change_puk` from the factory defaults | **Works.** `ykman piv info` confirms both no longer default, counters reset to 3/3 |
+| `GET METADATA` idempotency read | **Works.** Correctly reported `pin_changed_from_default` flipping, with no retry burned |
+| `set_management_key(protect = true)` | **Fails.** Authentication with the current management key is refused |
+
+The cause is not a bug in the gated code. `yubikey` 0.8's `MgmKey` is
+`[u8; 24]` with DES odd-parity weak-key checks — it is a **3DES** type, and its
+`authenticate` sends a 3DES algorithm identifier. The attached key reports
+`Management key algorithm: AES192`, because **firmware 5.7 removed 3DES and
+defaults the management key to AES-192**. There is no byte value that makes a
+3DES authentication succeed against an AES-192 slot.
+
+So the crate cannot manage the management key on *any* 5.7 key, and this is a
+version incompatibility rather than something a careful caller can work around.
+
+Two further consequences worth recording:
+
+* **AES-256 is not reachable either.** This spec and
+  `features/secrets-custody.md` said "random AES-256"; the slot takes 24 bytes
+  (AES-192 on current firmware) and the crate's type is 24 bytes. `MANAGEMENT_KEY_BYTES`
+  is now 24, documented. Not a weakening in practice: the key is random, PIN-protected
+  onto the card, never handed over and never retained.
+* **A fork means vendoring.** `mod transaction` is private in the crate, so
+  AES-192 `GENERAL AUTHENTICATE` cannot be added from outside — patching it means
+  taking a copy of the whole crate and maintaining it.
+
+### Options now, narrower than before
+
+| Option | Assessment |
+|---|---|
+| **`ykman` for the management key step only** | Works today — `ykman piv reset` handled the AES-192 key without complaint. PIN and PUK can stay native, since those are verified working. Smallest change, and the plan already labels transports per step |
+| **`yubikey` 0.9.0-pre.0** | A prerelease exists; whether it supports AES management keys is unverified. Worth ten minutes before any fork |
+| **Vendor and patch 0.8** | Adds AES-192 `GENERAL AUTHENTICATE` behind the private transaction layer. Real crypto plumbing on a card protocol, and a permanent maintenance obligation |
+
+**Recommendation: check 0.9.0-pre.0 first, and fall back to `ykman` for this one
+step.** A mixed-transport step is honest — the plan shows it — and the native PIN
+and PUK writes, which are the ones carrying secrets on a command line, stay
+native.

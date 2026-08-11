@@ -15,6 +15,7 @@
 //! | [`store`] | Persistence: one SQLite file, optionally password-protected |
 //! | [`settings`] | Which database to open, and the recent ones |
 //! | [`scan`] | Reading a serial from a barcode (label or camera) |
+//! | [`san`] | The certificate's rfc822Name: how it is produced, and how to check it |
 //! | [`secret`] | The secrets a bootstrap sets: generated, shown once, wiped |
 //! | [`term`] | Consignment terms: multilingual templates and rendering |
 //! | [`pdf`] | The PDF a term is printed and signed on, written without a dependency |
@@ -39,6 +40,7 @@ pub mod envelope;
 pub mod logging;
 pub mod paths;
 pub mod pdf;
+pub mod san;
 pub mod scan;
 pub mod secret;
 pub mod settings;
