@@ -61,6 +61,13 @@ Terminal. Reasons: hardware failure (RMA), firmware end of support, physical dam
 or loss written off. A retired key's certificate must be revoked if it was not already,
 and the record stays forever — retirement is not deletion.
 
+Deletion exists, and is deliberately *not* on this path: the Inventory screen can
+remove an inventory row, confirmed, for a mistake at intake — a mis-typed serial, a
+label scanned twice. `Store::delete_key` refuses any serial a hand-over or a
+bootstrap run refers to, so a key that ever went out or was ever bootstrapped can
+only be retired. See `features/key-inventory.md`, "The observation, and what removal
+is for".
+
 ## Phases
 
 | # | Phase | State | Notes |

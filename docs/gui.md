@@ -81,13 +81,26 @@ creating over an existing file is refused.
 
 The keys the unit owns. "Read attached key" identifies the key in the reader and inserts or
 refreshes its row. Columns: serial, model, firmware, form factor, status, applications,
-actions. Per-row actions advance the lifecycle, and a refused transition is shown verbatim in
-the status bar.
+observation, actions. Per-row actions advance the lifecycle, and a refused transition is
+shown verbatim in the status bar.
 
 **Add by serial / scan…** opens the intake panel: a text field (which is what a USB
-barcode scanner types into — Enter submits), camera controls with a preview when the
-build has the `camera` feature, and confirm/discard for a decoded serial. A key
-recorded this way is marked as not verified until it is read from the hardware.
+barcode scanner types into — Enter submits), an *Observation (optional)* field, camera
+controls with a preview when the build has the `camera` feature, and confirm/discard for
+a decoded serial. A key recorded this way is marked as not verified until it is read from
+the hardware. The observation is **kept between adds**, so a whole box shares one note.
+
+**observation…** opens an editor below the table for a key already on record — up to
+`domain::MAX_NOTE` characters, with a live character count, saved or cancelled
+explicitly. The cell shows one line of it (newlines folded, cut with an ellipsis, an em
+dash when empty). A device re-read never touches it.
+
+**remove** never deletes on the click. It opens a panel that names what goes (the
+inventory row and its observation), what stays (the audit trail, which no code path can
+edit), and what the alternative is — removal is for a mistake at intake, retirement is
+for a key going out of service. For a key with a hand-over or a bootstrap run against
+it, that panel carries the store's refusal *instead of* the confirm button, with the
+counts, so the operator reads why before clicking rather than after.
 
 ### Holders
 

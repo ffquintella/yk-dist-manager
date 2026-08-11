@@ -28,12 +28,19 @@ Conventions:
 | `applications` | TEXT (JSON) | USB-enabled applications: `["FIDO2","PIV",…]` |
 | `status` | TEXT | `in_stock` \| `bootstrapped` \| `distributed` \| `returned` \| `lost` \| `retired` |
 | `batch` | TEXT | Purchase/invoice reference |
-| `notes` | TEXT | Operator notes; never overwritten by a device re-read |
+| `notes` | TEXT | The operator's **observation**, edited on the Inventory screen; bounded by `domain::MAX_NOTE`, never overwritten by a device re-read, and never a place for a secret |
 | `serial_source` | TEXT | **v2.** How the serial was learned: `device` (verified), `scanned-label`, `manual-entry`. Only ever improves — a device read upgrades it, a later scan never downgrades it |
 | `created_at`, `updated_at` | TEXT | |
 
 Transitions are enforced in `domain::KeyStatus::can_transition_to` and refused by
 `Store::set_key_status`. `in_stock → distributed` is deliberately illegal.
+
+A row can be **deleted** (`Store::delete_key`), but only as the correction of an
+intake mistake: the store refuses a serial that any row in `distributions` or
+`bootstrap_runs` refers to, because a hand-over pointing at a serial nobody can look
+up is not a register. Taking a key out of service is `retired`, which keeps the row.
+Either way the `audit` entries stay — the trail is append-only by trigger, so
+`key.added` and `key.removed` outlive the row they describe.
 
 ## `holders` — the people
 

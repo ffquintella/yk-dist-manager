@@ -67,7 +67,11 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
         return;
     }
 
+    // Row actions are deferred: nothing may mutate the table while the table is
+    // still being painted.
     let mut status_change: Option<(u32, crate::domain::KeyStatus)> = None;
+    let mut note_requested: Option<u32> = None;
+    let mut removal_requested: Option<u32> = None;
 
     super::titled_card(ui, format!("{} key(s)", app.keys.len()), |ui| {
         super::table(
@@ -80,6 +84,7 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
                 "Form factor",
                 "Status",
                 "Applications",
+                "Observation",
                 "Actions",
             ],
             |ui| {
@@ -94,6 +99,7 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
                     });
                     super::status_badge(ui, key.status);
                     super::faint(ui, &key.applications.join(", "));
+                    super::faint(ui, &note_cell(&key.notes));
                     ui.horizontal(|ui| {
                         if key.status == crate::domain::KeyStatus::InStock
                             && super::row_button(ui, "mark bootstrapped").clicked()
@@ -101,8 +107,14 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
                             status_change =
                                 Some((key.serial, crate::domain::KeyStatus::Bootstrapped));
                         }
+                        if super::row_button(ui, "observation…").clicked() {
+                            note_requested = Some(key.serial);
+                        }
                         if super::row_button_danger(ui, "mark lost").clicked() {
                             status_change = Some((key.serial, crate::domain::KeyStatus::Lost));
+                        }
+                        if super::row_button_danger(ui, "remove").clicked() {
+                            removal_requested = Some(key.serial);
                         }
                     });
                     ui.end_row();
@@ -110,6 +122,26 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
             },
         );
     });
+
+    if let Some(serial) = note_requested {
+        app.edit_key_note(serial);
+    }
+    if let Some(serial) = removal_requested {
+        app.request_key_removal(serial);
+    }
+
+    if app.inventory.note_serial.is_some() {
+        ui.add_space(12.0);
+        note_editor(app, ui);
+    }
+    if let Some(serial) = app.inventory.pending_removal {
+        ui.add_space(12.0);
+        removal_confirmation(app, ui, serial);
+    }
+    if let Some(error) = app.inventory.error.clone() {
+        ui.add_space(10.0);
+        super::error_label(ui, &error);
+    }
 
     if let Some((serial, next)) = status_change {
         let Some(store) = &app.store else { return };
@@ -126,6 +158,105 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
             Err(e) => app.status = format!("refused: {e}"),
         }
     }
+}
+
+/// How much of an observation fits in a table cell.
+const NOTE_CELL_CHARS: usize = 48;
+
+fn note_cell(note: &str) -> String {
+    crate::domain::key::summarise_note(note, NOTE_CELL_CHARS)
+}
+
+/// Editor for one key's observation. The draft reaches the database only on save.
+fn note_editor(app: &mut YkDistApp, ui: &mut egui::Ui) {
+    let Some(serial) = app.inventory.note_serial else {
+        return;
+    };
+    super::titled_card(ui, format!("Observation — serial {serial}"), |ui| {
+        super::hint(
+            ui,
+            "Anything about this key that the hardware cannot say: the shipment it \
+             arrived in, a damaged connector, why it is being held back. Kept when the \
+             key is re-read, and never used for a secret.",
+        );
+        ui.add_space(8.0);
+        super::capped_area(
+            ui,
+            &mut app.inventory.note_draft,
+            crate::domain::MAX_NOTE,
+            |area| area.rows(4).id_salt(format!("key-note-{serial}")),
+        );
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if ui.add(Button::new("Save observation")).clicked() {
+                app.save_key_note();
+            }
+            if ui.add(Button::new("Cancel").outline()).clicked() {
+                app.cancel_key_note();
+            }
+            ui.add_space(6.0);
+            super::faint(
+                ui,
+                &format!(
+                    "{} / {} characters",
+                    app.inventory.note_draft.chars().count(),
+                    crate::domain::MAX_NOTE
+                ),
+            );
+        });
+    });
+}
+
+/// The confirmation in front of a removal: what goes, what stays, and what the
+/// alternative is.
+///
+/// Removal is for an intake mistake — a mis-typed serial, a label scanned twice.
+/// A key with a hand-over or a bootstrap run against it is refused by the store,
+/// and this panel says so before the operator clicks rather than after.
+fn removal_confirmation(app: &mut YkDistApp, ui: &mut egui::Ui, serial: u32) {
+    let (distributions, runs) = app.key_history_summary(serial);
+    let has_history = distributions > 0 || runs > 0;
+
+    super::titled_card(ui, format!("Remove serial {serial}?"), |ui| {
+        if has_history {
+            super::notice(
+                ui,
+                CalloutTone::Danger,
+                &format!(
+                    "Serial {serial} has {distributions} hand-over(s) and {runs} bootstrap \
+                     run(s) on record, so it cannot be removed — a hand-over that pointed at \
+                     a serial nobody can look up is not a register. Mark the key retired \
+                     instead: retirement takes it out of service and keeps the record.",
+                ),
+            );
+        } else {
+            super::notice(
+                ui,
+                CalloutTone::Warning,
+                &format!(
+                    "This deletes the inventory row for serial {serial}, including its \
+                     observation. It is meant for a mistake at intake — a mis-typed serial or \
+                     a label scanned twice — not for a key going out of service, which is what \
+                     “retired” is for. The audit trail keeps the record that this serial was \
+                     registered and removed, by whom and when; the inventory row itself does \
+                     not come back.",
+                ),
+            );
+        }
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            if !has_history
+                && ui
+                    .add(Button::new(format!("Remove serial {serial}")).accent(Accent::Red))
+                    .clicked()
+            {
+                app.remove_key(serial);
+            }
+            if ui.add(Button::new("Keep it").outline()).clicked() {
+                app.cancel_key_removal();
+            }
+        });
+    });
 }
 
 /// Panel for recording keys by serial: a typed number, a USB barcode wedge, or
@@ -152,6 +283,19 @@ fn scanner(app: &mut YkDistApp, ui: &mut egui::Ui) {
                 app.accept_typed_serial();
             }
         });
+
+        ui.add_space(10.0);
+        super::capped_area(ui, &mut app.scan.note, crate::domain::MAX_NOTE, |area| {
+            area.label("Observation (optional)")
+                .hint("shipment, invoice, anything the hardware cannot say")
+                .rows(2)
+                .id_salt("scan-note")
+        });
+        super::hint(
+            ui,
+            "Stored with the key, and kept for the next serial you add — a whole box \
+             shares one observation.",
+        );
 
         camera_controls(app, ui);
 

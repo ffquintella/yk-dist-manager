@@ -146,12 +146,34 @@ pub struct ScanPanel {
     pub candidate: Option<u32>,
     /// Typed serial, for a USB barcode wedge or manual entry.
     pub typed: String,
+    /// Observation to store with the key being recorded — the shipment, the
+    /// invoice, the box it came in. Kept for the next serial in the same batch
+    /// rather than cleared on every add.
+    pub note: String,
     pub error: Option<String>,
     /// Texture handle for the camera preview, recreated as frames arrive.
     #[cfg(feature = "camera")]
     pub preview: Option<egui::TextureHandle>,
     #[cfg(feature = "camera")]
     pub scanner: Option<crate::scan::camera::CameraScanner>,
+}
+
+/// Inventory-screen state that outlives a single frame: the observation being
+/// edited, and the removal waiting for the operator to confirm it.
+///
+/// Both are *deferred* by design. A row action cannot mutate `app.keys` while
+/// the table that produced it is still being painted, and a removal must not
+/// happen on the click that asked for it — the confirmation is a second,
+/// separate decision.
+#[derive(Default)]
+pub struct InventoryPanel {
+    /// Serial whose observation is open in the editor.
+    pub note_serial: Option<u32>,
+    /// The observation being edited. Nothing is stored until it is saved.
+    pub note_draft: String,
+    /// Serial the operator has asked to remove, awaiting confirmation.
+    pub pending_removal: Option<u32>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -276,6 +298,7 @@ pub struct YkDistApp {
 
     pub holder_form: HolderForm,
     pub dist_form: DistForm,
+    pub inventory: InventoryPanel,
     pub wizard: Wizard,
     pub term_panel: TermPanel,
     pub term_editor: TermEditor,
@@ -328,6 +351,7 @@ impl YkDistApp {
             templates: Vec::new(),
             holder_form: HolderForm::default(),
             dist_form: DistForm::default(),
+            inventory: InventoryPanel::default(),
             wizard: Wizard::default(),
             term_panel: TermPanel::default(),
             term_editor: TermEditor::default(),
@@ -525,8 +549,17 @@ impl YkDistApp {
     /// Record a key from a serial alone: a scanned label, or a typed number.
     ///
     /// The record is deliberately incomplete — no model, no firmware — and marked
-    /// with its provenance, so nothing pretends this key has been seen.
-    pub fn add_serial(&mut self, serial: u32, source: SerialSource) {
+    /// with its provenance, so nothing pretends this key has been seen. `note` is
+    /// the operator's observation, which is the only field here that no device can
+    /// ever supply.
+    pub fn add_serial(&mut self, serial: u32, source: SerialSource, note: &str) {
+        let note = match crate::domain::optional_note("notes", note) {
+            Ok(note) => note,
+            Err(e) => {
+                self.scan.error = Some(e.to_string());
+                return;
+            }
+        };
         let Some(store) = &self.store else { return };
 
         match store.key_by_serial(serial) {
@@ -544,7 +577,8 @@ impl YkDistApp {
             }
         }
 
-        let record = YubiKeyRecord::from_serial(serial, source);
+        let mut record = YubiKeyRecord::from_serial(serial, source);
+        record.notes = note.clone();
         if let Err(e) = store.upsert_key(&record) {
             self.status = format!("could not save the key: {e}");
             return;
@@ -552,7 +586,11 @@ impl YkDistApp {
         self.record(
             "key.added",
             &format!("serial:{serial}"),
-            &format!("source={} verified=false", source_str(source)),
+            &format!(
+                "source={} verified=false note_chars={}",
+                source.audit_name(),
+                note.chars().count()
+            ),
         );
         self.status = format!(
             "serial {serial} recorded ({}) — plug the key in to verify it",
@@ -568,7 +606,8 @@ impl YkDistApp {
         match crate::scan::parse_serial(&typed) {
             Ok(serial) => {
                 self.scan.typed.clear();
-                self.add_serial(serial, SerialSource::ManualEntry);
+                let note = self.scan.note.clone();
+                self.add_serial(serial, SerialSource::ManualEntry, &note);
             }
             Err(e) => self.scan.error = Some(e.to_string()),
         }
@@ -577,12 +616,135 @@ impl YkDistApp {
     /// Accept the serial the camera decoded.
     pub fn accept_scanned_serial(&mut self) {
         if let Some(serial) = self.scan.candidate.take() {
-            self.add_serial(serial, SerialSource::ScannedLabel);
+            let note = self.scan.note.clone();
+            self.add_serial(serial, SerialSource::ScannedLabel, &note);
             #[cfg(feature = "camera")]
             if let Some(scanner) = &self.scan.scanner {
                 scanner.clear_serial();
             }
         }
+    }
+
+    // ---------------------------------------------- observation and removal
+
+    /// Open the observation editor for a serial, filled from what is stored.
+    pub fn edit_key_note(&mut self, serial: u32) {
+        self.inventory.error = None;
+        self.inventory.pending_removal = None;
+        self.inventory.note_draft = self
+            .keys
+            .iter()
+            .find(|key| key.serial == serial)
+            .map(|key| key.notes.clone())
+            .unwrap_or_default();
+        self.inventory.note_serial = Some(serial);
+    }
+
+    /// Close the observation editor, discarding the draft.
+    pub fn cancel_key_note(&mut self) {
+        self.inventory.note_serial = None;
+        self.inventory.note_draft.clear();
+        self.inventory.error = None;
+    }
+
+    /// Store the observation currently in the editor.
+    ///
+    /// The audit entry says the observation changed and by how much, never what it
+    /// says: an audit entry cannot be corrected, and free text sometimes has to be
+    /// (see [`crate::domain::key::note_audit_detail`]).
+    pub fn save_key_note(&mut self) {
+        let Some(serial) = self.inventory.note_serial else {
+            return;
+        };
+        self.inventory.error = None;
+
+        let note = match crate::domain::optional_note("notes", &self.inventory.note_draft) {
+            Ok(note) => note,
+            Err(e) => {
+                self.inventory.error = Some(e.to_string());
+                return;
+            }
+        };
+        let before = self
+            .keys
+            .iter()
+            .find(|key| key.serial == serial)
+            .map(|key| key.notes.clone())
+            .unwrap_or_default();
+
+        let Some(store) = &self.store else { return };
+        if let Err(e) = store.set_key_notes(serial, &note) {
+            self.inventory.error = Some(e.to_string());
+            tracing::warn!(event = "key.note.save.failed", serial, reason = %e);
+            return;
+        }
+        self.record(
+            "key.note_changed",
+            &format!("serial:{serial}"),
+            &crate::domain::key::note_audit_detail(&before, &note),
+        );
+        self.status = format!("observation saved for serial {serial}");
+        self.cancel_key_note();
+        self.refresh();
+    }
+
+    /// Ask to remove a serial. Nothing is deleted until [`Self::remove_key`].
+    pub fn request_key_removal(&mut self, serial: u32) {
+        self.inventory.error = None;
+        self.inventory.note_serial = None;
+        self.inventory.pending_removal = Some(serial);
+    }
+
+    /// Abandon a removal the operator asked about and then declined.
+    pub fn cancel_key_removal(&mut self) {
+        self.inventory.pending_removal = None;
+        self.inventory.error = None;
+    }
+
+    /// Remove an inventory row the operator has confirmed.
+    ///
+    /// For an intake mistake only: the store refuses a serial that any hand-over
+    /// or bootstrap run refers to, and the refusal is shown rather than swallowed.
+    /// The audit entry outlives the row.
+    pub fn remove_key(&mut self, serial: u32) {
+        self.inventory.error = None;
+        let Some(store) = &self.store else { return };
+        match store.delete_key(serial) {
+            Ok(removed) => {
+                self.record(
+                    "key.removed",
+                    &format!("serial:{serial}"),
+                    &removed.removal_audit_detail(),
+                );
+                self.status = format!("serial {serial} removed from the inventory");
+                tracing::info!(event = "key.removed", serial);
+                self.inventory.pending_removal = None;
+                self.refresh();
+            }
+            Err(e) => {
+                tracing::warn!(event = "key.remove.refused", serial, reason = %e);
+                self.inventory.error = Some(e.to_string());
+                self.status = format!("refused: {e}");
+            }
+        }
+    }
+
+    /// What history refers to a serial, for the confirmation warning.
+    ///
+    /// Reads the cached views rather than the database, so it is safe to call
+    /// while the table is being painted.
+    pub fn key_history_summary(&self, serial: u32) -> (usize, usize) {
+        let distributions = self
+            .distributions
+            .iter()
+            .filter(|record| record.key_serial == serial)
+            .count();
+        let runs = self
+            .runs
+            .iter()
+            .filter(|run| run.key_serial == serial)
+            .count();
+        (distributions, runs)
     }
 
     #[cfg(feature = "camera")]
@@ -1419,15 +1581,6 @@ impl YkDistApp {
 
 fn existing_is_new(store: &Store, serial: u32) -> bool {
     !matches!(store.key_by_serial(serial), Ok(Some(_)))
-}
-
-/// Audit-friendly rendering of a serial's provenance.
-fn source_str(source: SerialSource) -> &'static str {
-    match source {
-        SerialSource::Device => "device",
-        SerialSource::ScannedLabel => "scanned-label",
-        SerialSource::ManualEntry => "manual-entry",
-    }
 }
 
 impl eframe::App for YkDistApp {
