@@ -41,6 +41,17 @@ impl SerialSource {
     pub fn is_verified(&self) -> bool {
         matches!(self, SerialSource::Device)
     }
+
+    /// Stable snake-case name, for the database column and for audit details.
+    ///
+    /// One spelling for both, so an audit entry reads the way the column does.
+    pub fn audit_name(&self) -> &'static str {
+        match self {
+            SerialSource::Device => "device",
+            SerialSource::ScannedLabel => "scanned-label",
+            SerialSource::ManualEntry => "manual-entry",
+        }
+    }
 }
 
 /// Where a key is in its lifecycle. See `features/key-lifecycle-and-revocation.md`.
@@ -69,6 +80,18 @@ impl KeyStatus {
             KeyStatus::Returned => "Returned",
             KeyStatus::Lost => "Lost / stolen",
             KeyStatus::Retired => "Retired",
+        }
+    }
+
+    /// Stable snake-case name, for the database column and for audit details.
+    pub fn audit_name(&self) -> &'static str {
+        match self {
+            KeyStatus::InStock => "in_stock",
+            KeyStatus::Bootstrapped => "bootstrapped",
+            KeyStatus::Distributed => "distributed",
+            KeyStatus::Returned => "returned",
+            KeyStatus::Lost => "lost",
+            KeyStatus::Retired => "retired",
         }
     }
 
@@ -192,4 +215,58 @@ impl YubiKeyRecord {
     pub fn supports_fido_min_pin_length(&self) -> bool {
         matches!(self.firmware_triple(), Some((major, minor, _)) if (major, minor) >= (5, 7))
     }
+
+    /// Audit detail for the removal of this record: what the register is losing.
+    ///
+    /// The observation is summarised by length rather than quoted. An audit entry
+    /// cannot be edited or deleted, and an operator's free text is the one field
+    /// here that may need correcting later — so the trail records that there *was*
+    /// an observation, not what it said.
+    pub fn removal_audit_detail(&self) -> String {
+        format!(
+            "status={} source={} model={} note_chars={}",
+            self.status.audit_name(),
+            self.serial_source.audit_name(),
+            if self.model.is_empty() {
+                "(unknown)"
+            } else {
+                &self.model
+            },
+            self.notes.chars().count()
+        )
+    }
+}
+
+/// One-line rendering of an observation for a table cell.
+///
+/// An observation can be [`crate::domain::MAX_NOTE`] characters, and a table cell
+/// is one line — so it is cut to `max` *characters* (never bytes, so an accented
+/// note cannot be split mid-character), with newlines folded to spaces and an
+/// ellipsis marking that there is more. Empty reads as an em dash, like every
+/// other absent cell on the screen.
+pub fn summarise_note(note: &str, max: usize) -> String {
+    let folded = note.split_whitespace().collect::<Vec<_>>().join(" ");
+    if folded.is_empty() {
+        return "—".to_owned();
+    }
+    match folded.char_indices().nth(max) {
+        Some((cut, _)) => format!("{}…", &folded[..cut].trim_end()),
+        None => folded,
+    }
+}
+
+/// Audit detail for a change to a key's observation.
+///
+/// Says which way the field moved and how long it now is, and quotes neither the
+/// old text nor the new one — for the same reason
+/// [`YubiKeyRecord::removal_audit_detail`] does not.
+pub fn note_audit_detail(before: &str, after: &str) -> String {
+    let (before, after) = (before.chars().count(), after.chars().count());
+    let what = match (before, after) {
+        (0, 0) => "unchanged",
+        (0, _) => "set",
+        (_, 0) => "cleared",
+        _ => "changed",
+    };
+    format!("note={what} chars={after} was_chars={before}")
 }

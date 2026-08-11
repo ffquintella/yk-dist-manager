@@ -1,13 +1,10 @@
 //! Distribution: record a hand-over, see who holds what, close a return.
 
-use elegance::{Accent, Button, CalloutTone, Card, Checkbox, Select};
+use elegance::{Accent, Button, CalloutTone, Checkbox, Select};
 
 use crate::app::{Tab, YkDistApp};
 use crate::domain::{DeliveryMethod, DocumentKind, MAX_NOTE, MAX_TEXT};
 use crate::term::BUILTIN_LANGUAGES;
-
-/// Width of the wider form controls on this screen.
-const FIELD: f32 = 360.0;
 
 pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
     super::screen_header(
@@ -52,7 +49,7 @@ fn term(app: &mut YkDistApp, ui: &mut egui::Ui) {
         None => "Consignment term".to_owned(),
     };
 
-    Card::new().heading(heading).show(ui, |ui| {
+    super::titled_card(ui, heading, |ui| {
         // Languages: the ones shipped, plus anything the database carries.
         let mut languages: Vec<String> = app
             .term_templates
@@ -141,8 +138,12 @@ fn term(app: &mut YkDistApp, ui: &mut egui::Ui) {
                 .corner_radius(egui::CornerRadius::same(8))
                 .inner_margin(egui::Margin::same(12))
                 .show(ui, |ui| {
-                    egui::ScrollArea::vertical()
+                    // The document reads as a page: full card width, and the
+                    // long lines scroll here rather than widening the screen.
+                    ui.set_min_width(ui.available_width());
+                    egui::ScrollArea::both()
                         .max_height(300.0)
+                        .auto_shrink([false, true])
                         .id_salt("term-preview")
                         .show(ui, |ui| {
                             ui.add(
@@ -212,12 +213,11 @@ fn documents(app: &mut YkDistApp, ui: &mut egui::Ui, distribution_id: uuid::Uuid
 
     let mut export: Option<uuid::Uuid> = None;
 
-    egui::Grid::new("documents")
-        .num_columns(5)
-        .spacing([14.0, 6.0])
-        .show(ui, |ui| {
-            super::table_header(ui, &["Kind", "File", "Size", "SHA-256", "Filed"]);
-
+    super::table(
+        ui,
+        "documents",
+        &["Kind", "File", "Size", "SHA-256", "Filed"],
+        |ui| {
             for document in &filed {
                 ui.label(document.kind.label());
                 super::mono(ui, &document.filename);
@@ -238,7 +238,8 @@ fn documents(app: &mut YkDistApp, ui: &mut egui::Ui, distribution_id: uuid::Uuid
                 });
                 ui.end_row();
             }
-        });
+        },
+    );
 
     if let Some(id) = export {
         app.export_document(id);
@@ -256,50 +257,37 @@ fn record_form(app: &mut YkDistApp, ui: &mut egui::Ui) {
     app.dist_form.key_index = app.dist_form.key_index.min(key_labels.len() - 1);
     app.dist_form.holder_index = app.dist_form.holder_index.min(holder_labels.len() - 1);
 
-    Card::new().heading("Record a hand-over").show(ui, |ui| {
-        ui.horizontal_top(|ui| {
-            ui.vertical(|ui| {
-                ui.set_width(FIELD + 16.0);
+    super::titled_card(ui, "Record a hand-over", |ui| {
+        super::form_columns(ui, |left, right, width| {
+            left.add(
+                Select::new("dist-key", &mut app.dist_form.key_index)
+                    .label("Key")
+                    .options(key_labels.iter().cloned().enumerate())
+                    .width(width),
+            );
+            left.add_space(8.0);
+            left.add(
+                Select::new("dist-holder", &mut app.dist_form.holder_index)
+                    .label("Holder")
+                    .options(holder_labels.iter().cloned().enumerate())
+                    .width(width),
+            );
+            left.add_space(8.0);
+            left.add(
+                Select::new("dist-method", &mut app.dist_form.method)
+                    .label("Delivery")
+                    .options(DeliveryMethod::ALL.map(|m| (m, m.label())))
+                    .width(width),
+            );
 
-                ui.add(
-                    Select::new("dist-key", &mut app.dist_form.key_index)
-                        .label("Key")
-                        .options(key_labels.iter().cloned().enumerate())
-                        .width(FIELD),
-                );
-                ui.add_space(8.0);
-                ui.add(
-                    Select::new("dist-holder", &mut app.dist_form.holder_index)
-                        .label("Holder")
-                        .options(holder_labels.iter().cloned().enumerate())
-                        .width(FIELD),
-                );
-                ui.add_space(8.0);
-                ui.add(
-                    Select::new("dist-method", &mut app.dist_form.method)
-                        .label("Delivery")
-                        .options(DeliveryMethod::ALL.map(|m| (m, m.label())))
-                        .width(FIELD),
-                );
+            super::capped_input(right, &mut app.dist_form.receipt_ref, MAX_TEXT, |input| {
+                input
+                    .label("Receipt / term reference")
+                    .id_salt("dist-receipt")
             });
-
-            ui.add_space(20.0);
-
-            ui.vertical(|ui| {
-                ui.set_width(FIELD + 16.0);
-                super::capped_input(ui, &mut app.dist_form.receipt_ref, MAX_TEXT, |input| {
-                    input
-                        .label("Receipt / term reference")
-                        .id_salt("dist-receipt")
-                        .desired_width(FIELD)
-                });
-                ui.add_space(8.0);
-                super::capped_area(ui, &mut app.dist_form.notes, MAX_NOTE, |area| {
-                    area.label("Notes")
-                        .rows(3)
-                        .id_salt("dist-notes")
-                        .desired_width(FIELD)
-                });
+            right.add_space(8.0);
+            super::capped_area(right, &mut app.dist_form.notes, MAX_NOTE, |area| {
+                area.label("Notes").rows(3).id_salt("dist-notes")
             });
         });
 
@@ -330,28 +318,24 @@ fn history(app: &mut YkDistApp, ui: &mut egui::Ui) {
     let mut show_term: Option<uuid::Uuid> = None;
     let mut upload_for: Option<uuid::Uuid> = None;
 
-    Card::new()
-        .heading(format!("{} hand-over(s)", app.distributions.len()))
-        .show(ui, |ui| {
-            egui::Grid::new("distributions")
-                .striped(true)
-                .num_columns(8)
-                .spacing([16.0, 8.0])
-                .show(ui, |ui| {
-                    super::table_header(
-                        ui,
-                        &[
-                            "Serial",
-                            "Holder",
-                            "Handed over",
-                            "By",
-                            "Applied",
-                            "Status",
-                            "Term",
-                            "Actions",
-                        ],
-                    );
-
+    super::titled_card(
+        ui,
+        format!("{} hand-over(s)", app.distributions.len()),
+        |ui| {
+            super::table(
+                ui,
+                "distributions",
+                &[
+                    "Serial",
+                    "Holder",
+                    "Handed over",
+                    "By",
+                    "Applied",
+                    "Status",
+                    "Term",
+                    "Actions",
+                ],
+                |ui| {
                     for record in &app.distributions {
                         super::mono(ui, &record.key_serial.to_string());
                         ui.label(&record.holder_display);
@@ -413,8 +397,10 @@ fn history(app: &mut YkDistApp, ui: &mut egui::Ui) {
                         });
                         ui.end_row();
                     }
-                });
-        });
+                },
+            );
+        },
+    );
 
     if let Some((id, serial)) = to_return {
         app.return_key(id, serial);

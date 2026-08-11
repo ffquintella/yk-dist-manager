@@ -6,9 +6,21 @@
 //! lets the elegance widgets pick the palette up. Everything below is the small
 //! set of building blocks the screens share, so a heading, a table header or a
 //! refusal looks the same on all of them.
+//!
+//! # Fluid layout
+//!
+//! The screens are fluid: one [`GUTTER`] on each side of the window, and every
+//! card, banner and form spanning what is left, whatever the window width. That
+//! is what [`card`], [`titled_card`], [`table`] and [`form_columns`] are for —
+//! a bare `elegance::Card` is an `egui::Frame`, which hugs its contents, so
+//! cards built by hand end up as wide as whatever happens to be inside them and
+//! no two screens line up. Width belongs to the layout, not to the content:
+//! fields take the width of their column instead of a constant, and a table too
+//! wide for the window scrolls sideways *inside its own card* rather than
+//! stretching the page.
 
 use elegance::{
-    Accent, Badge, BadgeTone, Button, Callout, CalloutTone, TextArea, TextInput, Theme,
+    Accent, Badge, BadgeTone, Button, Callout, CalloutTone, Card, TextArea, TextInput, Theme,
 };
 
 use crate::domain::KeyStatus;
@@ -21,6 +33,18 @@ pub mod holders;
 pub mod inventory;
 pub mod settings;
 pub mod terms;
+
+/// Space between the window edge and the content, applied by the shell to the
+/// top bar, the screen body and the status bar — so the product name, the
+/// screen heading and the status pill all sit on one left margin.
+pub const GUTTER: i8 = 18;
+
+/// Horizontal gap between two form columns.
+const COLUMN_GAP: f32 = 20.0;
+
+/// Column and row spacing shared by every table, so the tables on different
+/// screens read as the same table.
+const TABLE_SPACING: [f32; 2] = [18.0, 8.0];
 
 /// Install the operator's chosen palette.
 ///
@@ -40,6 +64,87 @@ fn theme_named(name: &str) -> Theme {
         "paper" => Theme::paper(),
         _ => Theme::slate(),
     }
+}
+
+/// A card that spans the page width.
+pub fn card<R>(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    stretch(Card::new(), ui, body)
+}
+
+/// A card with a caption, spanning the page width.
+pub fn titled_card<R>(
+    ui: &mut egui::Ui,
+    heading: impl Into<egui::WidgetText>,
+    body: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    stretch(Card::new().heading(heading), ui, body)
+}
+
+/// Paint a card that claims the whole row.
+///
+/// `Card` is an [`egui::Frame`], which sizes itself to its contents; claiming
+/// the available width is what keeps a two-field form and a seven-column table
+/// the same width on screen.
+fn stretch<R>(card: Card, ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    card.show(ui, |ui| {
+        ui.set_min_width(ui.available_width());
+        body(ui)
+    })
+    .inner
+}
+
+/// A table: striped, one spacing, one header style, and its own horizontal
+/// scroll.
+///
+/// The scroll is the point. A serial and a 64-character digest do not fit the
+/// same window, and a table that pushed the page wider would take every other
+/// card with it — so the overflow is contained here, and the cards around it
+/// stay the width of the window.
+pub fn table<R>(
+    ui: &mut egui::Ui,
+    id: &str,
+    headers: &[&str],
+    rows: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let columns = headers.len();
+    egui::ScrollArea::horizontal()
+        .id_salt(format!("{id}-scroll"))
+        .show(ui, |ui| {
+            egui::Grid::new(id)
+                .striped(true)
+                .num_columns(columns)
+                .spacing(TABLE_SPACING)
+                .show(ui, |ui| {
+                    table_header(ui, headers);
+                    rows(ui)
+                })
+                .inner
+        })
+        .inner
+}
+
+/// Two form columns that split the page width evenly.
+///
+/// The closure gets both columns and the width each one has. The width is passed
+/// because [`elegance::Select`] falls back to a constant when it is not told
+/// one, while [`TextInput`] and [`TextArea`] already default to the space they
+/// are given — so most fields need no width at all and grow with the window.
+///
+/// One closure rather than two, so a form can drive both columns from the same
+/// `&mut app`. The unconditional split is safe because the window has a 900px
+/// minimum (`main.rs`): half of that is still a readable field.
+pub fn form_columns(
+    ui: &mut egui::Ui,
+    add_contents: impl FnOnce(&mut egui::Ui, &mut egui::Ui, f32),
+) {
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.x = COLUMN_GAP;
+        ui.columns(2, |columns| {
+            let width = columns[0].available_width();
+            let (left, right) = columns.split_at_mut(1);
+            add_contents(&mut left[0], &mut right[0], width);
+        });
+    });
 }
 
 /// Heading plus explanatory line, used at the top of every screen.
@@ -96,6 +201,8 @@ pub fn error_label(ui: &mut egui::Ui, message: &str) {
             bottom: 10,
         })
         .show(ui, |ui| {
+            // Full width, like a card and like the elegance callout next to it.
+            ui.set_min_width(ui.available_width());
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
                 ui.add(
@@ -113,6 +220,9 @@ pub fn error_label(ui: &mut egui::Ui, message: &str) {
                             .color(theme.palette.text)
                             .size(theme.typography.body),
                     )
+                    // A refusal is a sentence, and the page no longer scrolls
+                    // sideways to accommodate one: wrap inside the frame.
+                    .wrap_mode(egui::TextWrapMode::Wrap)
                     .selectable(true),
                 );
             });

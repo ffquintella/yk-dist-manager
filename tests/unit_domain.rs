@@ -142,3 +142,75 @@ fn step_status_round_trips_through_json() {
     let decoded: StepStatus = serde_json::from_str(&encoded).unwrap();
     assert_eq!(decoded, StepStatus::Done);
 }
+
+// ----------------------------------------- observations on a key record
+
+#[test]
+fn an_observation_is_summarised_for_one_line() {
+    use yk_dist_manager::domain::key::summarise_note;
+
+    // Absent reads like every other empty cell.
+    assert_eq!(summarise_note("", 20), "—");
+    assert_eq!(summarise_note("   ", 20), "—");
+    // Newlines are folded: a table cell is one line.
+    assert_eq!(
+        summarise_note("box 2\nconnector bent", 40),
+        "box 2 connector bent"
+    );
+    // Longer than the cell is cut with an ellipsis, and never mid-character.
+    assert_eq!(summarise_note("áéíóú and more", 5), "áéíóú…");
+    assert_eq!(summarise_note("exactly", 7), "exactly");
+}
+
+#[test]
+fn an_observation_change_is_audited_by_shape_not_by_content() {
+    use yk_dist_manager::domain::key::note_audit_detail;
+
+    // The point of the helper: the trail says what moved, never what it says,
+    // because an audit entry cannot be corrected and free text sometimes must be.
+    let set = note_audit_detail("", "arrived in NF-8891");
+    assert!(set.contains("note=set"));
+    assert!(set.contains("chars=18"));
+    assert!(!set.contains("NF-8891"));
+
+    assert!(note_audit_detail("old", "").contains("note=cleared"));
+    assert!(note_audit_detail("old", "new text").contains("note=changed"));
+    assert!(note_audit_detail("", "").contains("note=unchanged"));
+}
+
+#[test]
+fn removal_detail_names_what_the_register_is_losing() {
+    use yk_dist_manager::domain::{SerialSource, YubiKeyRecord};
+
+    let mut record = YubiKeyRecord::from_serial(20_423_633, SerialSource::ManualEntry);
+    record.notes = "typed the wrong serial".into();
+    let detail = record.removal_audit_detail();
+
+    assert!(detail.contains("status=in_stock"));
+    assert!(detail.contains("source=manual-entry"));
+    // A key recorded from a serial alone has no model to name, and says so
+    // rather than leaving an empty field.
+    assert!(detail.contains("model=(unknown)"));
+    assert!(detail.contains("note_chars=22"));
+    assert!(!detail.contains("wrong serial"), "the note is not quoted");
+}
+
+#[test]
+fn stored_and_audited_names_are_one_spelling() {
+    use yk_dist_manager::domain::{KeyStatus, SerialSource};
+    use yk_dist_manager::store::{key_status_str, serial_source_str};
+
+    for status in [
+        KeyStatus::InStock,
+        KeyStatus::Bootstrapped,
+        KeyStatus::Distributed,
+        KeyStatus::Returned,
+        KeyStatus::Lost,
+        KeyStatus::Retired,
+    ] {
+        assert_eq!(status.audit_name(), key_status_str(status));
+    }
+    for source in SerialSource::ALL {
+        assert_eq!(source.audit_name(), serial_source_str(source));
+    }
+}

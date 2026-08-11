@@ -461,3 +461,102 @@ fn a_cloud_sync_database_avoids_wal_and_says_so() {
         "found: {names:?}"
     );
 }
+
+// ------------------------------------------- observations and removal
+
+#[test]
+fn an_observation_is_stored_against_the_serial() {
+    let store = Store::open_in_memory().unwrap();
+    store.upsert_key(&key(20_423_633)).unwrap();
+
+    store
+        .set_key_notes(20_423_633, "arrived in shipment NF-8891, box 2")
+        .unwrap();
+
+    let stored = store.key_by_serial(20_423_633).unwrap().unwrap();
+    assert_eq!(stored.notes, "arrived in shipment NF-8891, box 2");
+}
+
+#[test]
+fn an_observation_on_an_unknown_serial_is_not_found() {
+    // Updating nothing must not report success: the operator would believe the
+    // observation was filed.
+    let store = Store::open_in_memory().unwrap();
+    match store.set_key_notes(999, "note") {
+        Err(StoreError::NotFound(what)) => assert!(what.contains("999")),
+        other => panic!("expected NotFound, got {other:?}"),
+    }
+}
+
+#[test]
+fn removing_a_key_deletes_the_row_and_returns_what_was_removed() {
+    let store = Store::open_in_memory().unwrap();
+    store.upsert_key(&key(20_423_633)).unwrap();
+    store
+        .set_key_notes(20_423_633, "typed the wrong serial")
+        .unwrap();
+
+    let removed = store.delete_key(20_423_633).unwrap();
+
+    assert_eq!(removed.serial, 20_423_633);
+    assert_eq!(removed.notes, "typed the wrong serial");
+    assert!(store.key_by_serial(20_423_633).unwrap().is_none());
+    assert!(store.keys().unwrap().is_empty());
+}
+
+#[test]
+fn removing_an_unknown_serial_is_not_found() {
+    let store = Store::open_in_memory().unwrap();
+    match store.delete_key(999) {
+        Err(StoreError::NotFound(what)) => assert!(what.contains("999")),
+        other => panic!("expected NotFound, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_key_with_a_bootstrap_run_cannot_be_removed() {
+    // A run is evidence about a physical key; deleting the key would leave it
+    // pointing at a serial nobody can look up.
+    let store = Store::open_in_memory().unwrap();
+    store.upsert_key(&key(20_423_633)).unwrap();
+    let run = yk_dist_manager::domain::BootstrapRun::new(
+        20_423_633,
+        None,
+        "standard",
+        "1",
+        "felipe",
+        Vec::new(),
+    );
+    store.insert_run(&run).unwrap();
+
+    match store.delete_key(20_423_633) {
+        Err(StoreError::HasHistory { serial, reason }) => {
+            assert_eq!(serial, 20_423_633);
+            assert!(reason.contains("bootstrap run"), "reason was: {reason}");
+            assert!(reason.contains("retire"), "the alternative is named");
+        }
+        other => panic!("expected HasHistory, got {other:?}"),
+    }
+    assert!(
+        store.key_by_serial(20_423_633).unwrap().is_some(),
+        "the refusal left the row alone"
+    );
+}
+
+#[test]
+fn history_counts_report_what_refers_to_a_serial() {
+    let store = Store::open_in_memory().unwrap();
+    store.upsert_key(&key(20_423_633)).unwrap();
+    assert_eq!(store.key_history_counts(20_423_633).unwrap(), (0, 0));
+
+    let run = yk_dist_manager::domain::BootstrapRun::new(
+        20_423_633,
+        None,
+        "standard",
+        "1",
+        "felipe",
+        Vec::new(),
+    );
+    store.insert_run(&run).unwrap();
+    assert_eq!(store.key_history_counts(20_423_633).unwrap(), (0, 1));
+}

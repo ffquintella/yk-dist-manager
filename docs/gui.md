@@ -17,16 +17,45 @@ The API differs from older tutorials in two ways that matter:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ YubiKey Distribution Manager | Inventory Holders Distribution │  Panel::top
-│                                Bootstrap Terms Audit Settings │
+│ ⇤18⇥ YubiKey Distribution Manager | Inventory Holders …  ⇤18⇥ │  Panel::top
+│      Bootstrap Terms Audit Settings                          │
 ├──────────────────────────────────────────────────────────────┤
-│                                                              │
-│   CentralPanel, inside ScrollArea::both                      │
-│                                                              │
+│      CentralPanel, inside ScrollArea::vertical               │
+│      ┌────────────────────────────────────────────────┐      │
+│      │ card — always the page width                   │      │
+│      └────────────────────────────────────────────────┘      │
 ├──────────────────────────────────────────────────────────────┤
-│ operator: felipe | db: network share | <last outcome>         │  Panel::bottom
+│ ⇤18⇥ operator: felipe | db: network share | <last outcome>    │  Panel::bottom
 └──────────────────────────────────────────────────────────────┘
 ```
+
+The layout is **fluid**: `ui::GUTTER` (18px) is the inner margin of all three
+panels, so the product name, the screen heading and the status pill share one left
+margin, and the content is whatever is left of the window — at any size, on any
+screen.
+
+Three rules follow, and they are what the helpers in the [theme](#theme) section
+exist to enforce:
+
+1. **A card is the page width.** `elegance::Card` is an `egui::Frame`, which sizes
+   itself to its contents, so a card built by hand is as wide as whatever happens
+   to be inside it. `ui::card` / `ui::titled_card` claim the row instead — without
+   them the Inventory table filled the window while the Holders form stopped two
+   thirds of the way across.
+2. **A field takes its column, not a constant.** `ui::form_columns` splits the card
+   in two even columns; `elegance::TextInput` and `TextArea` already default to the
+   width they are given, so most fields pass no width at all. `Select` is the
+   exception — it falls back to 160px — which is why the closure is handed the
+   column width. The remaining constants cap things that must *not* grow, such as
+   the serial field on the Bootstrap screen.
+3. **A wide table scrolls inside its own card.** `ui::table` wraps its grid in a
+   `ScrollArea::horizontal`, so a 64-character digest does not widen the page. The
+   body itself scrolls vertically only. The alternative — a horizontally scrolling
+   page — makes every card on a screen as wide as the widest table on it, which is
+   the inconsistency this replaced.
+
+The window has a 900px minimum (`main.rs`), which is what makes the unconditional
+two-column split safe: half of 900 is still a readable field.
 
 ## Screens
 
@@ -52,13 +81,26 @@ creating over an existing file is refused.
 
 The keys the unit owns. "Read attached key" identifies the key in the reader and inserts or
 refreshes its row. Columns: serial, model, firmware, form factor, status, applications,
-actions. Per-row actions advance the lifecycle, and a refused transition is shown verbatim in
-the status bar.
+observation, actions. Per-row actions advance the lifecycle, and a refused transition is
+shown verbatim in the status bar.
 
 **Add by serial / scan…** opens the intake panel: a text field (which is what a USB
-barcode scanner types into — Enter submits), camera controls with a preview when the
-build has the `camera` feature, and confirm/discard for a decoded serial. A key
-recorded this way is marked as not verified until it is read from the hardware.
+barcode scanner types into — Enter submits), an *Observation (optional)* field, camera
+controls with a preview when the build has the `camera` feature, and confirm/discard for
+a decoded serial. A key recorded this way is marked as not verified until it is read from
+the hardware. The observation is **kept between adds**, so a whole box shares one note.
+
+**observation…** opens an editor below the table for a key already on record — up to
+`domain::MAX_NOTE` characters, with a live character count, saved or cancelled
+explicitly. The cell shows one line of it (newlines folded, cut with an ellipsis, an em
+dash when empty). A device re-read never touches it.
+
+**remove** never deletes on the click. It opens a panel that names what goes (the
+inventory row and its observation), what stays (the audit trail, which no code path can
+edit), and what the alternative is — removal is for a mistake at intake, retirement is
+for a key going out of service. For a key with a hand-over or a bootstrap run against
+it, that panel carries the store's refusal *instead of* the confirm button, with the
+counts, so the operator reads why before clicking rather than after.
 
 ### Holders
 
@@ -159,14 +201,18 @@ What the screens share, all in [`src/ui/mod.rs`](../src/ui/mod.rs):
 | Helper | Use |
 |---|---|
 | `screen_header` | Title + explanatory line, top of every screen |
+| `card` / `titled_card` | A card at the page width, optionally captioned |
+| `table` | A striped grid with a shared header, spacing and its own horizontal scroll |
+| `form_columns` | Two columns splitting the card, each field taking its column |
 | `hint` / `faint` | Small muted prose; muted table cells |
 | `mono` | Serials, e-mails, paths, digests — selectable |
-| `error_label` | A refusal: tinted-danger frame, selectable text |
+| `error_label` | A refusal: tinted-danger frame, selectable wrapped text, full width |
 | `notice` | A non-error banner (`elegance::Callout`) |
 | `capped_input` / `capped_area` | A length-bound text field |
-| `table_header` | The header row of a grid |
+| `table_header` | The header row of a grid (`table` calls it; a label/value grid can too) |
 | `status_badge` | A key's lifecycle state, tone-coded |
 | `row_button` / `row_button_danger` | Small actions inside a table row |
+| `GUTTER` | The page margin the shell puts on all three panels |
 
 Two deliberate departures from the crate's defaults:
 
@@ -196,7 +242,11 @@ Two deliberate departures from the crate's defaults:
 6. **Secrets cannot render**, because no widget receives one.
 7. **Length-bound inputs**: every field goes through `ui::capped_input` /
    `capped_area` with the matching domain bound.
-8. The central panel scrolls; the window never has to be resized to reach a button.
+8. The central panel scrolls vertically; the window never has to be resized to reach
+   a button, and never has to be scrolled sideways to read a screen.
+9. **Width comes from the layout**, through `ui::card`, `ui::form_columns` and
+   `ui::table` — see [Layout](#layout). A width constant in a screen has to say why
+   it exists.
 
 ## Planned
 

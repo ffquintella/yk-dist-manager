@@ -6,7 +6,7 @@
 
 use yk_dist_manager::device::DeviceInfo;
 use yk_dist_manager::domain::{
-    DeliveryMethod, DistributionRecord, Holder, KeyStatus, YubiKeyRecord,
+    DeliveryMethod, DistributionRecord, Holder, KeyStatus, SerialSource, YubiKeyRecord,
 };
 use yk_dist_manager::store::{Store, StoreError};
 
@@ -219,4 +219,88 @@ fn scenario_reading_the_same_key_twice_does_not_duplicate_inventory() {
     let keys = world.store.keys().unwrap();
     assert_eq!(keys.len(), 1);
     assert_eq!(keys[0].firmware, "5.7.1");
+}
+
+#[test]
+fn scenario_a_key_that_has_been_handed_over_cannot_be_removed_from_the_inventory() {
+    // Given a key in somebody's hands
+    let world = World::new();
+    let key = world.key_in_stock(20_423_633);
+    let ana = world.holder("Ana Silva", "ana.silva@fgv.br");
+    world.distribute(&key, &ana, "felipe");
+
+    // When an operator tries to delete the inventory row
+    let outcome = world.store.delete_key(key.serial);
+
+    // Then it is refused, the row stands, and the hand-over still resolves to a
+    // key somebody can look up
+    assert!(matches!(outcome, Err(StoreError::HasHistory { .. })));
+    assert!(world.store.key_by_serial(key.serial).unwrap().is_some());
+    assert_eq!(world.store.distributions().unwrap().len(), 1);
+
+    // And the way out of service is retirement, which keeps the record
+    world
+        .store
+        .set_key_status(key.serial, KeyStatus::Retired)
+        .unwrap();
+    assert_eq!(
+        world
+            .store
+            .key_by_serial(key.serial)
+            .unwrap()
+            .unwrap()
+            .status,
+        KeyStatus::Retired
+    );
+}
+
+#[test]
+fn scenario_a_serial_typed_by_mistake_is_removed_with_its_observation() {
+    // Given a shipment recorded by serial, one row of which was mis-typed
+    let world = World::new();
+    let good = YubiKeyRecord::from_serial(20_423_633, SerialSource::ScannedLabel);
+    let mut typo = YubiKeyRecord::from_serial(20_423_634, SerialSource::ManualEntry);
+    typo.notes = "shipment NF-8891".into();
+    world.store.upsert_key(&good).unwrap();
+    world.store.upsert_key(&typo).unwrap();
+
+    // When the mistake is removed
+    let removed = world.store.delete_key(20_423_634).unwrap();
+
+    // Then that row and its observation are gone, and nothing else moved
+    assert_eq!(removed.notes, "shipment NF-8891");
+    let remaining = world.store.keys().unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].serial, 20_423_633);
+}
+
+#[test]
+fn scenario_an_observation_survives_reading_the_key_again() {
+    // Given a key recorded from a label, with an observation on it
+    let world = World::new();
+    let scanned = YubiKeyRecord::from_serial(20_423_633, SerialSource::ScannedLabel);
+    world.store.upsert_key(&scanned).unwrap();
+    world
+        .store
+        .set_key_notes(20_423_633, "connector bent — do not hand out")
+        .unwrap();
+
+    // When the key is plugged in and read, the way the Inventory screen does it
+    let mut record = world.store.key_by_serial(20_423_633).unwrap().unwrap();
+    record.refresh_from_device(&DeviceInfo {
+        serial: 20_423_633,
+        model: "YubiKey 5 NFC".into(),
+        firmware: "5.4.3".into(),
+        form_factor: "Keychain (USB-A)".into(),
+        nfc: true,
+        usb_applications: vec!["FIDO2".into(), "PIV".into()],
+    });
+    world.store.upsert_key(&record).unwrap();
+
+    // Then the hardware fields are filled in and the operator's observation is
+    // untouched — no device can supply it, so nothing may overwrite it
+    let stored = world.store.key_by_serial(20_423_633).unwrap().unwrap();
+    assert_eq!(stored.model, "YubiKey 5 NFC");
+    assert!(stored.is_verified());
+    assert_eq!(stored.notes, "connector bent — do not hand out");
 }

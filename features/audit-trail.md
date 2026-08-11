@@ -71,7 +71,7 @@ Minimum set, kept in sync with the feature files:
 | Event | Source |
 |---|---|
 | `app.opened` | app startup |
-| `key.added`, `key.refreshed`, `key.status_changed` | inventory |
+| `key.added`, `key.refreshed`, `key.status_changed`, `key.note_changed`, `key.removed` | inventory |
 | `holder.registered` | holders |
 | `key.distributed`, `key.returned` | distribution |
 | `bootstrap.dry_run` | wizard |

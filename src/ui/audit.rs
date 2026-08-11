@@ -1,6 +1,6 @@
 //! Audit screen: the hash-chained trail, newest first, plus chain verification.
 
-use elegance::{Button, CalloutTone, Card};
+use elegance::{Button, CalloutTone};
 
 use crate::app::YkDistApp;
 
@@ -27,14 +27,12 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
         return;
     }
 
-    Card::new().show(ui, |ui| {
-        egui::Grid::new("audit")
-            .striped(true)
-            .num_columns(6)
-            .spacing([14.0, 7.0])
-            .show(ui, |ui| {
-                super::table_header(ui, &["#", "When", "Actor", "Event", "Target", "Details"]);
-
+    super::card(ui, |ui| {
+        super::table(
+            ui,
+            "audit",
+            &["#", "When", "Actor", "Event", "Target", "Details"],
+            |ui| {
                 for entry in &app.audit_view {
                     super::mono(ui, &entry.seq.to_string());
                     ui.label(entry.at.format("%d/%m/%Y %H:%M:%S").to_string());
@@ -50,6 +48,7 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
                     );
                     ui.end_row();
                 }
-            });
+            },
+        );
     });
 }

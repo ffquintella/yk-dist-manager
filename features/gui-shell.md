@@ -45,6 +45,12 @@ continuously too.
   building blocks live in `src/ui/mod.rs`; see [`docs/gui.md`](../docs/gui.md#theme)
   for the helper table and the two deliberate departures from the crate's defaults
   (selectable refusals, hand-applied input caps).
+- **Fluid layout** — one gutter (`ui::GUTTER`) on both sides of the top bar, the
+  body and the status bar, and every card, banner, form and table spanning what is
+  left. Width is the layout's business, not the content's: `ui::card` /
+  `ui::titled_card` claim the row, `ui::form_columns` splits it in two, fields ask
+  for their column rather than a constant, and `ui::table` contains its own
+  horizontal overflow.
 
 Not yet done: keyboard shortcuts, search, window-state persistence, and
 localisation.
@@ -63,8 +69,14 @@ localisation.
    and asks. Nothing writes on navigation.
 5. **Secrets never render.** A plan shows `<FIDO2-PIN>`; there is no widget that can
    display a PIN because no PIN reaches the UI state.
-6. **Tables scroll, panels do not overflow.** The central panel is inside a
-   `ScrollArea::both`.
+6. **Tables scroll, the page does not.** The body is a `ScrollArea::vertical`; a
+   table too wide for the window scrolls sideways inside its own card
+   (`ui::table`). A page that scrolled horizontally would make every card as wide
+   as the widest table on the screen, and nothing would line up.
+7. **Width comes from the layout.** No screen invents a field width: a card takes
+   the page, a column takes half of it, and a field takes its column. The only
+   constants left are caps on things that must *not* grow (a serial field), and
+   they are named and justified where they sit.
 
 ### Screen inventory
 
@@ -100,6 +112,7 @@ is rejected.
 | 9 | Localisation (pt-BR / en) | Todo | the audience is Brazilian; log format is already pt |
 | 10 | Accessibility pass: contrast, font scaling, no colour-only meaning | Todo | the transport column relies on colour plus text — keep both; contrast now has to hold in all four palettes |
 | 11 | Theming | Done | `egui-elegance` 0.15; four palettes, the choice persisted in `settings.json` |
+| 12 | Fluid layout | Done | one gutter, full-width cards, columns that split the page, tables that contain their own overflow (`ui::card`, `titled_card`, `table`, `form_columns`) |
 
 ## Audit events
 

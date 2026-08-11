@@ -34,13 +34,23 @@ deployment.
 | Todo | 20 |
 | **Total tracked items** | **38** (across 35 specs — two items share a spec) |
 
-Released: **v0.3.0**. Current wave: **Wave 1 — native execution.**
+Released: **v0.4.0**. Current wave: **Wave 1 — native execution.**
+
+**Out of turn in v0.4.0** (AGENTS.md §1 asks for the reason, in this file, in the same
+commit): the Inventory screen gained an **observation** per key and a **confirmed
+removal** of a registered key, both requested by the operator who will run the tool.
+Neither belongs to Wave 1, and both were cheap and self-contained — the `notes` column
+has existed since schema v1 with nothing in the GUI to fill it, and removal needed one
+store method with its refusal. They are recorded as Phase 9 of
+[`features/key-inventory.md`](features/key-inventory.md), with no schema change. What
+made them worth taking early: a register nobody can correct gets worked around in a
+spreadsheet, and the workaround is the thing an audit finds.
 
 Wave 0 (foundation) is in place, and v0.2.1–v0.2.2 add the paperwork and intake half
 of the job: choosing or creating the database file, recording serials from a barcode,
 generating the consignment term in the holder's language, and filing the signed copy
 against the hand-over — and, from the Terms screen, editing that term's wording per
-language. 246 tests pass (plus 2 read-only hardware tests), with 86.86% line coverage of
+language. 258 tests pass (plus 2 read-only hardware tests), with 87.07% line coverage of
 the headless core.
 
 Camera scanning is a default feature, and on macOS it needs the bundled application:
@@ -74,15 +84,15 @@ Everything needed before a single byte is written to a key.
 | `[ ]` | Optional database password | [spec](features/db-password-and-encryption.md) — `encrypted-db` feature wires `PRAGMA key`; unlock screen exists. KDF parameters, password change and re-key are Todo. |
 | `[x]` | Logging | [spec](features/logging.md) — one entry point, three levels, G-002 line format, no hand-built log lines. |
 | `[/]` | Audit trail | [spec](features/audit-trail.md) — SHA-256 chain, `UPDATE`/`DELETE` refused by trigger, chain verification in the GUI. Segregated storage still open (see gates). |
-| `[x]` | Key inventory | [spec](features/key-inventory.md) — serial, model, firmware, form factor, FIPS flag, applications, lifecycle with guarded transitions, and serial provenance (verified / scanned / typed). |
+| `[x]` | Key inventory | [spec](features/key-inventory.md) — serial, model, firmware, form factor, FIPS flag, applications, lifecycle with guarded transitions, serial provenance (verified / scanned / typed), an editable **observation** per key, and confirmed **removal** of an intake mistake (refused once a hand-over or a run refers to the serial). |
 | `[x]` | Serial from a barcode | [spec](features/serial-scanning.md) — camera decoding via `rxing` + `nokhwa`, a USB-wedge/typed path that needs no features, and provenance that only ever improves. |
 | `[x]` | Holder registry | [spec](features/holder-registry.md) — minimal personal data, validated e-mail, RFC 4514 subject derivation, plus optional identification number, phone and address. |
 | `[x]` | Distribution records | [spec](features/distribution-records.md) — hand-over, operator, delivery method, receipt reference, linked bootstrap run, return without rewriting history. |
 | `[/]` | Bootstrap templates | [spec](features/bootstrap-templates.md) — versioned templates, `{{variable}}` rendering, two built-ins, validation. A GUI editor and template signing are pending. |
 | `[/]` | Bootstrap planner | [spec](features/bootstrap-engine.md) — plan with per-step transport (native / ykman / manual) and secret placeholders; dry runs recorded. **The executor is Wave 1.** |
-| `[/]` | GUI shell | [spec](features/gui-shell.md) — seven screens, unlock screen, status bar, egui 0.36 `App::ui`, themed with `egui-elegance` (four palettes, the choice persisted). Search, keyboard flow and window-state persistence still open. |
+| `[/]` | GUI shell | [spec](features/gui-shell.md) — seven screens, unlock screen, status bar, egui 0.36 `App::ui`, themed with `egui-elegance` (four palettes, the choice persisted) and laid out fluidly (one gutter, full-width cards, columns that split the page, tables that contain their own overflow). Search, keyboard flow and window-state persistence still open. |
 | `[/]` | Bootstrap wizard | [spec](features/gui-bootstrap-wizard.md) — selection, per-step opt-out, plan review, dry run. Execution progress view pending. |
-| `[/]` | Testing strategy | [spec](features/testing-strategy.md) — 246 tests across unit + behaviour suites, mock backend, recorded fixtures, ignored hardware tests; 86.86% core line coverage. The gate is not yet enforced in CI. |
+| `[/]` | Testing strategy | [spec](features/testing-strategy.md) — 258 tests across unit + behaviour suites, mock backend, recorded fixtures, ignored hardware tests; 87.07% core line coverage. The gate is not yet enforced in CI. |
 
 ### Paperwork
 
@@ -210,3 +220,6 @@ Decisions that change what gets built, and are not the implementer's to make.
 | 2026-08-10 | The identification field is called an **identification number**, not CPF | It holds a CPF in Brazil and the local equivalent elsewhere; naming it `cpf` would have made the first non-Brazilian holder a migration |
 | 2026-08-10 | The GUI is themed with `egui-elegance`, and the theme is the operator's choice | The screens looked like unstyled egui, which is a poor advertisement for a tool people are asked to trust with a key register. The crate targets exactly the egui 0.36 already in use, is one dependency with no build-script or system-library cost, and restyles the stock widgets on install rather than requiring every call site to change. Two of its defaults are deliberately not used: refusals stay selectable (a `Callout` cannot be copied) and inputs are capped by hand (`TextInput` has no `char_limit`) |
 | 2026-08-10 | An edited term is stored as a **new version numbered by the database**, and generation takes the newest | The editor cannot be allowed to overwrite wording a holder has signed, and the version on the operator's screen must not decide what is written — two workstations editing the same term would otherwise both produce "version 2". The store reads what is on record and adds one |
+| 2026-08-11 | An observation is stored on the key, and audited by *shape* rather than by content | The one field no device can supply is the operator's, and it is the one field that sometimes needs correcting. The audit chain refuses `UPDATE` and `DELETE` by trigger, so quoting the text into it would make a mistyped observation permanent and put uncontrolled free text in the immutable record — the entry says set / cleared / changed and how long, which is what a reviewer needs to follow the register |
+| 2026-08-11 | A registered key can be **removed**, but only while no history refers to it — and removal is not the lifecycle exit | Intake produces mistakes (a mis-typed serial, a label scanned twice) and a register nobody can correct gets worked around in a spreadsheet. But a hand-over or a bootstrap run pointing at a serial nobody can look up is not a register, so `delete_key` refuses those and names retirement instead, which keeps the record. The audit entries outlive the row either way |
+| 2026-08-10 | The layout is fluid — the page decides width, and a wide table scrolls inside its own card | A card is an `egui::Frame`, so it was as wide as whatever was inside it: the Inventory table filled the window while the Holders form stopped at two 340px columns, and no two screens lined up. Making the *page* horizontally scrollable would have been the other fix, but then every card on a screen becomes as wide as the widest table on it — so the overflow is contained in `ui::table` and the body scrolls vertically only |

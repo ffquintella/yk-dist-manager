@@ -17,6 +17,58 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-11
+
+### Added
+
+- **An observation on every key.** The `notes` column has existed since schema v1
+  with nothing in the GUI to fill it; the Inventory screen now writes it. The
+  intake panel carries an *Observation (optional)* field that is stored with the
+  serial and **kept for the next serial added**, so a whole box shares one note,
+  and every row has an `observation…` action that opens an editor for a key already
+  on record. The observation is what no device can supply — the shipment it arrived
+  in, a bent connector, why a key is being held back — is bounded by
+  `domain::MAX_NOTE`, survives a device re-read untouched, and is never a place for
+  a secret. New audit event `key.note_changed`; `key.added` now also records
+  `note_chars=<n>`.
+- **Removing a registered key, behind a confirmation.** A row action asks, and a
+  panel says what goes (the inventory row and its observation), what stays (the
+  audit trail, which no code path can edit), and what the alternative is
+  (retirement, which keeps the record) before anything is deleted. Removal is for a
+  mistake at intake — a mis-typed serial, a label scanned twice — so
+  `Store::delete_key` **refuses** a serial that any hand-over or bootstrap run
+  refers to (`StoreError::HasHistory`), naming the counts and pointing at
+  retirement; the Inventory panel shows that refusal before the operator clicks
+  rather than after. New audit event `key.removed`, carrying the status, provenance,
+  model and observation length of the row that was removed.
+
+### Changed
+
+- One spelling for a status and a provenance, stored and audited:
+  `KeyStatus::audit_name` / `SerialSource::audit_name` are now the source of the
+  snake_case names, and `store::key_status_str` / `store::serial_source_str`
+  delegate to them. The third copy of that mapping (in `app.rs`) is gone.
+
+- **The screens are fluid.** Every card, banner, form and table now spans the
+  window width, with one gutter (18px) shared by the top bar, the screen body and
+  the status bar — so the product name, the screen heading and the status pill sit
+  on the same left margin, and two screens no longer disagree about how wide a
+  card is. Previously a card was as wide as whatever happened to be inside it: the
+  Inventory table was full width, the Holders form stopped at two 340px columns,
+  and the Distribution card at three 360px selects.
+
+  - Form fields take the width of their column instead of a constant, so they grow
+    with the window. Two-column forms (Holders, Distribution, Bootstrap,
+    Settings → Operator) split the page evenly through `ui::form_columns`.
+  - A table wider than the window scrolls sideways **inside its own card**
+    (`ui::table`), instead of widening the page and leaving every other card
+    narrower than the one that overflowed. The body itself now scrolls vertically
+    only. Table spacing and header style are shared, so the seven tables read as
+    one table.
+  - New shared building blocks in `src/ui/mod.rs`: `card`, `titled_card`, `table`,
+    `form_columns`, and the `GUTTER` constant. A refusal (`ui::error_label`) is
+    full width and wraps rather than running off the screen.
+
 ## [0.3.0] - 2026-08-10
 
 ### Added

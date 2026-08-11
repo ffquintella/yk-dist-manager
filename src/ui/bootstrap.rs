@@ -5,13 +5,14 @@
 //! and can be recorded as evidence of intent, but no step touches the key. The
 //! executor is Wave 2 in `roadmap.md`.
 
-use elegance::{Accent, Badge, BadgeTone, Button, CalloutTone, Card, Checkbox, Select};
+use elegance::{Accent, Badge, BadgeTone, Button, CalloutTone, Checkbox, Select};
 
 use crate::app::YkDistApp;
 use crate::template::Transport;
 
-/// Width of the wider selects on this screen.
-const FIELD: f32 = 360.0;
+/// Widest a serial field needs to be. A serial is eight digits; the column it
+/// sits in is free to be wider, the field is not.
+const SERIAL_FIELD: f32 = 180.0;
 
 pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
     super::screen_header(
@@ -21,7 +22,7 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
          and a PIV signing certificate carrying the holder's e-mail.",
     );
 
-    Card::new().heading("Selection").show(ui, |ui| {
+    super::titled_card(ui, "Selection", |ui| {
         selection(app, ui);
         ui.add_space(14.0);
         steps(app, ui);
@@ -64,66 +65,62 @@ fn selection(app: &mut YkDistApp, ui: &mut egui::Ui) {
         .map(|t| format!("{} (v{})", t.name, t.version))
         .collect();
 
-    ui.horizontal_top(|ui| {
-        ui.vertical(|ui| {
-            ui.set_width(200.0);
-            super::capped_input(ui, &mut app.wizard.serial, 12, |input| {
-                input
-                    .label("Key serial")
-                    .id_salt("wizard-serial")
-                    .desired_width(140.0)
-            });
-            ui.add_space(6.0);
-            if ui
-                .add(
-                    Button::new("read attached key")
-                        .outline()
-                        .size(elegance::ButtonSize::Small),
-                )
-                .clicked()
-            {
-                app.detect_keys();
-            }
+    let mut detect = false;
+    super::form_columns(ui, |left, right, width| {
+        super::capped_input(left, &mut app.wizard.serial, 12, |input| {
+            input
+                .label("Key serial")
+                .id_salt("wizard-serial")
+                .desired_width(SERIAL_FIELD.min(width))
         });
+        left.add_space(6.0);
+        if left
+            .add(
+                Button::new("read attached key")
+                    .outline()
+                    .size(elegance::ButtonSize::Small),
+            )
+            .clicked()
+        {
+            detect = true;
+        }
 
-        ui.add_space(20.0);
+        if holder_labels.is_empty() {
+            super::notice(right, CalloutTone::Warning, "Register a holder first.");
+        } else {
+            app.wizard.holder_index = app.wizard.holder_index.min(holder_labels.len() - 1);
+            right.add(
+                Select::new("wizard-holder", &mut app.wizard.holder_index)
+                    .label("Holder")
+                    .options(holder_labels.iter().cloned().enumerate())
+                    .width(width),
+            );
+        }
 
-        ui.vertical(|ui| {
-            ui.set_width(FIELD + 16.0);
+        right.add_space(8.0);
 
-            if holder_labels.is_empty() {
-                super::notice(ui, CalloutTone::Warning, "Register a holder first.");
-            } else {
-                app.wizard.holder_index = app.wizard.holder_index.min(holder_labels.len() - 1);
-                ui.add(
-                    Select::new("wizard-holder", &mut app.wizard.holder_index)
-                        .label("Holder")
-                        .options(holder_labels.iter().cloned().enumerate())
-                        .width(FIELD),
-                );
+        if template_labels.is_empty() {
+            super::notice(right, CalloutTone::Warning, "No template available.");
+        } else {
+            app.wizard.template_index = app.wizard.template_index.min(template_labels.len() - 1);
+            let before = app.wizard.template_index;
+            right.add(
+                Select::new("wizard-template", &mut app.wizard.template_index)
+                    .label("Template")
+                    .options(template_labels.iter().cloned().enumerate())
+                    .width(width),
+            );
+            if before != app.wizard.template_index {
+                app.wizard.step_enabled.clear();
+                app.wizard.plan.clear();
             }
-
-            ui.add_space(8.0);
-
-            if template_labels.is_empty() {
-                super::notice(ui, CalloutTone::Warning, "No template available.");
-            } else {
-                app.wizard.template_index =
-                    app.wizard.template_index.min(template_labels.len() - 1);
-                let before = app.wizard.template_index;
-                ui.add(
-                    Select::new("wizard-template", &mut app.wizard.template_index)
-                        .label("Template")
-                        .options(template_labels.iter().cloned().enumerate())
-                        .width(FIELD),
-                );
-                if before != app.wizard.template_index {
-                    app.wizard.step_enabled.clear();
-                    app.wizard.plan.clear();
-                }
-            }
-        });
+        }
     });
+    // Deferred, as everywhere else: reading the key happens outside the layout
+    // closure that is holding the form's fields.
+    if detect {
+        app.detect_keys();
+    }
 
     if let Some(template) = app.selected_template() {
         ui.add_space(8.0);
@@ -174,9 +171,10 @@ fn plan_table(app: &mut YkDistApp, ui: &mut egui::Ui) {
         return;
     }
 
-    Card::new()
-        .heading(format!("Planned steps ({})", app.wizard.plan.len()))
-        .show(ui, |ui| {
+    super::titled_card(
+        ui,
+        format!("Planned steps ({})", app.wizard.plan.len()),
+        |ui| {
             super::notice(
                 ui,
                 CalloutTone::Info,
@@ -184,13 +182,11 @@ fn plan_table(app: &mut YkDistApp, ui: &mut egui::Ui) {
             );
             ui.add_space(10.0);
 
-            egui::Grid::new("plan")
-                .striped(true)
-                .num_columns(4)
-                .spacing([14.0, 8.0])
-                .show(ui, |ui| {
-                    super::table_header(ui, &["Step", "Transport", "Operation", "Note"]);
-
+            super::table(
+                ui,
+                "plan",
+                &["Step", "Transport", "Operation", "Note"],
+                |ui| {
                     for command in &app.wizard.plan {
                         ui.label(command.kind.label());
                         // The transport is the thing to notice: `ykman` is a
@@ -205,6 +201,8 @@ fn plan_table(app: &mut YkDistApp, ui: &mut egui::Ui) {
                         super::faint(ui, &command.note.clone().unwrap_or_default());
                         ui.end_row();
                     }
-                });
-        });
+                },
+            );
+        },
+    );
 }

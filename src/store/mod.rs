@@ -53,6 +53,8 @@ pub enum StoreError {
     Decode { column: &'static str, value: String },
     #[error("illegal status transition: {from} -> {to}")]
     Transition { from: String, to: String },
+    #[error("serial {serial} has history and cannot be removed: {reason}")]
+    HasHistory { serial: u32, reason: String },
     #[error("record not found: {0}")]
     NotFound(String),
     #[error("no database file at {0} — choose an existing one, or create a new one")]
@@ -479,6 +481,76 @@ impl Store {
             params![key_status_str(next), Utc::now().to_rfc3339(), serial],
         )?;
         Ok(())
+    }
+
+    /// Replace a key's observation, leaving every other field alone.
+    ///
+    /// The bound on the text belongs to the domain
+    /// ([`crate::domain::optional_note`]); this is the write, and it refuses a
+    /// serial that is not in the inventory rather than updating nothing and
+    /// reporting success.
+    pub fn set_key_notes(&self, serial: u32, notes: &str) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE keys SET notes = ?1, updated_at = ?2 WHERE serial = ?3",
+            params![notes, Utc::now().to_rfc3339(), serial],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::NotFound(format!("serial {serial}")));
+        }
+        Ok(())
+    }
+
+    /// How much history refers to this serial: `(distributions, bootstrap runs)`.
+    ///
+    /// What makes a key removable. Used by [`Self::delete_key`] to refuse, and by
+    /// the Inventory screen to say *why* before the operator clicks.
+    pub fn key_history_counts(&self, serial: u32) -> Result<(usize, usize)> {
+        let distributions: i64 = self.conn.query_row(
+            "SELECT count(*) FROM distributions WHERE key_serial = ?1",
+            params![serial],
+            |row| row.get(0),
+        )?;
+        let runs: i64 = self.conn.query_row(
+            "SELECT count(*) FROM bootstrap_runs WHERE key_serial = ?1",
+            params![serial],
+            |row| row.get(0),
+        )?;
+        Ok((distributions as usize, runs as usize))
+    }
+
+    /// Delete an inventory row, and return the record that was removed.
+    ///
+    /// This exists for the **intake mistake** — a mis-typed serial, a label
+    /// scanned twice, a shipment recorded against the wrong unit — and for
+    /// nothing else. A key that has been handed over or bootstrapped is refused
+    /// with [`StoreError::HasHistory`]: retirement is the lifecycle exit and
+    /// `Retired` keeps the record (see
+    /// `features/key-lifecycle-and-revocation.md`), because a distribution or a
+    /// bootstrap run that pointed at a serial nobody can look up is not a
+    /// register.
+    ///
+    /// The removal itself stays in the audit trail, which no code path can edit,
+    /// so "this serial was recorded and then removed, by whom and when" survives
+    /// the row.
+    pub fn delete_key(&self, serial: u32) -> Result<YubiKeyRecord> {
+        let record = self
+            .key_by_serial(serial)?
+            .ok_or_else(|| StoreError::NotFound(format!("serial {serial}")))?;
+
+        let (distributions, runs) = self.key_history_counts(serial)?;
+        if distributions > 0 || runs > 0 {
+            return Err(StoreError::HasHistory {
+                serial,
+                reason: format!(
+                    "{distributions} hand-over(s) and {runs} bootstrap run(s) refer to it — \
+                     retire the key instead, which keeps the record"
+                ),
+            });
+        }
+
+        self.conn
+            .execute("DELETE FROM keys WHERE serial = ?1", params![serial])?;
+        Ok(record)
     }
 
     // --------------------------------------------------------------- holders
@@ -975,15 +1047,11 @@ fn parse_time(column: &'static str, raw: &str) -> Result<DateTime<Utc>> {
         })
 }
 
+/// The stored spelling of a status. Same string the audit trail uses
+/// ([`KeyStatus::audit_name`]), so a column value and an audit detail cannot
+/// drift apart.
 pub fn key_status_str(status: KeyStatus) -> &'static str {
-    match status {
-        KeyStatus::InStock => "in_stock",
-        KeyStatus::Bootstrapped => "bootstrapped",
-        KeyStatus::Distributed => "distributed",
-        KeyStatus::Returned => "returned",
-        KeyStatus::Lost => "lost",
-        KeyStatus::Retired => "retired",
-    }
+    status.audit_name()
 }
 
 pub fn key_status_from(raw: &str) -> Result<KeyStatus> {
@@ -1003,12 +1071,9 @@ pub fn key_status_from(raw: &str) -> Result<KeyStatus> {
     })
 }
 
+/// The stored spelling of a serial's provenance; see [`key_status_str`].
 pub fn serial_source_str(source: SerialSource) -> &'static str {
-    match source {
-        SerialSource::Device => "device",
-        SerialSource::ScannedLabel => "scanned-label",
-        SerialSource::ManualEntry => "manual-entry",
-    }
+    source.audit_name()
 }
 
 pub fn serial_source_from(raw: &str) -> Result<SerialSource> {

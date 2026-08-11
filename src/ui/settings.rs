@@ -1,6 +1,6 @@
 //! Settings: operator identity, appearance, database location and health.
 
-use elegance::{Accent, Button, Card, Select};
+use elegance::{Accent, Button, Select};
 
 use crate::app::{DbRequest, YkDistApp};
 use crate::domain::MAX_TEXT;
@@ -36,35 +36,22 @@ fn identity(app: &mut YkDistApp, ui: &mut egui::Ui) {
     // every keypress.
     let mut identity_changed = false;
 
-    Card::new().heading("Operator").show(ui, |ui| {
-        ui.horizontal_top(|ui| {
-            ui.vertical(|ui| {
-                ui.set_width(300.0);
-                if super::capped_input(ui, &mut app.operator, MAX_TEXT, |input| {
-                    input
-                        .label("Operator")
-                        .id_salt("settings-operator")
-                        .desired_width(280.0)
-                })
-                .lost_focus()
-                {
-                    identity_changed = true;
-                }
-            });
-            ui.add_space(16.0);
-            ui.vertical(|ui| {
-                ui.set_width(300.0);
-                if super::capped_input(ui, &mut app.org, MAX_TEXT, |input| {
-                    input
-                        .label("Organisation")
-                        .id_salt("settings-org")
-                        .desired_width(280.0)
-                })
-                .lost_focus()
-                {
-                    identity_changed = true;
-                }
-            });
+    super::titled_card(ui, "Operator", |ui| {
+        super::form_columns(ui, |left, right, _width| {
+            if super::capped_input(left, &mut app.operator, MAX_TEXT, |input| {
+                input.label("Operator").id_salt("settings-operator")
+            })
+            .lost_focus()
+            {
+                identity_changed = true;
+            }
+            if super::capped_input(right, &mut app.org, MAX_TEXT, |input| {
+                input.label("Organisation").id_salt("settings-org")
+            })
+            .lost_focus()
+            {
+                identity_changed = true;
+            }
         });
 
         ui.add_space(12.0);
@@ -100,8 +87,13 @@ fn appearance(app: &mut YkDistApp, ui: &mut egui::Ui) {
 
 /// Where the database is, how it is being held open, and how to change it.
 fn database_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
-    Card::new().heading("Database").show(ui, |ui| {
-        egui::Grid::new("settings-database")
+    super::titled_card(ui, "Database", |ui| {
+        // A label/value grid, not a table: no header row, and the path is the
+        // one value allowed to be longer than the window.
+        egui::ScrollArea::horizontal()
+            .id_salt("settings-database-scroll")
+            .show(ui, |ui| {
+                egui::Grid::new("settings-database")
             .num_columns(2)
             .spacing([16.0, 8.0])
             .show(ui, |ui| {
@@ -142,6 +134,7 @@ fn database_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
                 ui.label("Device transport");
                 super::faint(ui, &app.backend.describe());
                 ui.end_row();
+            });
             });
 
         // A cloud-sync folder is a data-loss risk, not a note in a table.
@@ -192,7 +185,7 @@ fn database_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
 
 /// Integrity, backup, reload.
 fn maintenance(app: &mut YkDistApp, ui: &mut egui::Ui) {
-    Card::new().heading("Maintenance").show(ui, |ui| {
+    super::titled_card(ui, "Maintenance", |ui| {
         ui.horizontal_wrapped(|ui| {
             if ui.add(Button::new("Integrity check").outline()).clicked()
                 && let Some(store) = &app.store

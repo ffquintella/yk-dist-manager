@@ -146,12 +146,34 @@ pub struct ScanPanel {
     pub candidate: Option<u32>,
     /// Typed serial, for a USB barcode wedge or manual entry.
     pub typed: String,
+    /// Observation to store with the key being recorded — the shipment, the
+    /// invoice, the box it came in. Kept for the next serial in the same batch
+    /// rather than cleared on every add.
+    pub note: String,
     pub error: Option<String>,
     /// Texture handle for the camera preview, recreated as frames arrive.
     #[cfg(feature = "camera")]
     pub preview: Option<egui::TextureHandle>,
     #[cfg(feature = "camera")]
     pub scanner: Option<crate::scan::camera::CameraScanner>,
+}
+
+/// Inventory-screen state that outlives a single frame: the observation being
+/// edited, and the removal waiting for the operator to confirm it.
+///
+/// Both are *deferred* by design. A row action cannot mutate `app.keys` while
+/// the table that produced it is still being painted, and a removal must not
+/// happen on the click that asked for it — the confirmation is a second,
+/// separate decision.
+#[derive(Default)]
+pub struct InventoryPanel {
+    /// Serial whose observation is open in the editor.
+    pub note_serial: Option<u32>,
+    /// The observation being edited. Nothing is stored until it is saved.
+    pub note_draft: String,
+    /// Serial the operator has asked to remove, awaiting confirmation.
+    pub pending_removal: Option<u32>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -276,6 +298,7 @@ pub struct YkDistApp {
 
     pub holder_form: HolderForm,
     pub dist_form: DistForm,
+    pub inventory: InventoryPanel,
     pub wizard: Wizard,
     pub term_panel: TermPanel,
     pub term_editor: TermEditor,
@@ -328,6 +351,7 @@ impl YkDistApp {
             templates: Vec::new(),
             holder_form: HolderForm::default(),
             dist_form: DistForm::default(),
+            inventory: InventoryPanel::default(),
             wizard: Wizard::default(),
             term_panel: TermPanel::default(),
             term_editor: TermEditor::default(),
@@ -525,8 +549,17 @@ impl YkDistApp {
     /// Record a key from a serial alone: a scanned label, or a typed number.
     ///
     /// The record is deliberately incomplete — no model, no firmware — and marked
-    /// with its provenance, so nothing pretends this key has been seen.
-    pub fn add_serial(&mut self, serial: u32, source: SerialSource) {
+    /// with its provenance, so nothing pretends this key has been seen. `note` is
+    /// the operator's observation, which is the only field here that no device can
+    /// ever supply.
+    pub fn add_serial(&mut self, serial: u32, source: SerialSource, note: &str) {
+        let note = match crate::domain::optional_note("notes", note) {
+            Ok(note) => note,
+            Err(e) => {
+                self.scan.error = Some(e.to_string());
+                return;
+            }
+        };
         let Some(store) = &self.store else { return };
 
         match store.key_by_serial(serial) {
@@ -544,7 +577,8 @@ impl YkDistApp {
             }
         }
 
-        let record = YubiKeyRecord::from_serial(serial, source);
+        let mut record = YubiKeyRecord::from_serial(serial, source);
+        record.notes = note.clone();
         if let Err(e) = store.upsert_key(&record) {
             self.status = format!("could not save the key: {e}");
             return;
@@ -552,7 +586,11 @@ impl YkDistApp {
         self.record(
             "key.added",
             &format!("serial:{serial}"),
-            &format!("source={} verified=false", source_str(source)),
+            &format!(
+                "source={} verified=false note_chars={}",
+                source.audit_name(),
+                note.chars().count()
+            ),
         );
         self.status = format!(
             "serial {serial} recorded ({}) — plug the key in to verify it",
@@ -568,7 +606,8 @@ impl YkDistApp {
         match crate::scan::parse_serial(&typed) {
             Ok(serial) => {
                 self.scan.typed.clear();
-                self.add_serial(serial, SerialSource::ManualEntry);
+                let note = self.scan.note.clone();
+                self.add_serial(serial, SerialSource::ManualEntry, &note);
             }
             Err(e) => self.scan.error = Some(e.to_string()),
         }
@@ -577,12 +616,135 @@ impl YkDistApp {
     /// Accept the serial the camera decoded.
     pub fn accept_scanned_serial(&mut self) {
         if let Some(serial) = self.scan.candidate.take() {
-            self.add_serial(serial, SerialSource::ScannedLabel);
+            let note = self.scan.note.clone();
+            self.add_serial(serial, SerialSource::ScannedLabel, &note);
             #[cfg(feature = "camera")]
             if let Some(scanner) = &self.scan.scanner {
                 scanner.clear_serial();
             }
         }
+    }
+
+    // ---------------------------------------------- observation and removal
+
+    /// Open the observation editor for a serial, filled from what is stored.
+    pub fn edit_key_note(&mut self, serial: u32) {
+        self.inventory.error = None;
+        self.inventory.pending_removal = None;
+        self.inventory.note_draft = self
+            .keys
+            .iter()
+            .find(|key| key.serial == serial)
+            .map(|key| key.notes.clone())
+            .unwrap_or_default();
+        self.inventory.note_serial = Some(serial);
+    }
+
+    /// Close the observation editor, discarding the draft.
+    pub fn cancel_key_note(&mut self) {
+        self.inventory.note_serial = None;
+        self.inventory.note_draft.clear();
+        self.inventory.error = None;
+    }
+
+    /// Store the observation currently in the editor.
+    ///
+    /// The audit entry says the observation changed and by how much, never what it
+    /// says: an audit entry cannot be corrected, and free text sometimes has to be
+    /// (see [`crate::domain::key::note_audit_detail`]).
+    pub fn save_key_note(&mut self) {
+        let Some(serial) = self.inventory.note_serial else {
+            return;
+        };
+        self.inventory.error = None;
+
+        let note = match crate::domain::optional_note("notes", &self.inventory.note_draft) {
+            Ok(note) => note,
+            Err(e) => {
+                self.inventory.error = Some(e.to_string());
+                return;
+            }
+        };
+        let before = self
+            .keys
+            .iter()
+            .find(|key| key.serial == serial)
+            .map(|key| key.notes.clone())
+            .unwrap_or_default();
+
+        let Some(store) = &self.store else { return };
+        if let Err(e) = store.set_key_notes(serial, &note) {
+            self.inventory.error = Some(e.to_string());
+            tracing::warn!(event = "key.note.save.failed", serial, reason = %e);
+            return;
+        }
+        self.record(
+            "key.note_changed",
+            &format!("serial:{serial}"),
+            &crate::domain::key::note_audit_detail(&before, &note),
+        );
+        self.status = format!("observation saved for serial {serial}");
+        self.cancel_key_note();
+        self.refresh();
+    }
+
+    /// Ask to remove a serial. Nothing is deleted until [`Self::remove_key`].
+    pub fn request_key_removal(&mut self, serial: u32) {
+        self.inventory.error = None;
+        self.inventory.note_serial = None;
+        self.inventory.pending_removal = Some(serial);
+    }
+
+    /// Abandon a removal the operator asked about and then declined.
+    pub fn cancel_key_removal(&mut self) {
+        self.inventory.pending_removal = None;
+        self.inventory.error = None;
+    }
+
+    /// Remove an inventory row the operator has confirmed.
+    ///
+    /// For an intake mistake only: the store refuses a serial that any hand-over
+    /// or bootstrap run refers to, and the refusal is shown rather than swallowed.
+    /// The audit entry outlives the row.
+    pub fn remove_key(&mut self, serial: u32) {
+        self.inventory.error = None;
+        let Some(store) = &self.store else { return };
+        match store.delete_key(serial) {
+            Ok(removed) => {
+                self.record(
+                    "key.removed",
+                    &format!("serial:{serial}"),
+                    &removed.removal_audit_detail(),
+                );
+                self.status = format!("serial {serial} removed from the inventory");
+                tracing::info!(event = "key.removed", serial);
+                self.inventory.pending_removal = None;
+                self.refresh();
+            }
+            Err(e) => {
+                tracing::warn!(event = "key.remove.refused", serial, reason = %e);
+                self.inventory.error = Some(e.to_string());
+                self.status = format!("refused: {e}");
+            }
+        }
+    }
+
+    /// What history refers to a serial, for the confirmation warning.
+    ///
+    /// Reads the cached views rather than the database, so it is safe to call
+    /// while the table is being painted.
+    pub fn key_history_summary(&self, serial: u32) -> (usize, usize) {
+        let distributions = self
+            .distributions
+            .iter()
+            .filter(|record| record.key_serial == serial)
+            .count();
+        let runs = self
+            .runs
+            .iter()
+            .filter(|run| run.key_serial == serial)
+            .count();
+        (distributions, runs)
     }
 
     #[cfg(feature = "camera")]
@@ -1421,15 +1583,6 @@ fn existing_is_new(store: &Store, serial: u32) -> bool {
     !matches!(store.key_by_serial(serial), Ok(Some(_)))
 }
 
-/// Audit-friendly rendering of a serial's provenance.
-fn source_str(source: SerialSource) -> &'static str {
-    match source {
-        SerialSource::Device => "device",
-        SerialSource::ScannedLabel => "scanned-label",
-        SerialSource::ManualEntry => "manual-entry",
-    }
-}
-
 impl eframe::App for YkDistApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // The palette is the operator's, and installing it is idempotent — the
@@ -1454,24 +1607,45 @@ impl eframe::App for YkDistApp {
         self.top_bar(ui);
         self.status_bar(ui);
 
-        egui::CentralPanel::default().show(ui, |ui| {
-            egui::ScrollArea::both().show(ui, |ui| {
-                // Breathing room around the screen body; the panels above and
-                // below supply their own.
-                ui.add_space(14.0);
-                match self.tab {
-                    Tab::Inventory => crate::ui::inventory::show(self, ui),
-                    Tab::Holders => crate::ui::holders::show(self, ui),
-                    Tab::Distribution => crate::ui::distribution::show(self, ui),
-                    Tab::Bootstrap => crate::ui::bootstrap::show(self, ui),
-                    Tab::Terms => crate::ui::terms::show(self, ui),
-                    Tab::Audit => crate::ui::audit::show(self, ui),
-                    Tab::Settings => crate::ui::settings::show(self, ui),
-                }
-                ui.add_space(18.0);
+        // The body scrolls vertically only, and the screen fills the window
+        // width: a table too wide for the window scrolls inside its own card
+        // (`ui::table`) instead of dragging the whole page sideways and leaving
+        // every other card narrower than the one that overflowed.
+        egui::CentralPanel::default()
+            .frame(gutter_frame(egui::Frame::central_panel(ui.style())))
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        // Breathing room around the screen body; the panels
+                        // above and below supply their own.
+                        ui.add_space(14.0);
+                        match self.tab {
+                            Tab::Inventory => crate::ui::inventory::show(self, ui),
+                            Tab::Holders => crate::ui::holders::show(self, ui),
+                            Tab::Distribution => crate::ui::distribution::show(self, ui),
+                            Tab::Bootstrap => crate::ui::bootstrap::show(self, ui),
+                            Tab::Terms => crate::ui::terms::show(self, ui),
+                            Tab::Audit => crate::ui::audit::show(self, ui),
+                            Tab::Settings => crate::ui::settings::show(self, ui),
+                        }
+                        ui.add_space(18.0);
+                    });
             });
-        });
     }
+}
+
+/// Put the shell's [`crate::ui::GUTTER`] on both sides of a panel frame, so the
+/// top bar, the screen body and the status bar share one left margin.
+fn gutter_frame(frame: egui::Frame) -> egui::Frame {
+    // Only the horizontal margin is ours; each panel keeps the vertical padding
+    // egui gives it.
+    let margin = frame.inner_margin;
+    frame.inner_margin(egui::Margin {
+        left: crate::ui::GUTTER,
+        right: crate::ui::GUTTER,
+        ..margin
+    })
 }
 
 impl YkDistApp {
@@ -1479,30 +1653,32 @@ impl YkDistApp {
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         let theme = elegance::Theme::current(ui.ctx());
 
-        egui::Panel::top("tabs").show(ui, |ui| {
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                ui.add(egui::Label::new(
-                    egui::RichText::new("YubiKey Distribution Manager")
-                        .size(theme.typography.heading + 2.0)
-                        .color(theme.palette.text)
-                        .strong(),
-                ));
-                ui.add_space(8.0);
-                ui.add(
-                    elegance::Badge::new(crate::VERSION, elegance::BadgeTone::Neutral)
-                        .preserve_case(),
-                );
-            });
-            ui.add_space(6.0);
+        egui::Panel::top("tabs")
+            .frame(gutter_frame(egui::Frame::side_top_panel(ui.style())))
+            .show(ui, |ui| {
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.add(egui::Label::new(
+                        egui::RichText::new("YubiKey Distribution Manager")
+                            .size(theme.typography.heading + 2.0)
+                            .color(theme.palette.text)
+                            .strong(),
+                    ));
+                    ui.add_space(8.0);
+                    ui.add(
+                        elegance::Badge::new(crate::VERSION, elegance::BadgeTone::Neutral)
+                            .preserve_case(),
+                    );
+                });
+                ui.add_space(6.0);
 
-            let mut index = self.tab.index();
-            ui.add(elegance::TabBar::new(
-                &mut index,
-                Tab::ALL.map(|tab| tab.label()),
-            ));
-            self.tab = Tab::from_index(index);
-        });
+                let mut index = self.tab.index();
+                ui.add(elegance::TabBar::new(
+                    &mut index,
+                    Tab::ALL.map(|tab| tab.label()),
+                ));
+                self.tab = Tab::from_index(index);
+            });
     }
 
     /// Who is operating, where the database lives, and the last outcome.
@@ -1513,41 +1689,43 @@ impl YkDistApp {
         let theme = elegance::Theme::current(ui.ctx());
         let severity = crate::status::classify(&self.status);
 
-        egui::Panel::bottom("status").show(ui, |ui| {
-            ui.add_space(6.0);
-            ui.horizontal_wrapped(|ui| {
-                let mut pill = elegance::StatusPill::new()
-                    .item(format!("operator: {}", self.operator), IndicatorState::On);
-                if let Some(store) = &self.store {
-                    pill = pill.item(
-                        match store.location() {
-                            Location::NetworkShare => "db: network share",
-                            Location::LocalDisk => "db: local",
-                        },
-                        IndicatorState::On,
-                    );
-                }
-                ui.add(pill);
-
-                if !self.status.is_empty() {
-                    ui.add_space(10.0);
-                    // An audit failure is not allowed to look like an ordinary
-                    // outcome (AGENTS.md, "Audit coverage").
-                    let (colour, strong) = match severity {
-                        Severity::Alarm => (theme.palette.danger, true),
-                        Severity::Warning => (theme.palette.warning, false),
-                        Severity::Normal => (theme.palette.text_muted, false),
-                    };
-                    let mut text = egui::RichText::new(&self.status)
-                        .size(theme.typography.small)
-                        .color(colour);
-                    if strong {
-                        text = text.strong();
+        egui::Panel::bottom("status")
+            .frame(gutter_frame(egui::Frame::side_top_panel(ui.style())))
+            .show(ui, |ui| {
+                ui.add_space(6.0);
+                ui.horizontal_wrapped(|ui| {
+                    let mut pill = elegance::StatusPill::new()
+                        .item(format!("operator: {}", self.operator), IndicatorState::On);
+                    if let Some(store) = &self.store {
+                        pill = pill.item(
+                            match store.location() {
+                                Location::NetworkShare => "db: network share",
+                                Location::LocalDisk => "db: local",
+                            },
+                            IndicatorState::On,
+                        );
                     }
-                    ui.add(egui::Label::new(text).selectable(true));
-                }
+                    ui.add(pill);
+
+                    if !self.status.is_empty() {
+                        ui.add_space(10.0);
+                        // An audit failure is not allowed to look like an ordinary
+                        // outcome (AGENTS.md, "Audit coverage").
+                        let (colour, strong) = match severity {
+                            Severity::Alarm => (theme.palette.danger, true),
+                            Severity::Warning => (theme.palette.warning, false),
+                            Severity::Normal => (theme.palette.text_muted, false),
+                        };
+                        let mut text = egui::RichText::new(&self.status)
+                            .size(theme.typography.small)
+                            .color(colour);
+                        if strong {
+                            text = text.strong();
+                        }
+                        ui.add(egui::Label::new(text).selectable(true));
+                    }
+                });
+                ui.add_space(6.0);
             });
-            ui.add_space(6.0);
-        });
     }
 }
