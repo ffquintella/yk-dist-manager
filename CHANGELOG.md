@@ -17,6 +17,8 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-12
+
 ### Added
 
 - **Setting, changing and removing the database password, from the application**
@@ -962,7 +964,8 @@ become rows.
 - Uploaded filenames are treated as data: any directory component is stripped, so a
   name like `../../etc/passwd.pdf` cannot escape.
 
-[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/ffquintella/yk-dist-manager/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.5.0...v0.6.0

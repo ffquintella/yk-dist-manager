@@ -39,7 +39,7 @@ deployment.
 > `grep -cE '^\| .\[x\].' roadmap.md` and its two siblings. The database password moving
 > to `[x]` is this change; the rest was drift.
 
-Released: **v0.7.1**. Current wave: **Wave 1 — native execution.**
+Released: **v0.8.0**. Current wave: **Wave 1 — native execution.**
 
 **Out of turn, released in v0.6.0** (AGENTS.md §1 asks for the reason, in this file, in the
 same commit): **hosting the database in a OneDrive folder** —
