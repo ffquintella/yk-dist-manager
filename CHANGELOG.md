@@ -17,6 +17,8 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-12
+
 ### Added
 
 - **A signature state machine for responsibility terms**
@@ -1183,7 +1185,8 @@ become rows.
 - Uploaded filenames are treated as data: any directory component is stripped, so a
   name like `../../etc/passwd.pdf` cannot escape.
 
-[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/ffquintella/yk-dist-manager/compare/v0.7.0...v0.7.1
