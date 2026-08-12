@@ -1,6 +1,6 @@
 [package]
 name = "yk-dist-manager"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 description = "YubiKey distribution and bootstrap manager (egui desktop app)"
 license = "MIT"
