@@ -103,12 +103,12 @@ is rejected.
 |---|---|---|---|---|
 | 1 | Shell, eight screens, unlock, status bar | 0 | Done | Inventory, Holders, Distribution, Bootstrap, Templates, Terms, Audit, Settings |
 | 2 | Deferred-mutation pattern in tables | 0 | Done | avoids borrow conflicts and mid-paint writes |
-| 3 | Search / filter on Inventory, Holders, Distribution | 0 | Todo | the tables will not scale |
-| 4 | Sortable columns and pagination | 0 | Todo | consider `egui_extras::TableBuilder` |
-| 5 | Window size/position and last-tab persistence | 0 | Todo | `eframe` storage |
+| 3 | Search / filter on Inventory, Holders, Distribution | 0 | **Core done** | [`crate::browse`](../src/browse.rs) — one query box across every displayed field, all words must match. The paint wiring is pending |
+| 4 | Sortable columns and pagination | 0 | **Core done** | `browse::{KeySort, HolderSort, DistributionSort, Page}`; ties break on a stable field so rows cannot shuffle under the cursor. Paint wiring pending |
+| 5 | Window size/position and last-tab persistence | 0 | **Core done** | `settings::WindowState`, clamped against a monitor that is no longer attached; tab remembered by name, not index. Paint wiring pending |
 | 6 | Keyboard flow: Enter to submit, Tab order, shortcuts for detect/refresh | 0 | Todo | matters for repeated hand-overs |
 | 7 | Confirmation dialogs for hardware writes | 0 | Todo | blocks the executor going live |
-| 8 | Log panel (last N lines, copyable) | 0 | Todo | `features/logging.md` Phase 3 |
+| 8 | Log panel (last N lines, copyable) | 0 | **Core done** | [`crate::logbuf`](../src/logbuf.rs) — bounded ring of 500, level filter, one-block clipboard copy. Paint wiring pending |
 | 9 | Localisation (pt-BR / en) | — | Todo | the audience is Brazilian; log format is already pt |
 | 10 | Accessibility pass: contrast, font scaling, no colour-only meaning | 0 | Todo | the transport column relies on colour plus text — keep both; contrast now has to hold in all four palettes |
 | 11 | Theming | 0 | Done | `egui-elegance` 0.15; four palettes, the choice persisted in `settings.json` |

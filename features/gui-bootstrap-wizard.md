@@ -87,7 +87,7 @@ confirmation — that trains people to click through.
 | 4 | Single pre-flight confirmation naming what is irreversible | 1 | **In progress** | the *gate* exists in the engine — `bootstrap::Confirmation` cannot be forged and is re-checked against the plan, and `bootstrap::irreversible_steps` supplies what the dialog must list. The dialog itself is not painted yet, and the wizard does not call the executor |
 | 5 | Resume a suspended run (unplugged key, awaiting CA) | 1 | Todo | `features/ca-integration.md` |
 | 6 | Post-run summary with the evidence, and "attach to a hand-over" in one click | 1 | Todo | closes the loop with the distribution screen |
-| 7 | Pre-flight checks: firmware gates, applications enabled, key already configured | 1 | Todo | shown as skips/warnings before the run, not failures during it |
+| 7 | Pre-flight checks: firmware gates, applications enabled, key already configured | 1 | **Core done** | [`bootstrap::preflight`](../src/bootstrap/preflight.rs) — firmware gates, disabled applets, already-configured state, and a block when the run would write nothing. Paint wiring pending |
 | 8 | Batch mode | 2 | Todo | `features/bulk-enrollment.md` |
 
 ## Audit events

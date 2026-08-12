@@ -50,8 +50,10 @@ use crate::secret::{Secret, SecretKind};
 use crate::template::BootstrapTemplate;
 use crate::template::plan::PlannedCommand;
 
+pub mod preflight;
 pub mod steps;
 
+pub use preflight::{AppletSnapshot, Finding, Preflight, Severity};
 pub use steps::{StepContext, StepOutcomeKind, perform};
 
 #[derive(Debug, thiserror::Error)]

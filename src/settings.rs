@@ -54,6 +54,78 @@ pub struct ShareEntry {
     pub user: String,
 }
 
+/// Window geometry and the screen that was open, remembered between sessions.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WindowState {
+    pub width: f32,
+    pub height: f32,
+    /// Screen the operator was last on, by its stable name rather than an index,
+    /// so adding a tab does not reopen the wrong one.
+    pub tab: String,
+    pub maximised: bool,
+}
+
+impl Default for WindowState {
+    fn default() -> Self {
+        Self {
+            width: 1180.0,
+            height: 820.0,
+            tab: "Inventory".into(),
+            maximised: false,
+        }
+    }
+}
+
+impl WindowState {
+    /// The smallest window the screens still lay out in.
+    pub const MIN_WIDTH: f32 = 800.0;
+    pub const MIN_HEIGHT: f32 = 600.0;
+    /// A ceiling that catches a stored value from a monitor that is no longer
+    /// attached — a 6000px window on a laptop is a window the operator cannot
+    /// reach the close button of.
+    pub const MAX_WIDTH: f32 = 6000.0;
+    pub const MAX_HEIGHT: f32 = 4000.0;
+
+    /// The size to actually open at.
+    ///
+    /// Clamped rather than trusted: the file is editable, the monitor may have
+    /// changed, and a NaN from a half-written write should not produce a window
+    /// with no dimensions.
+    pub fn size(&self) -> (f32, f32) {
+        let sane = |value: f32, min: f32, max: f32, fallback: f32| {
+            if value.is_finite() {
+                value.clamp(min, max)
+            } else {
+                fallback
+            }
+        };
+        let default = Self::default();
+        (
+            sane(self.width, Self::MIN_WIDTH, Self::MAX_WIDTH, default.width),
+            sane(
+                self.height,
+                Self::MIN_HEIGHT,
+                Self::MAX_HEIGHT,
+                default.height,
+            ),
+        )
+    }
+
+    /// The screen to reopen, given the ones that exist in this build.
+    ///
+    /// A remembered tab that no longer exists falls back to the first, so
+    /// renaming or removing a screen cannot leave the app opening onto nothing.
+    pub fn tab_or_first<'a>(&self, available: &[&'a str]) -> &'a str {
+        available
+            .iter()
+            .find(|name| **name == self.tab)
+            .copied()
+            .or_else(|| available.first().copied())
+            .unwrap_or("Inventory")
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppSettings {
@@ -72,6 +144,13 @@ pub struct AppSettings {
     pub operator: String,
     /// Organisation, used in certificate subjects.
     pub org: String,
+    /// Where the window was, and which screen was open, last time.
+    ///
+    /// `features/gui-shell.md` phase 5. Cosmetic, and deliberately so: nothing
+    /// about the register depends on it, a missing or absurd value falls back to
+    /// the default rather than refusing to start, and it is never a reason to
+    /// fail an open.
+    pub window: WindowState,
     /// How the signing certificate's `rfc822Name` SAN is produced.
     ///
     /// Here rather than in a template because it follows from *which CA* the
@@ -128,6 +207,7 @@ impl AppSettings {
             recent_shares: Vec::new(),
             operator: default_operator(),
             org: String::new(),
+            window: WindowState::default(),
             san: crate::san::SanPolicy::default(),
             theme: DEFAULT_THEME.to_owned(),
         }

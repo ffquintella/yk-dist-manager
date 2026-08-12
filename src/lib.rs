@@ -9,6 +9,7 @@
 //! | Module | Role |
 //! |---|---|
 //! | [`branding`] | The application icon, embedded for every platform |
+//! | [`browse`] | Searching, sorting and paging the tables an operator reads |
 //! | [`domain`] | Records: keys, holders, distribution events, bootstrap runs |
 //! | [`device`] | YubiKey discovery / inspection behind a mockable trait |
 //! | [`template`] | Bootstrap templates, variable rendering, command planning |
@@ -23,6 +24,7 @@
 //! | [`diagnostics`] | `--diagnose`: what this build is and what it can reach |
 //! | [`audit`] | Append-only, hash-chained audit trail |
 //! | [`status`] | How loudly the status bar reports the last outcome |
+//! | [`logbuf`] | The last N log lines, for the panel an operator can copy from |
 //! | [`logging`] | The single logging entry point for the whole app |
 //! | [`app`] / [`ui`] | egui shell and screens |
 //!
@@ -33,10 +35,12 @@ pub mod app;
 pub mod audit;
 pub mod bootstrap;
 pub mod branding;
+pub mod browse;
 pub mod device;
 pub mod diagnostics;
 pub mod domain;
 pub mod envelope;
+pub mod logbuf;
 pub mod logging;
 pub mod paths;
 pub mod pdf;
