@@ -103,6 +103,12 @@ Maintenance instructions (see AGENTS.md §5):
 
 ### Changed
 
+- **CI checks out with `actions/checkout@v7`.** v4 runs on Node 20, which the
+  hosted runners no longer provide — they force it onto Node 24 and annotate every
+  job with the deprecation. The one breaking change between v4 and v7 that matters
+  for security cannot reach this workflow: v7 refuses to check out a fork's head
+  for `pull_request_target` and `workflow_run`, and CI triggers on `pull_request`
+  with a `contents: read` token. The reasoning is recorded in the workflow itself.
 - **The PIV transport is blocked on a decision, and the analysis is written down**
   ([`features/step-piv-pin-puk-management-key.md`](features/step-piv-pin-puk-management-key.md)).
   Implementing it against the `yubikey` crate stopped on the discovery that every

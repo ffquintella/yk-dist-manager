@@ -17,6 +17,12 @@
 # Nothing here interpolates event data (an issue title, a branch name, a commit
 # message) into a shell command: the only expressions used are `matrix.os` and
 # `runner.os`, both of which come from this file rather than from a contributor.
+#
+# Actions are pinned to a major version, and `checkout` is on v7 because v4 runs
+# on Node 20, which the hosted runners no longer provide. The breaking change v7
+# carries — a fork's head is no longer checked out for `pull_request_target` and
+# `workflow_run` — cannot reach this file: it triggers on `pull_request`, and the
+# token it gets is `contents: read`.
 
 name: CI
 
@@ -40,7 +46,7 @@ jobs:
     name: fmt, clippy, tests, coverage gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install the toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -88,7 +94,7 @@ jobs:
       matrix:
         os: [macos-latest, windows-latest, ubuntu-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
