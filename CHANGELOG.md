@@ -17,6 +17,18 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Templates catalogue no longer paints ragged rows.** The state cell wrapped
+  its badges, and in an `egui` grid a cell that is not the last column is offered
+  the width the column had on the *previous* frame — so wrapping locked the column
+  at one badge per line permanently. A version that is both offered and built-in
+  showed its two badges stacked, doubled the height of its row, and dropped the
+  version, step count, date and buttons a line below the template name, because a
+  grid cell is centred in its row while the name-and-id block is not. Both the
+  state and the row-action cells now extend on one line, which is what the table's
+  own horizontal scroll is for.
+
 ## [0.7.1] - 2026-08-12
 
 ### Added

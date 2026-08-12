@@ -139,7 +139,14 @@ fn catalogue(app: &mut YkDistApp, ui: &mut egui::Ui) {
                     super::mono(ui, &row.version);
                     super::faint(ui, &format!("{} of {}", row.enabled, row.steps));
                     super::faint(ui, &row.runs.to_string());
-                    ui.horizontal_wrapped(|ui| {
+                    // Not `horizontal_wrapped`: a grid cell that is not the last
+                    // column is offered the width the column had *last* frame, so
+                    // wrapping here locks the column at one badge per line for
+                    // good — and the row it doubles in height drags every other
+                    // cell a line below the name, because a cell is centred in
+                    // its row. Extending is what the table's own horizontal
+                    // scroll is for, as with `name_and_id`.
+                    ui.horizontal(|ui| {
                         if row.retired {
                             ui.add(Badge::new("retired", BadgeTone::Warning));
                         } else if row.offered {
@@ -152,7 +159,10 @@ fn catalogue(app: &mut YkDistApp, ui: &mut egui::Ui) {
                         }
                     });
                     super::faint(ui, &row.updated);
-                    ui.horizontal_wrapped(|ui| {
+                    // One line, like every other row-action cell in the app: a
+                    // wrapped second line of buttons would misalign this row
+                    // against the ones above it.
+                    ui.horizontal(|ui| {
                         if super::row_button(ui, "Edit")
                             .on_hover_text("open this version in the editor below")
                             .clicked()
