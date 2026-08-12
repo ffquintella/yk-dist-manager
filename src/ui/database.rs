@@ -21,6 +21,13 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
             let theme = Theme::current(ui.ctx());
             ui.add_space(40.0);
             ui.vertical_centered(|ui| {
+                // The mark, on the one screen that is nothing but this application
+                // introducing itself (`features/application-icon.md` phase 7). It is
+                // also the screen an operator sees while a password prompt is
+                // waiting for them, which is exactly when "am I typing this into the
+                // right application?" is worth being able to answer at a glance.
+                super::app_icon(ui, 96.0);
+                ui.add_space(10.0);
                 ui.add(egui::Label::new(
                     egui::RichText::new("YubiKey Distribution Manager")
                         .size(theme.typography.heading + 10.0)

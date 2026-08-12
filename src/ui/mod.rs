@@ -230,6 +230,47 @@ pub fn error_label(ui: &mut egui::Ui, message: &str) {
         });
 }
 
+/// The application mark, at `side` logical pixels
+/// (`features/application-icon.md` phase 7).
+///
+/// The texture is uploaded once and kept in **egui's** own memory rather than on
+/// [`crate::app::YkDistApp`]. Two reasons, and the second is the one that decides
+/// it: a texture handle is a paint-layer resource with no business on the
+/// application state, and `load_texture` on every frame would upload 256 KiB to the
+/// GPU sixty times a second.
+///
+/// Draws nothing at all if the embedded blob is malformed. The mark is decoration:
+/// the screen it sits on has to work without it.
+pub fn app_icon(ui: &mut egui::Ui, side: f32) {
+    let key = egui::Id::new("app-icon-texture");
+
+    // Three steps, and the shape is load-bearing: the lookup and the insert each
+    // take egui's data lock **briefly**, and `load_texture` runs between them with
+    // no lock held. Uploading from inside `data_mut` would take the same context
+    // lock twice and hang the frame — a deadlock, not a slow path, and one that only
+    // appears when the texture is missing, which is the first frame.
+    let cached: Option<egui::TextureHandle> = ui.ctx().data(|data| data.get_temp(key));
+
+    let handle = match cached {
+        Some(handle) => Some(handle),
+        None => match crate::branding::icon_image() {
+            Some(image) => {
+                let handle = ui
+                    .ctx()
+                    .load_texture("app-icon", image, egui::TextureOptions::LINEAR);
+                ui.ctx()
+                    .data_mut(|data| data.insert_temp(key, handle.clone()));
+                Some(handle)
+            }
+            None => None,
+        },
+    };
+
+    if let Some(handle) = handle {
+        ui.add(egui::Image::new(&handle).fit_to_exact_size(egui::vec2(side, side)));
+    }
+}
+
 /// The database-password strength meter
 /// (`features/db-password-and-encryption.md` phase 6).
 ///

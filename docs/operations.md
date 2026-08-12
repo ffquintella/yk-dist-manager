@@ -46,6 +46,11 @@ It prints the version, the features compiled in, whether macOS sees an app bundl
 whether the camera is authorised and which cameras exist, the database and settings
 paths, and whether `ykman` is on `PATH`.
 
+**The same report is in the application**: click the version badge beside the product
+name in the top bar. *Copy the report* puts it on the clipboard, which is the quickest
+way to answer "which build, on what machine?" without asking somebody to open a
+terminal.
+
 Set the operator name and organisation in **Settings**. Check that the status bar shows the
 database path and whether it is local or on a share.
 

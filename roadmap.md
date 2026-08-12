@@ -29,8 +29,8 @@ deployment.
 
 | State | Count |
 |---|---|
-| Done | 20 |
-| In progress | 8 |
+| Done | 21 |
+| In progress | 7 |
 | Todo | 13 |
 | **Total tracked items** | **41** (across 38 specs — two items share a spec) |
 
@@ -125,7 +125,7 @@ of the job: choosing or creating the database file, recording serials from a bar
 generating the consignment term in the holder's language, and filing the signed copy
 against the hand-over — and, from the Terms screen, editing that term's wording per
 language. The Templates screen now does the same for the bootstrap procedure itself.
-**692 tests** pass with the default features and **709** with `--all-features` (plus 4
+**693 tests** pass with the default features and **710** with `--all-features` (plus 4
 read-only hardware tests and one ignored `openssl` interop test), with **85.2%**
 (region 84.6%) line coverage of the headless core — enforced by CI against a floor of
 80% rather than reported. The register can also
@@ -150,17 +150,17 @@ phase gates this wave if and only if its **Wave** column says `0`:
 | Feature | Phase | What is missing |
 |---|---|---|
 | [SMB share hosting](features/smb-share-hosting.md) | 9 | reconnecting a share that drops mid-session |
-| [Application icon](features/application-icon.md) | 7 | the icon on the unlock screen and in an About box |
 | [Testing strategy](features/testing-strategy.md) | 9 | property tests for the audit chain and the RFC 4514 escaper |
 
-**Three phases across three features, none of them blocked on anything.** No decision
-is outstanding for any of them, no hardware is needed, and nothing waits on Wave 1.
-It is work, not a queue.
+**Two phases across two features, none of them blocked on anything.** No decision is
+outstanding for either, no hardware is needed, and nothing waits on Wave 1. It is
+work, not a queue.
 
-Bootstrap templates left this list when phases 4, 5 and 6 landed, device detection
-when the watch and the picker did, and receipts & terms when the signature state
-machine and the return receipt did. All three rows are `[x]` above; what remains in
-those specs is Wave 1 or Wave 2.
+Four rows left this list in quick succession: bootstrap templates (files, signatures,
+diff), device detection (the watch and the picker), receipts & terms (the signature
+state machine and the return receipt) and the application icon (its in-application
+use). All four are `[x]` above; what remains in those specs is Wave 1, Wave 2 or —
+for the icon's Windows and Linux resources — Wave 3.
 
 Regenerate this list rather than trusting it — the prose here drifted twice before
 it was derived:
@@ -238,11 +238,11 @@ archive-then-remove path that can break and rebuild the audit trigger, which is
 deliberately not a general capability.
 
 **Rows that reached `[x]` for this wave while their specs still show Todo phases.**
-Nine of them, and the Wave column is what makes that legitimate — each has every
-wave-0 phase done and only Wave 1+ work left: native device transport, device
+Ten of them, and the Wave column is what makes that legitimate — each has every
+wave-0 phase done and only later-wave work left: native device transport, device
 detection, single-file SQLite storage, the optional database password, the audit
-trail, bootstrap templates, the bootstrap planner, the bootstrap wizard and
-receipts & terms.
+trail, bootstrap templates, the bootstrap planner, the bootstrap wizard, receipts &
+terms, and the application icon.
 
 Derive that list too, rather than trusting this paragraph:
 
@@ -318,8 +318,8 @@ Everything needed before a single byte is written to a key.
 | `[x]` | Bootstrap planner | [spec](features/bootstrap-engine.md) — plan with per-step transport (native / ykman / manual) and secret placeholders; dry runs recorded — both wave-0 phases. **The executor is Wave 1**, and is tracked as its own row there. |
 | `[x]` | GUI shell | [spec](features/gui-shell.md) — eight screens, unlock screen, status bar, egui 0.36 `App::ui`, themed with `egui-elegance` (four palettes, the choice persisted) and laid out fluidly (one gutter, full-width cards, columns that split the page, tables that contain their own overflow). Search, sortable columns, window-state persistence, keyboard flow, hardware-write confirmation, the log panel and the accessibility pass are all done — every wave-0 phase. Localisation (phase 9) is closed as not needed: the interface is English (2026-08-12). |
 | `[x]` | Bootstrap wizard | [spec](features/gui-bootstrap-wizard.md) — selection (the newest version of each template in use), per-step opt-out, plan review, dry run, and a link to the Templates screen — the whole of wave 0. The live run view, the secret panels and the pre-flight checks landed with the executor in 0.7.1; resume and the post-run summary are Wave 1, batch mode Wave 2. |
-| `[/]` | Application icon | [spec](features/application-icon.md) — one SVG (a box truck carrying a YubiKey), `make icons` rendering the PNGs, the macOS `.icns` and the RGBA blob the binary embeds; window, dock and bundle icons done. A Windows `.ico` resource and a Linux `hicolor` install wait on there being Windows and Linux packaging. |
-| `[/]` | Testing strategy | [spec](features/testing-strategy.md) — **692 tests** (709 with `--all-features`) across unit + behaviour suites, a mock device backend and a mock share connector, recorded fixtures, and tests ignored by default for what needs hardware or `openssl`; **85.2%** core line coverage. **CI enforces the gate** on every push, with a macOS/Windows/Linux build matrix. Mock write transports and the secret-leak sweep wait on Wave 1. |
+| `[x]` | Application icon | [spec](features/application-icon.md) — one SVG (a box truck carrying a YubiKey), `make icons` rendering the PNGs, the macOS `.icns` and the RGBA blob the binary embeds; window, dock and bundle icons done, plus **three placements in the application** (top bar, database chooser, About box) and an **About box** on the version badge carrying the copyable `--diagnose` report. A Windows `.ico` resource and a Linux `hicolor` install are **Wave 3**, with the packaging they attach to. |
+| `[/]` | Testing strategy | [spec](features/testing-strategy.md) — **693 tests** (710 with `--all-features`) across unit + behaviour suites, a mock device backend and a mock share connector, recorded fixtures, and tests ignored by default for what needs hardware or `openssl`; **85.2%** core line coverage. **CI enforces the gate** on every push, with a macOS/Windows/Linux build matrix. Mock write transports and the secret-leak sweep wait on Wave 1. |
 
 ### Paperwork
 

@@ -17,6 +17,29 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+### Added
+
+- **The application mark is used inside the application**
+  ([`features/application-icon.md`](features/application-icon.md) phase 7), in three
+  places, each answering a different question: beside the name in the top bar (telling
+  this window from the register, the term and a terminal during a hand-over — the
+  reason the icon exists at all), at 96 px on the database chooser (the one screen
+  that is nothing but the application introducing itself, and the screen an operator
+  looks at while a password prompt waits), and in an **About box**.
+- **An About box, opened from the version badge** rather than from a menu item: the
+  badge is already what somebody points at when asked which version they are running,
+  and a separate *About* button would be a second place to look for the same answer.
+  It carries the **`--diagnose` report** — which `docs/operations.md` already calls
+  the first thing to attach to a support request — selectable, with a *Copy the
+  report* button, because the point of showing it is that somebody sends it on and a
+  retyped diagnostic is worse than none. Gathered when the box opens rather than per
+  frame: gathering enumerates the cameras, and doing that sixty times a second for a
+  panel nobody is touching would be absurd.
+
+  Both are drawn through one helper from the same embedded blob as the window icon,
+  asserted by a test rather than assumed — an About box showing a different picture
+  from the dock is one nobody can use to confirm which build is running.
+
 ## [0.10.0] - 2026-08-12
 
 ### Added

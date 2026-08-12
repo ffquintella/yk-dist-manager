@@ -17,7 +17,7 @@ The API differs from older tutorials in two ways that matter:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ ⇤18⇥ YubiKey Distribution Manager | Inventory Holders …  ⇤18⇥ │  Panel::top
+│ ⇤18⇥ ▣ YubiKey Distribution Manager 0.10.0 | Inventory …  ⇤18⇥ │  Panel::top
 │      Bootstrap Terms Audit Settings                          │
 ├──────────────────────────────────────────────────────────────┤
 │      CentralPanel, inside ScrollArea::vertical               │
@@ -57,12 +57,28 @@ exist to enforce:
 The window has a 900px minimum (`main.rs`), which is what makes the unconditional
 two-column split safe: half of 900 is still a readable field.
 
+## The top bar, and the About box
+
+The mark sits beside the product name, small — that row is what an operator glances at
+to tell this window from the register, the term to sign and a terminal during a
+hand-over, which is the whole reason the icon exists
+(`features/application-icon.md`).
+
+The **version badge is clickable, and is the About affordance**: it is already the
+thing somebody points at when asked which version they are running, so a separate
+*About* item would be a second place to look for the same answer. The box shows the
+mark, the version, and the **`--diagnose` report** — selectable, with *Copy the
+report*, because the point of showing it is that somebody pastes it into a ticket. The
+report is gathered when the box opens, not per frame.
+
 ## Screens
 
 ### Database chooser
 
 Shown whenever no database is open — first run, a locked file, an unreachable share, or
-the operator closing one to switch. It carries:
+the operator closing one to switch. The application mark is at the top at 96 px: this is
+the screen an operator is looking at while a password prompt waits, which is when "am I
+typing this into the right application?" is worth answering at a glance. It carries:
 
 - the **recent databases**, each marked *available* or *not reachable* (an unmounted
   share stays listed — that is a network problem, not a decision), with *open*,

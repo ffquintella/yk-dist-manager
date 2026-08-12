@@ -717,6 +717,18 @@ pub struct YkDistApp {
     pub key_status_filter: Option<crate::domain::KeyStatus>,
     /// Show only hand-overs nobody has returned.
     pub outstanding_only: bool,
+    /// The About box's contents while it is open, and `None` while it is not
+    /// (`features/application-icon.md` phase 7).
+    ///
+    /// The **rendered diagnostic report**, gathered once when the box is opened
+    /// rather than every frame. Gathering reads the filesystem and enumerates the
+    /// cameras; doing that sixty times a second for a panel nobody is interacting
+    /// with would be absurd, and there is nothing to gain — a support report is a
+    /// snapshot of the moment somebody asked for it, which is exactly what this is.
+    ///
+    /// Opened from the version badge in the top bar, which is already the thing
+    /// somebody points at when asked which version they are running.
+    pub about: Option<String>,
     /// Recent log lines, for the panel (`gui-shell` 8).
     pub log: crate::logbuf::LogBuffer,
     pub log_panel_open: bool,
@@ -795,6 +807,7 @@ impl YkDistApp {
             browse_distributions: Browse::default(),
             key_status_filter: None,
             outstanding_only: false,
+            about: None,
             log: crate::logbuf::LogBuffer::new(),
             log_panel_open: false,
             log_min_level: crate::logbuf::Level::Info,
@@ -4166,6 +4179,7 @@ impl eframe::App for YkDistApp {
 
         self.top_bar(ui);
         self.status_bar(ui);
+        self.about_box(ui);
 
         // The body scrolls vertically only, and the screen fills the window
         // width: a table too wide for the window scrolls inside its own card
@@ -4211,6 +4225,90 @@ fn gutter_frame(frame: egui::Frame) -> egui::Frame {
 
 impl YkDistApp {
     /// Product name, build version, and the tab bar.
+    /// The About box (`features/application-icon.md` phase 7).
+    ///
+    /// The mark, what this build is, and **the diagnostic report** — the same text
+    /// `--diagnose` prints, which `docs/operations.md` already calls the first thing
+    /// to attach to a support request. Reused rather than reimplemented: an About box
+    /// that listed the version and the features by hand would be a second answer to
+    /// the same question, and the two would drift.
+    ///
+    /// Copyable, because the point of showing it is that somebody sends it on. An
+    /// operator who cannot select it retypes it, and a retyped diagnostic is worse
+    /// than none.
+    ///
+    /// The report is gathered **when the box is opened**, not while it is painted:
+    /// gathering reads the filesystem and enumerates the cameras, and doing that once
+    /// per frame would be sixty camera enumerations a second for a panel nobody is
+    /// touching. A support report is a snapshot of the moment somebody asked for it
+    /// anyway — reopening the box takes a fresh one.
+    fn about_box(&mut self, ui: &mut egui::Ui) {
+        let Some(report) = self.about.clone() else {
+            return;
+        };
+        let mut open = true;
+        let mut copy: Option<String> = None;
+
+        elegance::Modal::new("about", &mut open)
+            .heading("YubiKey Distribution Manager")
+            .subtitle(format!("version {}", crate::VERSION))
+            .max_width(620.0)
+            .show(ui.ctx(), |ui| {
+                ui.vertical_centered(|ui| {
+                    crate::ui::app_icon(ui, 88.0);
+                });
+                ui.add_space(12.0);
+
+                crate::ui::hint(
+                    ui,
+                    "What this build is and what it can reach — the same report as \
+                     `yk-dist-manager --diagnose`, and the first thing to attach to a support \
+                     request.",
+                );
+                ui.add_space(10.0);
+
+                egui::ScrollArea::vertical()
+                    .max_height(280.0)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&report)
+                                    .monospace()
+                                    .size(elegance::Theme::current(ui.ctx()).typography.monospace),
+                            )
+                            // Selectable, so it can be copied by hand as well as by
+                            // the button — the operator may want one line of it.
+                            .selectable(true),
+                        );
+                    });
+
+                ui.add_space(12.0);
+                ui.horizontal_wrapped(|ui| {
+                    if ui
+                        .add(elegance::Button::new("Copy the report").outline())
+                        .on_hover_text("paste it into the ticket")
+                        .clicked()
+                    {
+                        copy = Some(report.clone());
+                    }
+                    crate::ui::faint(
+                        ui,
+                        "The mark is deliberately institution-neutral; replacing it is one SVG \
+                         and `make icons`.",
+                    );
+                });
+            });
+
+        if let Some(report) = copy {
+            ui.ctx().copy_text(report);
+            self.status = "diagnostic report copied to the clipboard".into();
+        }
+        if !open {
+            self.about = None;
+        }
+    }
+
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         let theme = elegance::Theme::current(ui.ctx());
 
@@ -4219,6 +4317,12 @@ impl YkDistApp {
             .show(ui, |ui| {
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
+                    // Small, beside the name: this is the row an operator glances at
+                    // to tell this window from the register, the term and a terminal
+                    // during a hand-over, which is the reason the icon exists at all
+                    // (`features/application-icon.md`).
+                    crate::ui::app_icon(ui, theme.typography.heading + 10.0);
+                    ui.add_space(8.0);
                     ui.add(egui::Label::new(
                         egui::RichText::new("YubiKey Distribution Manager")
                             .size(theme.typography.heading + 2.0)
@@ -4226,10 +4330,23 @@ impl YkDistApp {
                             .strong(),
                     ));
                     ui.add_space(8.0);
-                    ui.add(
-                        elegance::Badge::new(crate::VERSION, elegance::BadgeTone::Neutral)
-                            .preserve_case(),
-                    );
+                    if ui
+                        .add(
+                            elegance::Badge::new(crate::VERSION, elegance::BadgeTone::Neutral)
+                                .preserve_case(),
+                        )
+                        .on_hover_text("what this build is, and what it can reach — click")
+                        .interact(egui::Sense::click())
+                        .clicked()
+                    {
+                        // The version badge *is* the About affordance: it is already
+                        // the thing somebody points at when asked "which version are
+                        // you running?", and a second button saying About would be a
+                        // second place to look for the same answer.
+                        //
+                        // Gathered here, on the click, for the reason on the field.
+                        self.about = Some(crate::diagnostics::Report::gather().render());
+                    }
                 });
                 ui.add_space(6.0);
 
