@@ -186,8 +186,12 @@ that way because they are held by a decision that is not the implementer's
 | Question | Owner | Phase it holds |
 |---|---|---|
 | The approved cipher and KDF parameter set | **ESI** | [db-password](features/db-password-and-encryption.md) 4 (`—`) — explicit `kdf_iter` and cipher page size. The defaults are SQLCipher's until then |
-| Is the interface English or pt-BR? | undecided | [gui-shell](features/gui-shell.md) 9 (`—`) — localisation |
 | May an already-configured key be re-bootstrapped, and by whom? | operational | [device-detection](features/device-detection.md) 5, which is **Wave 1** rather than `—`, so it is not holding this wave either way |
+
+The interface language was the third of these until 2026-08-12: it is **English**,
+which closes [gui-shell](features/gui-shell.md) phase 9 as *not needed* rather than
+done. The holder-facing documents stay multilingual — a different audience, and a
+different decision.
 
 The rest of the `—` phases are optional by choice, not blocked: an external
 chain-head witness ([audit-trail](features/audit-trail.md) 5), Kerberos on macOS
@@ -261,7 +265,7 @@ Everything needed before a single byte is written to a key.
 | `[x]` | Distribution records | [spec](features/distribution-records.md) — hand-over, operator, delivery method, receipt reference, linked bootstrap run, return without rewriting history. |
 | `[/]` | Bootstrap templates | [spec](features/bootstrap-templates.md) — versioned templates, `{{variable}}` rendering, two built-ins, validation, and a **Templates screen**: add, duplicate, edit (always as a new version), retire / reinstate, remove. A draft is refused unless it *plans* against sample data. Both built-ins now ship at **v2** with the corrected forced-change ordering: `fido-only` is cut from `org-standard`, so its version is derived from it and a correction cannot reach the code and stop at the database. Import/export, signing and per-key applicability rules are pending. |
 | `[x]` | Bootstrap planner | [spec](features/bootstrap-engine.md) — plan with per-step transport (native / ykman / manual) and secret placeholders; dry runs recorded — both wave-0 phases. **The executor is Wave 1**, and is tracked as its own row there. |
-| `[x]` | GUI shell | [spec](features/gui-shell.md) — eight screens, unlock screen, status bar, egui 0.36 `App::ui`, themed with `egui-elegance` (four palettes, the choice persisted) and laid out fluidly (one gutter, full-width cards, columns that split the page, tables that contain their own overflow). Search, sortable columns, window-state persistence, keyboard flow, hardware-write confirmation, the log panel and the accessibility pass are all done — every wave-0 phase. Localisation (phase 9) waits on whether the interface is English or pt-BR, and gates no wave. |
+| `[x]` | GUI shell | [spec](features/gui-shell.md) — eight screens, unlock screen, status bar, egui 0.36 `App::ui`, themed with `egui-elegance` (four palettes, the choice persisted) and laid out fluidly (one gutter, full-width cards, columns that split the page, tables that contain their own overflow). Search, sortable columns, window-state persistence, keyboard flow, hardware-write confirmation, the log panel and the accessibility pass are all done — every wave-0 phase. Localisation (phase 9) is closed as not needed: the interface is English (2026-08-12). |
 | `[x]` | Bootstrap wizard | [spec](features/gui-bootstrap-wizard.md) — selection (the newest version of each template in use), per-step opt-out, plan review, dry run, and a link to the Templates screen — the whole of wave 0. The live run view, the secret panels and the pre-flight checks landed with the executor in 0.7.1; resume and the post-run summary are Wave 1, batch mode Wave 2. |
 | `[/]` | Application icon | [spec](features/application-icon.md) — one SVG (a box truck carrying a YubiKey), `make icons` rendering the PNGs, the macOS `.icns` and the RGBA blob the binary embeds; window, dock and bundle icons done. A Windows `.ico` resource and a Linux `hicolor` install wait on there being Windows and Linux packaging. |
 | `[/]` | Testing strategy | [spec](features/testing-strategy.md) — **545 tests** across unit + behaviour suites, a mock device backend and a mock share connector, recorded fixtures, ignored hardware tests; **86.91%** core line coverage. **CI enforces the gate** on every push, with a macOS/Windows/Linux build matrix. Mock write transports and the secret-leak sweep wait on Wave 1. |
@@ -331,11 +335,11 @@ Full text in [AGENTS.md](AGENTS.md). The short version:
 
 Decisions that change what gets built, and are not the implementer's to make.
 
-Three, and **none of them holds Wave 0** — each one's phase is marked `—` (gating no
-wave) or belongs to a later wave. They were dropped from this list when the big
-questions were settled on 2026-08-11, which was an error: an unanswered question
-that blocks nothing today still blocks something eventually, and a list that says
-"None" invites nobody to answer it.
+Two, and **neither holds Wave 0** — each one's phase is marked `—` (gating no wave)
+or belongs to a later wave. They were dropped from this list when the big questions
+were settled on 2026-08-11, which was an error: an unanswered question that blocks
+nothing today still blocks something eventually, and a list that says "None"
+invites nobody to answer it.
 
 1. **The approved cipher and KDF parameter set.** *Owner: ESI.* Holds
    [`features/db-password-and-encryption.md`](features/db-password-and-encryption.md)
@@ -345,14 +349,7 @@ that blocks nothing today still blocks something eventually, and a list that say
    in `docs/security-and-compliance.md` §7. Everything else about the password is
    built.
 
-2. **Is the interface English or pt-BR?** *Owner: undecided — it needs one.* Holds
-   [`features/gui-shell.md`](features/gui-shell.md) phase 9. The audience is
-   Brazilian and the log format is already pt, but the screens are English and the
-   *consignment term* is separately multilingual, so the two are not the same
-   decision. Whoever owns the tool in service should say; the cost of answering it
-   late is that every string written between now and then has to be revisited.
-
-3. **May an already-configured key be re-bootstrapped, and by whom?** *Owner:
+2. **May an already-configured key be re-bootstrapped, and by whom?** *Owner:
    operational.* Holds [`features/device-detection.md`](features/device-detection.md)
    phase 5, which is Wave 1. Under custody model B the holder is *told* to change
    the transport PIN, so a second run that silently set one would replace a PIN the
@@ -365,6 +362,24 @@ Every question below has an owner's answer; re-open one by moving it back up her
 with the date and the reason.
 
 ### Answered
+
+- **Is the interface English or pt-BR?** *(2026-08-12)* **English.** The screens stay
+  as they are, so [`features/gui-shell.md`](features/gui-shell.md) phase 9 is closed
+  as *not needed* rather than done — there is no localisation to build.
+
+  Two consequences worth stating rather than discovering:
+
+  1. **The holder-facing documents are a separate decision and stay multilingual.**
+     The consignment term is keyed `(id, language, version)` with pt-BR and en built
+     in, and the sealed-envelope slip follows the term's language. A holder signing a
+     consignment of institutional property reads it in their own language; the
+     operator driving the tool is one trained person. Those are different audiences,
+     and this answer is about the second one.
+  2. **The log line format stays as G-002 specifies it**, which is a Portuguese
+     norm's format (`[dd/mm/aaaa] hh:mm:ss ; evento ; detalhes`). An English
+     interface writing that format is not an inconsistency to fix: the format is a
+     compliance requirement, and the event names inside it are stable identifiers
+     (`db.unlocked`, `bootstrap.step.failed`) rather than prose in either language.
 
 - **The PUK under model B.** *(2026-08-11)* **Sealed envelope — the default is
   confirmed.** The PUK travels to the holder alongside the transport PIN and

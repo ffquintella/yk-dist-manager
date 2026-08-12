@@ -109,7 +109,7 @@ is rejected.
 | 6 | Keyboard flow: Enter to submit, Tab order, shortcuts for detect/refresh | 0 | **Done** | ⌘/Ctrl + R refresh, D detect, L log panel, +/−/0 font size — read before anything paints so a widget cannot swallow them, and shown in the top bar because a shortcut nobody knows about is not one |
 | 7 | Confirmation dialogs for hardware writes | 0 | **Done** | one confirmation for the whole run, naming the serial, holder, step count and the steps that cannot be undone. It is the only place a `bootstrap::Confirmation` is constructed |
 | 8 | Log panel (last N lines, copyable) | 0 | **Done** | [`crate::logbuf`](../src/logbuf.rs) + a resizable bottom panel with a level filter and *Copy all* |
-| 9 | Localisation (pt-BR / en) | — | Todo | the audience is Brazilian; log format is already pt |
+| 9 | Localisation (pt-BR / en) | — | **Closed — not needed** | *(2026-08-12)* **the interface is English**, so there is nothing to localise. The holder-facing documents are a separate decision and stay multilingual (`features/consignment-terms.md`); the log line keeps the G-002 format, whose event names are identifiers rather than prose |
 | 10 | Accessibility pass: contrast, font scaling, no colour-only meaning | 0 | **Done** | font scaling by keyboard; every coloured state also carries distinct text, pinned by [`tests/unit_accessibility.rs`](../tests/unit_accessibility.rs) so a new state cannot be added with a colour and no words |
 | 11 | Theming | 0 | Done | `egui-elegance` 0.15; four palettes, the choice persisted in `settings.json` |
 | 12 | Fluid layout | 0 | Done | one gutter, full-width cards, columns that split the page, tables that contain their own overflow (`ui::card`, `titled_card`, `table`, `form_columns`) |

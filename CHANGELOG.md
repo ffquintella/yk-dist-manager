@@ -17,6 +17,17 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+### Changed
+
+- **The interface is English** *(decided 2026-08-12)*, which closes
+  [`features/gui-shell.md`](features/gui-shell.md) phase 9 as *not needed* rather
+  than done — there is no localisation to build, and the screens stay as they are.
+  Two things this deliberately does **not** change: the consignment term and the
+  sealed-envelope slip stay multilingual, because a holder signing for institutional
+  property reads it in their own language while the operator driving the tool is one
+  trained person; and the log line keeps the G-002 format, which is a compliance
+  requirement whose event names are stable identifiers rather than prose.
+
 ### Fixed
 
 - **The roadmap's account of what Wave 0 still needs is re-derived from the phase
