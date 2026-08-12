@@ -143,18 +143,18 @@ make coverage-html    # browsable report
 
 ## Phases
 
-| # | Phase | State | Notes |
-|---|---|---|---|
-| 1 | Unit suites for domain, template, audit, parsers, store, backends, log format, custody | Done | 101 tests |
-| 2 | Behaviour suites for distribution, bootstrap, storage | Done | 28 scenarios |
-| 3 | Mock device backend + recorded fixtures | Done | `MockBackend`, `tests/fixtures/` |
-| 4 | Ignored, read-only hardware tests | Done | verified against a real 5 NFC |
-| 5 | CI: fmt + clippy + test + `llvm-cov` with the 80% gate | **Done** | [`.github/workflows/ci.yml`](../.github/workflows/ci.yml); `make coverage-core` now passes `--fail-under-lines`, so it gates instead of reporting |
-| 6 | Decide on Cucumber for stakeholder-readable scenarios | Todo | only if someone outside the team needs to read them |
-| 7 | Mock write transports for the executor's steps | **Done** | `device::write::MockWriter` — records that a call carried a secret, never which |
-| 8 | Secret-leak sweep over every sink | **Done** for the engine | `scenario_no_secret_reaches_the_run_record_or_the_audit_trail` greps every persisted snapshot and audit entry of a full mock run against every value it generated. Extends to the log sink once the executor is wired to the GUI |
-| 9 | Property tests for the audit chain and the RFC 4514 escaper | Todo | `proptest`; the escaper is exactly the kind of code that benefits |
-| 10 | Cross-platform CI (macOS / Windows / Linux), including the native features | **Done** | the matrix compiles `native-device` on all three; it cannot *run* the hardware tests — see below |
+| # | Phase | Wave | State | Notes |
+|---|---|---|---|---|
+| 1 | Unit suites for domain, template, audit, parsers, store, backends, log format, custody | 0 | Done | 101 tests |
+| 2 | Behaviour suites for distribution, bootstrap, storage | 0 | Done | 28 scenarios |
+| 3 | Mock device backend + recorded fixtures | 0 | Done | `MockBackend`, `tests/fixtures/` |
+| 4 | Ignored, read-only hardware tests | 0 | Done | verified against a real 5 NFC |
+| 5 | CI: fmt + clippy + test + `llvm-cov` with the 80% gate | 0 | **Done** | [`.github/workflows/ci.yml`](../.github/workflows/ci.yml); `make coverage-core` now passes `--fail-under-lines`, so it gates instead of reporting |
+| 6 | Decide on Cucumber for stakeholder-readable scenarios | — | Todo | only if someone outside the team needs to read them |
+| 7 | Mock write transports for the executor's steps | 1 | **Done** | `device::write::MockWriter` — records that a call carried a secret, never which |
+| 8 | Secret-leak sweep over every sink | 1 | **Done** for the engine | `scenario_no_secret_reaches_the_run_record_or_the_audit_trail` greps every persisted snapshot and audit entry of a full mock run against every value it generated. Extends to the log sink once the executor is wired to the GUI |
+| 9 | Property tests for the audit chain and the RFC 4514 escaper | 0 | Todo | `proptest`; the escaper is exactly the kind of code that benefits |
+| 10 | Cross-platform CI (macOS / Windows / Linux), including the native features | 0 | **Done** | the matrix compiles `native-device` on all three; it cannot *run* the hardware tests — see below |
 
 ## Commands
 

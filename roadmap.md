@@ -177,7 +177,20 @@ release blockers stand in front of any distributed artefact — the
 ## How to read this
 
 - **Status** is a checkbox plus a word: `[x]` Done, `[/]` In progress, `[ ]` Todo.
-- A feature is Done only when every phase in its spec is done. Mixed ⇒ `[/]`.
+- **A feature is Done *for a wave* when every phase carrying that wave's number is
+  done.** Each phase table in [`features/`](features/) has a **Wave** column, and
+  it is what decides whether a phase gates this wave or a later one.
+
+  That column exists because the previous rule — "Done only when every phase in
+  its spec is done" — made Wave 0 unverifiable. Several Wave 0 rows have phase
+  tables containing Wave 1 work by nature: device detection cannot read PIN
+  retries before the applet transports exist, and the bootstrap wizard cannot show
+  a live run before there is an executor. Under the old rule those rows could
+  never reach `[x]`, so "Wave 0 is finished" was a question with no answer.
+- A phase marked **—** in the Wave column gates *no* wave: it is optional, or it
+  is blocked on a decision that is not the implementer's (`AGENTS.md` §8). Those
+  are listed under [What stands between here and a closed Wave 0](#what-stands-between-here-and-a-closed-wave-0)
+  with their owner, and a wave can close with them outstanding.
 - Waves are ordered. Work the current wave; if something must jump the queue,
   edit this file in the same commit and say why (see [AGENTS.md](AGENTS.md)).
 - Every feature file carries its own phase table, audit events and test list.

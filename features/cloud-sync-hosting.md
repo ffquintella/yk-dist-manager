@@ -116,16 +116,16 @@ PIN, no access code, on any path in this feature.
 
 ## Phases
 
-| # | Phase | State | Notes |
-|---|---|---|---|
-| 1 | `Location::CloudSync`, share pragmas, own label | Done | ahead of the share check in `detect` |
-| 2 | Settle wait before open and before release | Done | bounded, reported, tunable from the environment |
-| 3 | Lock file: acquire, refuse by name, renew, release | Done | `create_new`, per-run session id, write-then-verify |
-| 4 | Deliberate take-over of an abandoned lock, audited | Done | 15-minute staleness; refused by default |
-| 5 | Conflict-copy detection and reporting | Done | status line, Settings, audit, `--diagnose` |
-| 6 | GUI: lock state in Settings, refusal card in the chooser, status pill | Done | `db: cloud-sync (locked)` |
-| 7 | Automatic backup before the first write of a session | **Done** | taken at *open*, which is earlier and needs no "have we written yet?" bookkeeping; [`store::backup`](../src/store/backup.rs) |
-| 8 | Read-only mode instead of a refusal | **Done** | `Store::open_read_only` — `SQLITE_OPEN_READ_ONLY`, no lease taken, writes refused by the database |
+| # | Phase | Wave | State | Notes |
+|---|---|---|---|---|
+| 1 | `Location::CloudSync`, share pragmas, own label | 0 | Done | ahead of the share check in `detect` |
+| 2 | Settle wait before open and before release | 0 | Done | bounded, reported, tunable from the environment |
+| 3 | Lock file: acquire, refuse by name, renew, release | 0 | Done | `create_new`, per-run session id, write-then-verify |
+| 4 | Deliberate take-over of an abandoned lock, audited | 0 | Done | 15-minute staleness; refused by default |
+| 5 | Conflict-copy detection and reporting | 0 | Done | status line, Settings, audit, `--diagnose` |
+| 6 | GUI: lock state in Settings, refusal card in the chooser, status pill | 0 | Done | `db: cloud-sync (locked)` |
+| 7 | Automatic backup before the first write of a session | 0 | **Done** | taken at *open*, which is earlier and needs no "have we written yet?" bookkeeping; [`store::backup`](../src/store/backup.rs) |
+| 8 | Read-only mode instead of a refusal | 0 | **Done** | `Store::open_read_only` — `SQLITE_OPEN_READ_ONLY`, no lease taken, writes refused by the database |
 
 ## Audit events
 

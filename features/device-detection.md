@@ -60,14 +60,14 @@ the UI reads the latest snapshot. Polling is read-only and cheap; identification
 
 ## Phases
 
-| # | Phase | State | Notes |
-|---|---|---|---|
-| 1 | Read on demand, insert/refresh inventory | Done | Inventory + wizard |
-| 2 | Background hot-plug polling | Todo | 1.5s, channel to the UI, never in the paint pass |
-| 3 | Explicit picker when several keys are attached | Todo | show serial + model; never auto-pick |
-| 4 | Per-applet state read (PIN retries, PIV slots, FIDO PIN set?) | Todo | needed by `StepKind::Verify` |
-| 5 | "This key is already bootstrapped" warning | Todo | detect an occupied 9c slot or an existing FIDO PIN before re-running a template |
-| 6 | Attestation read (`piv keys attest 9c`) | Todo | proves on-device generation; stored with the run |
+| # | Phase | Wave | State | Notes |
+|---|---|---|---|---|
+| 1 | Read on demand, insert/refresh inventory | 0 | Done | Inventory + wizard |
+| 2 | Background hot-plug polling | 0 | Todo | 1.5s, channel to the UI, never in the paint pass |
+| 3 | Explicit picker when several keys are attached | 0 | Todo | show serial + model; never auto-pick |
+| 4 | Per-applet state read (PIN retries, PIV slots, FIDO PIN set?) | 1 | Todo | needed by `StepKind::Verify` |
+| 5 | "This key is already bootstrapped" warning | 1 | Todo | detect an occupied 9c slot or an existing FIDO PIN before re-running a template |
+| 6 | Attestation read (`piv keys attest 9c`) | 1 | Todo | proves on-device generation; stored with the run |
 
 ## Audit events
 

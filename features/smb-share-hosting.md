@@ -110,7 +110,7 @@ password: the file sits next to the register.
 ### Platform backends
 
 | Platform | Connect | Disconnect | Notes |
-|---|---|---|---|
+|---|---|---|---|---|
 | Windows | `WNetAddConnection2W` (`windows-sys`) | `WNetCancelConnection2W` | Deviceless connection: no drive letter is mapped, and the UNC path works afterwards. `LoggedOnUser` makes no call at all |
 | macOS | `NetFSMountURLSync` (NetFS.framework, via `core-foundation`) | `/sbin/umount <mountpoint>` | The mountpoint comes back from the framework; existing mounts are found by parsing `/sbin/mount` |
 | Linux, other | — | — | Refused with the instruction: an unprivileged process cannot mount CIFS, so the share must come from `mount.cifs`, `autofs` or the desktop's own mounter. An already-mounted share works normally |
@@ -158,18 +158,18 @@ reconnecting a share that drops mid-session (phase 9) and Kerberos on macOS
 
 ## Phases
 
-| # | Phase | State | Notes |
+| # | Phase | Wave | State | Notes |
 |---|---|---|---|
-| 1 | `ShareTarget` parsing: `smb://`, UNC, `//host/share`, with the traversal and length rules | Done | rejects `..`, empty host or share, control characters |
-| 2 | `Access` / `Credential` / `Secret`, and the settings entry that remembers a share without its password | Done | `Debug` redaction and zero-on-drop are asserted by tests |
-| 3 | `Connector` trait, `ShareConnection` (RAII), probe-before-connect, `MockConnector` | Done | the whole flow is testable with no server |
-| 4 | Windows: `WNetAddConnection2W`, deviceless, with the error-code translation | Done | `LoggedOnUser` makes no call; the file is verified to compile for `x86_64-pc-windows-msvc` |
-| 5 | macOS: `NetFSMountURLSync`, existing-mount detection by parsing `/sbin/mount` | Done | the parser is platform-independent and tested everywhere |
-| 6 | Linux / other: probe only, with the instruction that names the alternative | Done | refusal, not a silent failure |
-| 7 | GUI: the share card in the chooser, remembered shares, share state and *Close and disconnect* in Settings | Done | the identity is a radio with a sentence each, and the password field appears only for a named account |
-| 8 | `--diagnose` reports the connector this build has and the shares this workstation used | Done | |
-| 9 | Reconnect a dropped share mid-session | Todo | today a share that goes away surfaces as an SQLite error and a close; the register is not lost, but the operator has to reconnect by hand |
-| 10 | Kerberos / explicit domain-controller selection on macOS | Todo | NetFS can be told to use Kerberos; nobody has asked, and it needs a domain to test against |
+| 1 | `ShareTarget` parsing: `smb://`, UNC, `//host/share`, with the traversal and length rules | 0 | Done | rejects `..`, empty host or share, control characters |
+| 2 | `Access` / `Credential` / `Secret`, and the settings entry that remembers a share without its password | 0 | Done | `Debug` redaction and zero-on-drop are asserted by tests |
+| 3 | `Connector` trait, `ShareConnection` (RAII), probe-before-connect, `MockConnector` | 0 | Done | the whole flow is testable with no server |
+| 4 | Windows: `WNetAddConnection2W`, deviceless, with the error-code translation | 0 | Done | `LoggedOnUser` makes no call; the file is verified to compile for `x86_64-pc-windows-msvc` |
+| 5 | macOS: `NetFSMountURLSync`, existing-mount detection by parsing `/sbin/mount` | 0 | Done | the parser is platform-independent and tested everywhere |
+| 6 | Linux / other: probe only, with the instruction that names the alternative | 0 | Done | refusal, not a silent failure |
+| 7 | GUI: the share card in the chooser, remembered shares, share state and *Close and disconnect* in Settings | 0 | Done | the identity is a radio with a sentence each, and the password field appears only for a named account |
+| 8 | `--diagnose` reports the connector this build has and the shares this workstation used | 0 | Done | |
+| 9 | Reconnect a dropped share mid-session | 0 | Todo | today a share that goes away surfaces as an SQLite error and a close; the register is not lost, but the operator has to reconnect by hand |
+| 10 | Kerberos / explicit domain-controller selection on macOS | — | Todo | NetFS can be told to use Kerberos; nobody has asked, and it needs a domain to test against |
 
 ## Audit events
 

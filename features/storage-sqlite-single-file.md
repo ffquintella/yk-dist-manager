@@ -63,7 +63,7 @@ Not yet done: multi-operator concurrency policy (Wave 2), retention/archival
 ### Locking, by location
 
 | | Local disk | Network share | Cloud-sync folder |
-|---|---|---|---|
+|---|---|---|---|---|
 | `journal_mode` | `WAL` | `DELETE` (rollback journal) | `DELETE` |
 | `synchronous` | `NORMAL` | `FULL` | `FULL` |
 | `busy_timeout` | 5s | 20s | 20s |
@@ -158,21 +158,21 @@ Two operators on the same share will collide eventually. Planned policy:
 
 ## Phases
 
-| # | Phase | State | Notes |
+| # | Phase | Wave | State | Notes |
 |---|---|---|---|
-| 1 | Schema v1 + `user_version` migrations | Done | refuses a newer schema |
-| 1b | Strict `open_existing` / `create_new` | Done | [spec](database-selection.md) — a typo can no longer create an empty database |
-| 1c | Schema v2 (serial provenance), v3 (optional holder fields, term templates, documents) and v4 (`templates.retired_at`) | Done | the v1→v4 chain is covered by a test that builds a v1 file by hand |
-| 2 | Location-aware pragmas | Done | WAL vs rollback journal, tested |
-| 2b | Cloud-sync detection: safe pragmas plus a visible warning | Done | found by a `--diagnose` report from a real installation |
-| 2c | Cloud-sync hosting: `Location::CloudSync` + single-writer lock | Done | [spec](cloud-sync-hosting.md) — the installation that prompted 2b needed the folder to *work*, not just to be warned about |
-| 2d | Connect the SMB share from the application: anonymous, named account, or the signed-in user | In progress | [spec](smb-share-hosting.md) — the mechanism and all three platform backends are done and tested; the chooser card is Todo. This is what makes "use a real share" actionable rather than advice |
-| 3 | Backup (`VACUUM INTO`) + `integrity_check` | Done | Settings screen |
-| 4 | Multi-operator concurrency policy | Todo | busy retry + optimistic `updated_at` — **Wave 2**, tracked in the roadmap under that wave |
-| 5 | Per-step run rows instead of a JSON blob | **Done** | schema **v5**: `bootstrap_run_steps`, backfilled in Rust, blob column dropped |
-| 6 | Scheduled/automatic backup with rotation | **Done** | [`store::backup`](../src/store/backup.rs) — daily by default, keep 7, pruning only names it can parse |
-| 7 | Archival and retention | Todo | **blocked on the ESI retention decision** (open question 3) |
-| 8 | Import from the spreadsheet this replaces | **Done** | [`store::import`](../src/store/import.rs) — column mapping, preview, then apply |
+| 1 | Schema v1 + `user_version` migrations | 0 | Done | refuses a newer schema |
+| 1b | Strict `open_existing` / `create_new` | 0 | Done | [spec](database-selection.md) — a typo can no longer create an empty database |
+| 1c | Schema v2 (serial provenance), v3 (optional holder fields, term templates, documents) and v4 (`templates.retired_at`) | 0 | Done | the v1→v4 chain is covered by a test that builds a v1 file by hand |
+| 2 | Location-aware pragmas | 0 | Done | WAL vs rollback journal, tested |
+| 2b | Cloud-sync detection: safe pragmas plus a visible warning | 0 | Done | found by a `--diagnose` report from a real installation |
+| 2c | Cloud-sync hosting: `Location::CloudSync` + single-writer lock | 0 | Done | [spec](cloud-sync-hosting.md) — the installation that prompted 2b needed the folder to *work*, not just to be warned about |
+| 2d | Connect the SMB share from the application: anonymous, named account, or the signed-in user | 0 | In progress | [spec](smb-share-hosting.md) — the mechanism and all three platform backends are done and tested; the chooser card is Todo. This is what makes "use a real share" actionable rather than advice |
+| 3 | Backup (`VACUUM INTO`) + `integrity_check` | 0 | Done | Settings screen |
+| 4 | Multi-operator concurrency policy | 2 | Todo | busy retry + optimistic `updated_at` — **Wave 2**, tracked in the roadmap under that wave |
+| 5 | Per-step run rows instead of a JSON blob | 0 | **Done** | schema **v5**: `bootstrap_run_steps`, backfilled in Rust, blob column dropped |
+| 6 | Scheduled/automatic backup with rotation | 0 | **Done** | [`store::backup`](../src/store/backup.rs) — daily by default, keep 7, pruning only names it can parse |
+| 7 | Archival and retention | — | Todo | **blocked on the ESI retention decision** (open question 3) |
+| 8 | Import from the spreadsheet this replaces | 0 | **Done** | [`store::import`](../src/store/import.rs) — column mapping, preview, then apply |
 
 ## Audit events
 

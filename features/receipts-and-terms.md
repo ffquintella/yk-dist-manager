@@ -101,16 +101,16 @@ gap `features/distribution-records.md` Phase 4 exists to make visible.
 
 ## Phases
 
-| # | Phase | State | Notes |
-|---|---|---|---|
-| 0 | Sealed-envelope slip for the transport secrets | **Done** | [`src/envelope.rs`](../src/envelope.rs), on this feature's PDF writer. Deliberately **not** stored in the database — a slip is a courier, not evidence |
-| 1 | Text term generated from the record | **Done** | [consignment-terms.md](consignment-terms.md) |
-| 2 | PDF output | **Done** | [consignment-terms.md](consignment-terms.md) — the pure-Rust route won: `crate::pdf`, no dependency at all, Courier from the standard fourteen fonts so nothing is embedded |
-| 3 | Editable, versioned, multilingual template | **Done** | keyed `(id, language, version)` |
-| 4 | Signature state machine with an age warning | Todo | with distribution Phase 4 |
-| 5 | Store the signed document | **Done** | [signed-term-documents.md](signed-term-documents.md) — stored **in** the database, reversing the original plan; the reasoning is in that spec |
-| 6 | Return receipt (the mirror document) | Todo | closes the custody loop |
-| 7 | Batch generation for a bulk hand-over | Todo | `features/bulk-enrollment.md` |
+| # | Phase | Wave | State | Notes |
+|---|---|---|---|---|
+| 0 | Sealed-envelope slip for the transport secrets | 0 | **Done** | [`src/envelope.rs`](../src/envelope.rs), on this feature's PDF writer. Deliberately **not** stored in the database — a slip is a courier, not evidence |
+| 1 | Text term generated from the record | 0 | **Done** | [consignment-terms.md](consignment-terms.md) |
+| 2 | PDF output | 0 | **Done** | [consignment-terms.md](consignment-terms.md) — the pure-Rust route won: `crate::pdf`, no dependency at all, Courier from the standard fourteen fonts so nothing is embedded |
+| 3 | Editable, versioned, multilingual template | 0 | **Done** | keyed `(id, language, version)` |
+| 4 | Signature state machine with an age warning | 0 | Todo | with distribution Phase 4 |
+| 5 | Store the signed document | 0 | **Done** | [signed-term-documents.md](signed-term-documents.md) — stored **in** the database, reversing the original plan; the reasoning is in that spec |
+| 6 | Return receipt (the mirror document) | 0 | Todo | closes the custody loop |
+| 7 | Batch generation for a bulk hand-over | 2 | Todo | `features/bulk-enrollment.md` |
 
 ## Audit events
 

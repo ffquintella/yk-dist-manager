@@ -99,20 +99,20 @@ is rejected.
 
 ## Phases
 
-| # | Phase | State | Notes |
-|---|---|---|---|
-| 1 | Shell, eight screens, unlock, status bar | Done | Inventory, Holders, Distribution, Bootstrap, Templates, Terms, Audit, Settings |
-| 2 | Deferred-mutation pattern in tables | Done | avoids borrow conflicts and mid-paint writes |
-| 3 | Search / filter on Inventory, Holders, Distribution | Todo | the tables will not scale |
-| 4 | Sortable columns and pagination | Todo | consider `egui_extras::TableBuilder` |
-| 5 | Window size/position and last-tab persistence | Todo | `eframe` storage |
-| 6 | Keyboard flow: Enter to submit, Tab order, shortcuts for detect/refresh | Todo | matters for repeated hand-overs |
-| 7 | Confirmation dialogs for hardware writes | Todo | blocks the executor going live |
-| 8 | Log panel (last N lines, copyable) | Todo | `features/logging.md` Phase 3 |
-| 9 | Localisation (pt-BR / en) | Todo | the audience is Brazilian; log format is already pt |
-| 10 | Accessibility pass: contrast, font scaling, no colour-only meaning | Todo | the transport column relies on colour plus text — keep both; contrast now has to hold in all four palettes |
-| 11 | Theming | Done | `egui-elegance` 0.15; four palettes, the choice persisted in `settings.json` |
-| 12 | Fluid layout | Done | one gutter, full-width cards, columns that split the page, tables that contain their own overflow (`ui::card`, `titled_card`, `table`, `form_columns`) |
+| # | Phase | Wave | State | Notes |
+|---|---|---|---|---|
+| 1 | Shell, eight screens, unlock, status bar | 0 | Done | Inventory, Holders, Distribution, Bootstrap, Templates, Terms, Audit, Settings |
+| 2 | Deferred-mutation pattern in tables | 0 | Done | avoids borrow conflicts and mid-paint writes |
+| 3 | Search / filter on Inventory, Holders, Distribution | 0 | Todo | the tables will not scale |
+| 4 | Sortable columns and pagination | 0 | Todo | consider `egui_extras::TableBuilder` |
+| 5 | Window size/position and last-tab persistence | 0 | Todo | `eframe` storage |
+| 6 | Keyboard flow: Enter to submit, Tab order, shortcuts for detect/refresh | 0 | Todo | matters for repeated hand-overs |
+| 7 | Confirmation dialogs for hardware writes | 0 | Todo | blocks the executor going live |
+| 8 | Log panel (last N lines, copyable) | 0 | Todo | `features/logging.md` Phase 3 |
+| 9 | Localisation (pt-BR / en) | — | Todo | the audience is Brazilian; log format is already pt |
+| 10 | Accessibility pass: contrast, font scaling, no colour-only meaning | 0 | Todo | the transport column relies on colour plus text — keep both; contrast now has to hold in all four palettes |
+| 11 | Theming | 0 | Done | `egui-elegance` 0.15; four palettes, the choice persisted in `settings.json` |
+| 12 | Fluid layout | 0 | Done | one gutter, full-width cards, columns that split the page, tables that contain their own overflow (`ui::card`, `titled_card`, `table`, `form_columns`) |
 
 ## Audit events
 

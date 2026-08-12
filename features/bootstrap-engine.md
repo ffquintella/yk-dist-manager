@@ -127,18 +127,18 @@ key and recorded in the phase notes.
 
 ## Phases
 
-| # | Phase | State | Notes |
-|---|---|---|---|
-| 1 | Planner with transports and secret placeholders | Done | 19 template tests |
-| 2 | Dry-run recording | Done | `bootstrap.dry_run` audited |
-| 3 | Executor skeleton: sequencing, status persistence, abort policy | **Done** | [`src/bootstrap/`](../src/bootstrap/); 10 scenarios against `MockWriter` |
-| 4 | Secret input: prompt, generate, show-once, zeroise | **Done** | [`src/secret.rs`](../src/secret.rs) — `features/secrets-custody.md` phase 3 |
-| 5 | FIDO2 steps live | **Done** | `device::native_fido`; every operation hardware-verified on a 5.7.4 key, including `make_credential`. See `features/step-fido2-pin.md` |
-| 6 | PIV steps live | Todo | same, behind `native-piv`. The **certificate import** additionally waits on the CA decision |
-| 7 | OTP step live | Todo | same, behind `native-otp` |
-| 8 | Verification step reading the key back | **Done** | reads all three applets and stores the end state as the step's detail |
-| 9 | Resume an interrupted run | **Done** | `Executor::resume` continues from the first non-`Done` step |
-| 10 | Idempotency detection ("already applied") | **Done** | every step reads its applet's state first and skips rather than overwriting |
+| # | Phase | Wave | State | Notes |
+|---|---|---|---|---|
+| 1 | Planner with transports and secret placeholders | 0 | Done | 19 template tests |
+| 2 | Dry-run recording | 0 | Done | `bootstrap.dry_run` audited |
+| 3 | Executor skeleton: sequencing, status persistence, abort policy | 1 | **Done** | [`src/bootstrap/`](../src/bootstrap/); 10 scenarios against `MockWriter` |
+| 4 | Secret input: prompt, generate, show-once, zeroise | 1 | **Done** | [`src/secret.rs`](../src/secret.rs) — `features/secrets-custody.md` phase 3 |
+| 5 | FIDO2 steps live | 1 | **Done** | `device::native_fido`; every operation hardware-verified on a 5.7.4 key, including `make_credential`. See `features/step-fido2-pin.md` |
+| 6 | PIV steps live | 1 | Todo | same, behind `native-piv`. The **certificate import** additionally waits on the CA decision |
+| 7 | OTP step live | 1 | Todo | same, behind `native-otp` |
+| 8 | Verification step reading the key back | 1 | **Done** | reads all three applets and stores the end state as the step's detail |
+| 9 | Resume an interrupted run | 1 | **Done** | `Executor::resume` continues from the first non-`Done` step |
+| 10 | Idempotency detection ("already applied") | 1 | **Done** | every step reads its applet's state first and skips rather than overwriting |
 
 ## Audit events
 

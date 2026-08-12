@@ -132,16 +132,16 @@ pilot mode that is visible in the UI and in the audit entry.
 
 ## Phases
 
-| # | Phase | State | Notes |
-|---|---|---|---|
-| 1 | Model, rendering, validation, built-ins, storage | Done | 19 unit tests |
-| 2 | GUI editor with version bump on edit | **Done** | Templates screen; save is always a new version, and the id is immutable once stored |
-| 2b | Add / duplicate / retire / remove a template | **Done** | schema v4 `retired_at`; removal refused where a run or the seeding would contradict it |
-| 3 | Applicability rules per key (firmware, applications present) | Todo | partially covered by the firmware gates today |
-| 4 | Import / export a template as a file | Todo | for sharing between units |
-| 5 | Template signing and verification | Todo | pilot mode must be visible |
-| 6 | Diff view between two versions | Todo | "what changed since the batch we shipped in June?" |
-| 7 | Per-step retry / continue-on-failure policy | Todo | today only `required` distinguishes them |
+| # | Phase | Wave | State | Notes |
+|---|---|---|---|---|
+| 1 | Model, rendering, validation, built-ins, storage | 0 | Done | 19 unit tests |
+| 2 | GUI editor with version bump on edit | 0 | **Done** | Templates screen; save is always a new version, and the id is immutable once stored |
+| 2b | Add / duplicate / retire / remove a template | 0 | **Done** | schema v4 `retired_at`; removal refused where a run or the seeding would contradict it |
+| 3 | Applicability rules per key (firmware, applications present) | 1 | Todo | partially covered by the firmware gates today |
+| 4 | Import / export a template as a file | 0 | Todo | for sharing between units |
+| 5 | Template signing and verification | 0 | Todo | pilot mode must be visible |
+| 6 | Diff view between two versions | 0 | Todo | "what changed since the batch we shipped in June?" |
+| 7 | Per-step retry / continue-on-failure policy | 1 | Todo | today only `required` distinguishes them |
 
 ## Audit events
 

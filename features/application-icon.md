@@ -101,15 +101,15 @@ packaging work that has no packaging to attach to yet.
 
 ## Phases
 
-| # | Phase | State | Notes |
-|---|---|---|---|
-| 1 | The mark, as SVG | Done | `assets/logo.svg` |
-| 2 | Render script + `make icons` | Done | PNGs 16–1024, RGBA blob, `.icns` |
-| 3 | Window / dock icon | Done | `src/branding.rs`, wired in `src/main.rs` |
-| 4 | macOS bundle icon | Done | the bundle script already looked for the file |
-| 5 | Windows `.ico` resource | Todo | needs a `build.rs` resource step; no Windows packaging exists yet |
-| 6 | Linux `hicolor` + `.desktop` entry | Todo | same: no Linux packaging exists yet |
-| 7 | In-application use | Todo | the icon on the unlock screen and in an About box |
+| # | Phase | Wave | State | Notes |
+|---|---|---|---|---|
+| 1 | The mark, as SVG | 0 | Done | `assets/logo.svg` |
+| 2 | Render script + `make icons` | 0 | Done | PNGs 16–1024, RGBA blob, `.icns` |
+| 3 | Window / dock icon | 0 | Done | `src/branding.rs`, wired in `src/main.rs` |
+| 4 | macOS bundle icon | 0 | Done | the bundle script already looked for the file |
+| 5 | Windows `.ico` resource | 3 | Todo | needs a `build.rs` resource step; no Windows packaging exists yet |
+| 6 | Linux `hicolor` + `.desktop` entry | 3 | Todo | same: no Linux packaging exists yet |
+| 7 | In-application use | 0 | Todo | the icon on the unlock screen and in an About box |
 
 ## Audit events
 

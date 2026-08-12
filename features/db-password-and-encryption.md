@@ -79,15 +79,15 @@ the new key, verify it opens and its audit chain verifies, then swap — never
 
 ## Phases
 
-| # | Phase | State | Notes |
-|---|---|---|---|
-| 1 | Feature flag, `PRAGMA key`, unlock screen, typed errors | Done | plain files still open with no prompt |
-| 2 | Password change via re-encrypt-and-swap (not in-place `rekey`) | Todo | verify before swap; audit the event |
-| 3 | Unlock attempt throttling + audit of failures | Todo | 3 fails → delay, per AGENTS.md |
-| 4 | Explicit KDF parameters (`PRAGMA kdf_iter`, cipher page size) | Todo | needs the ESI-approved cipher/parameter set |
-| 5 | "Encrypt an existing plain database" migration | Todo | one-way, confirmed, backup taken first |
-| 6 | Password strength meter + policy | Todo | reuse the organisation's password guidance |
-| 7 | Optional: unlock with a YubiKey instead of a typed password | Todo | HMAC-SHA1 challenge-response (OTP slot 2) as the KDF input — depends on `native-otp` |
+| # | Phase | Wave | State | Notes |
+|---|---|---|---|---|
+| 1 | Feature flag, `PRAGMA key`, unlock screen, typed errors | 0 | Done | plain files still open with no prompt |
+| 2 | Password change via re-encrypt-and-swap (not in-place `rekey`) | 0 | Todo | verify before swap; audit the event |
+| 3 | Unlock attempt throttling + audit of failures | 0 | Todo | 3 fails → delay, per AGENTS.md |
+| 4 | Explicit KDF parameters (`PRAGMA kdf_iter`, cipher page size) | — | Todo | needs the ESI-approved cipher/parameter set |
+| 5 | "Encrypt an existing plain database" migration | 0 | Todo | one-way, confirmed, backup taken first |
+| 6 | Password strength meter + policy | 0 | Todo | reuse the organisation's password guidance |
+| 7 | Optional: unlock with a YubiKey instead of a typed password | 1 | Todo | HMAC-SHA1 challenge-response (OTP slot 2) as the KDF input — depends on `native-otp` |
 
 Phase 7 is the interesting one: the tool distributes YubiKeys, so using one to
 open its own database is coherent and removes the shared-password problem.
