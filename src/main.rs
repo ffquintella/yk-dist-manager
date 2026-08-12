@@ -58,9 +58,20 @@ fn main() -> eframe::Result {
             .unwrap_or_else(|| "(remembered or default)".into())
     );
 
+    // Reopen where the operator left it. `size()` clamps, so a value from a
+    // monitor that is no longer attached — or a NaN from a half-written settings
+    // file — produces a usable window rather than one with no dimensions or one
+    // whose close button is off-screen.
+    let remembered = yk_dist_manager::settings::AppSettings::load().window;
+    let (width, height) = remembered.size();
+
     let mut viewport = eframe::egui::ViewportBuilder::default()
-        .with_inner_size([1180.0, 760.0])
-        .with_min_inner_size([900.0, 600.0])
+        .with_inner_size([width, height])
+        .with_min_inner_size([
+            yk_dist_manager::settings::WindowState::MIN_WIDTH,
+            yk_dist_manager::settings::WindowState::MIN_HEIGHT,
+        ])
+        .with_maximized(remembered.maximised)
         .with_title("YubiKey Distribution Manager");
 
     // A missing icon is cosmetic, so `window_icon` reporting a malformed blob

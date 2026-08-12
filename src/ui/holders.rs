@@ -98,7 +98,43 @@ fn register_form(app: &mut YkDistApp, ui: &mut egui::Ui) {
 }
 
 fn register(app: &mut YkDistApp, ui: &mut egui::Ui) {
-    super::titled_card(ui, format!("{} holder(s)", app.holders.len()), |ui| {
+    let page = crate::browse::holders(
+        &app.holders,
+        &app.browse_holders.query(),
+        app.browse_holders.sort,
+        app.browse_holders.direction,
+        app.browse_holders.page,
+    );
+    let rows: Vec<crate::domain::Holder> = page.rows.iter().map(|h| (*h).clone()).collect();
+    let summary = page.describe("holders");
+    let (pages, current) = (page.pages, page.page);
+    drop(page);
+
+    super::titled_card(ui, summary.clone(), |ui| {
+        super::table_controls(ui, &mut app.browse_holders, pages, current, &summary);
+        ui.horizontal(|ui| {
+            ui.label("Sort:");
+            super::sort_header(
+                ui,
+                &mut app.browse_holders,
+                "Name",
+                crate::browse::HolderSort::Name,
+            );
+            super::sort_header(
+                ui,
+                &mut app.browse_holders,
+                "E-mail",
+                crate::browse::HolderSort::Email,
+            );
+            super::sort_header(
+                ui,
+                &mut app.browse_holders,
+                "Unit",
+                crate::browse::HolderSort::Unit,
+            );
+        });
+        ui.add_space(6.0);
+
         super::table(
             ui,
             "holders",
@@ -111,7 +147,7 @@ fn register(app: &mut YkDistApp, ui: &mut egui::Ui) {
                 "Keys held",
             ],
             |ui| {
-                for holder in &app.holders {
+                for holder in &rows {
                     let held = app
                         .distributions
                         .iter()

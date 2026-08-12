@@ -182,7 +182,7 @@ pub fn perform(
                 .make_credential(serial, &request, &secrets[index])?;
             Ok(StepOutcomeKind::applied(format!(
                 "[native] resident credential {} created for {}",
-                &evidence.credential_id_hex, evidence.relying_party
+                evidence.credential_id_hex, evidence.relying_party
             )))
         }
 

@@ -334,89 +334,137 @@ fn history(app: &mut YkDistApp, ui: &mut egui::Ui) {
     let mut show_term: Option<uuid::Uuid> = None;
     let mut upload_for: Option<uuid::Uuid> = None;
 
-    super::titled_card(
-        ui,
-        format!("{} hand-over(s)", app.distributions.len()),
-        |ui| {
-            super::table(
+    let page = crate::browse::distributions(
+        &app.distributions,
+        &app.browse_distributions.query(),
+        app.outstanding_only,
+        app.browse_distributions.sort,
+        app.browse_distributions.direction,
+        app.browse_distributions.page,
+    );
+    let rows: Vec<crate::domain::DistributionRecord> =
+        page.rows.iter().map(|d| (*d).clone()).collect();
+    let summary = page.describe("hand-overs");
+    let (pages, current) = (page.pages, page.page);
+    drop(page);
+
+    super::titled_card(ui, summary.clone(), |ui| {
+        super::table_controls(ui, &mut app.browse_distributions, pages, current, &summary);
+        ui.horizontal(|ui| {
+            // The question this screen is usually opened to answer: who
+            // still has a key?
+            if ui
+                .checkbox(&mut app.outstanding_only, "Outstanding only")
+                .changed()
+            {
+                app.browse_distributions.page = 0;
+            }
+            ui.add_space(12.0);
+            ui.label("Sort:");
+            super::sort_header(
                 ui,
-                "distributions",
-                &[
-                    "Serial",
-                    "Holder",
-                    "Handed over",
-                    "By",
-                    "Applied",
-                    "Status",
-                    "Term",
-                    "Actions",
-                ],
-                |ui| {
-                    for record in &app.distributions {
-                        super::mono(ui, &record.key_serial.to_string());
-                        ui.label(&record.holder_display);
-                        ui.label(record.distributed_at.format("%d/%m/%Y %H:%M").to_string());
-                        ui.label(&record.distributed_by);
+                &mut app.browse_distributions,
+                "Date",
+                crate::browse::DistributionSort::Date,
+            );
+            super::sort_header(
+                ui,
+                &mut app.browse_distributions,
+                "Serial",
+                crate::browse::DistributionSort::Serial,
+            );
+            super::sort_header(
+                ui,
+                &mut app.browse_distributions,
+                "Holder",
+                crate::browse::DistributionSort::Holder,
+            );
+            super::sort_header(
+                ui,
+                &mut app.browse_distributions,
+                "Returned",
+                crate::browse::DistributionSort::Returned,
+            );
+        });
+        ui.add_space(6.0);
 
-                        let applied = record
-                            .bootstrap_run_id
-                            .and_then(|id| app.runs.iter().find(|r| r.id == id))
-                            .map(|run| run.summary())
-                            .unwrap_or_else(|| "—".into());
-                        super::faint(ui, &applied);
+        super::table(
+            ui,
+            "distributions",
+            &[
+                "Serial",
+                "Holder",
+                "Handed over",
+                "By",
+                "Applied",
+                "Status",
+                "Term",
+                "Actions",
+            ],
+            |ui| {
+                for record in &rows {
+                    super::mono(ui, &record.key_serial.to_string());
+                    ui.label(&record.holder_display);
+                    ui.label(record.distributed_at.format("%d/%m/%Y %H:%M").to_string());
+                    ui.label(&record.distributed_by);
 
-                        if record.is_open() {
+                    let applied = record
+                        .bootstrap_run_id
+                        .and_then(|id| app.runs.iter().find(|r| r.id == id))
+                        .map(|run| run.summary())
+                        .unwrap_or_else(|| "—".into());
+                    super::faint(ui, &applied);
+
+                    if record.is_open() {
+                        ui.add(elegance::Badge::new(
+                            format!("held {}d", record.days_held(now)),
+                            elegance::BadgeTone::Info,
+                        ));
+                    } else {
+                        ui.add(elegance::Badge::new(
+                            format!(
+                                "returned {}",
+                                record
+                                    .returned_at
+                                    .map(|at| at.format("%d/%m/%Y").to_string())
+                                    .unwrap_or_default()
+                            ),
+                            elegance::BadgeTone::Neutral,
+                        ));
+                    }
+
+                    // Term column: how many documents are filed, and the actions.
+                    let filed = app.document_counts.get(&record.id).copied().unwrap_or(0);
+                    ui.horizontal(|ui| {
+                        if super::row_button(ui, "term").clicked() {
+                            show_term = Some(record.id);
+                        }
+                        if super::row_button(ui, "upload").clicked() {
+                            upload_for = Some(record.id);
+                        }
+                        if filed == 0 {
                             ui.add(elegance::Badge::new(
-                                format!("held {}d", record.days_held(now)),
-                                elegance::BadgeTone::Info,
+                                "none filed",
+                                elegance::BadgeTone::Warning,
                             ));
                         } else {
                             ui.add(elegance::Badge::new(
-                                format!(
-                                    "returned {}",
-                                    record
-                                        .returned_at
-                                        .map(|at| at.format("%d/%m/%Y").to_string())
-                                        .unwrap_or_default()
-                                ),
-                                elegance::BadgeTone::Neutral,
+                                format!("{filed} filed"),
+                                elegance::BadgeTone::Ok,
                             ));
                         }
+                    });
 
-                        // Term column: how many documents are filed, and the actions.
-                        let filed = app.document_counts.get(&record.id).copied().unwrap_or(0);
-                        ui.horizontal(|ui| {
-                            if super::row_button(ui, "term").clicked() {
-                                show_term = Some(record.id);
-                            }
-                            if super::row_button(ui, "upload").clicked() {
-                                upload_for = Some(record.id);
-                            }
-                            if filed == 0 {
-                                ui.add(elegance::Badge::new(
-                                    "none filed",
-                                    elegance::BadgeTone::Warning,
-                                ));
-                            } else {
-                                ui.add(elegance::Badge::new(
-                                    format!("{filed} filed"),
-                                    elegance::BadgeTone::Ok,
-                                ));
-                            }
-                        });
-
-                        ui.horizontal(|ui| {
-                            if record.is_open() && super::row_button(ui, "record return").clicked()
-                            {
-                                to_return = Some((record.id, record.key_serial));
-                            }
-                        });
-                        ui.end_row();
-                    }
-                },
-            );
-        },
-    );
+                    ui.horizontal(|ui| {
+                        if record.is_open() && super::row_button(ui, "record return").clicked() {
+                            to_return = Some((record.id, record.key_serial));
+                        }
+                    });
+                    ui.end_row();
+                }
+            },
+        );
+    });
 
     if let Some((id, serial)) = to_return {
         app.return_key(id, serial);

@@ -7,7 +7,7 @@
 
 use elegance::{Accent, Badge, BadgeTone, Button, CalloutTone, Checkbox, Select};
 
-use crate::app::YkDistApp;
+use crate::app::{WizardStage, YkDistApp};
 use crate::template::Transport;
 
 /// Widest a serial field needs to be. A serial is eight digits; the column it
@@ -43,8 +43,26 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
             {
                 app.record_dry_run();
             }
-            ui.add(Button::new("Execute on key").outline().enabled(false))
-                .on_hover_text("the executor lands in Wave 2 — see roadmap.md");
+            // The gate. Enabled only when a plan exists *and* this build can
+            // reach a key — and even then it opens the confirmation rather than
+            // writing. `features/gui-bootstrap-wizard.md` phase 4: no
+            // confirmation, no writes.
+            let can_write = YkDistApp::can_write_to_a_key();
+            let response = ui
+                .add(
+                    Button::new("Execute on key…")
+                        .accent(Accent::Red)
+                        .enabled(!app.wizard.plan.is_empty() && can_write),
+                )
+                .on_hover_text(if can_write {
+                    "review what will be written, then confirm"
+                } else {
+                    "this build has no transport that can write to a key — rebuild with \
+                     `--features native-device`"
+                });
+            if response.clicked() {
+                app.preflight();
+            }
         });
 
         if let Some(error) = app.wizard.error.clone() {
@@ -52,6 +70,202 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
             super::error_label(ui, &error);
         }
     });
+
+    ui.add_space(18.0);
+
+    match app.wizard.stage {
+        WizardStage::Selecting => plan_table(app, ui),
+        WizardStage::Confirming => confirmation(app, ui),
+        WizardStage::Running => run_view(app, ui),
+    }
+}
+
+/// What will be written, and the one confirmation that authorises it.
+///
+/// Deliberately **one** confirmation for the whole run rather than one per step:
+/// a per-step prompt trains an operator to click through, and the thing they
+/// need to read is the list of what cannot be undone.
+fn confirmation(app: &mut YkDistApp, ui: &mut egui::Ui) {
+    use crate::bootstrap::{self, preflight};
+
+    let serial = app.wizard.serial.trim().to_owned();
+    let holder = app
+        .holders
+        .get(app.wizard.holder_index)
+        .map(|h| h.display())
+        .unwrap_or_else(|| "(no holder selected)".into());
+    let steps = app.wizard.plan.len();
+    let blocked = preflight::blocks(&app.wizard.findings);
+
+    super::titled_card(ui, "Confirm — nothing has been written yet", |ui| {
+        ui.label(format!("Key serial: {serial}"));
+        ui.label(format!("Holder: {holder}"));
+        ui.label(format!("Steps: {steps}"));
+        ui.add_space(10.0);
+
+        // Rule 8 of the engine: no rollback pretence. Name what cannot be undone
+        // rather than offering an undo that would silently fail.
+        let irreversible = bootstrap::irreversible_steps(&app.wizard.plan);
+        if !irreversible.is_empty() {
+            super::notice(
+                ui,
+                CalloutTone::Warning,
+                "These steps cannot be undone. A key that has had them applied can only be \
+                 returned to its previous state by resetting the applet, which destroys what is \
+                 on it:",
+            );
+            for command in &irreversible {
+                ui.label(format!("  • {} — {}", command.step_id, command.description));
+            }
+            ui.add_space(10.0);
+        }
+
+        if app.wizard.findings.is_empty() {
+            super::notice(
+                ui,
+                CalloutTone::Neutral,
+                "Pre-flight found nothing to flag.",
+            );
+        } else {
+            ui.label(preflight::summarise(&app.wizard.findings));
+            ui.add_space(6.0);
+            for finding in &app.wizard.findings {
+                // Severity as a word, not only a colour — phase 10.
+                let where_ = if finding.step_id.is_empty() {
+                    "run".to_owned()
+                } else {
+                    finding.step_id.clone()
+                };
+                ui.label(format!(
+                    "  [{}] {where_}: {}",
+                    finding.severity.label(),
+                    finding.message
+                ));
+            }
+        }
+
+        ui.add_space(16.0);
+        ui.horizontal_wrapped(|ui| {
+            if ui.add(Button::new("Cancel")).clicked() {
+                app.cancel_confirmation();
+            }
+            let confirm = ui
+                .add(
+                    Button::new(format!("Write {steps} step(s) to serial {serial}"))
+                        .accent(Accent::Red)
+                        .enabled(!blocked),
+                )
+                .on_hover_text(if blocked {
+                    "the pre-flight found something that blocks this run"
+                } else {
+                    "this writes to the key"
+                });
+            if confirm.clicked() {
+                // The only place a `Confirmation` is constructed. It carries the
+                // serial and step count that were on screen, and the executor
+                // re-checks both.
+                if let Ok(parsed) = serial.parse::<u32>() {
+                    app.execute_run(bootstrap::Confirmation::given(parsed, steps));
+                }
+            }
+        });
+    });
+
+    ui.add_space(18.0);
+    plan_table(app, ui);
+}
+
+/// The run as it happened, plus the secrets it produced.
+fn run_view(app: &mut YkDistApp, ui: &mut egui::Ui) {
+    use crate::domain::StepStatus;
+
+    if let Some(run) = app.wizard.run.clone() {
+        let (done, failed, skipped, pending) = run.tally();
+        super::titled_card(
+            ui,
+            format!(
+                "Run {:?} — {done} done, {failed} failed, {skipped} skipped, {pending} pending",
+                run.status
+            ),
+            |ui| {
+                super::table(ui, "run-steps", &["Step", "Status", "Detail"], |ui| {
+                    for step in &run.steps {
+                        super::mono(ui, &step.step_id);
+                        // Status as a word: a screen-reader user and a
+                        // monochrome screen both need this without colour.
+                        ui.label(match step.status {
+                            StepStatus::Done => "done",
+                            StepStatus::Failed => "FAILED",
+                            StepStatus::Skipped => "skipped",
+                            StepStatus::Running => "running…",
+                            StepStatus::Pending => "not reached",
+                        });
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(&step.detail)).selectable(true),
+                        );
+                        ui.end_row();
+                    }
+                });
+
+                ui.add_space(12.0);
+                ui.label(format!("Custody: {}", run.custody));
+                if failed > 0 || pending > 0 {
+                    ui.add_space(6.0);
+                    super::notice(
+                        ui,
+                        CalloutTone::Warning,
+                        "This key is not ready to hand over. The record above says what was and \
+                         was not applied; it is the evidence, so do not re-run blindly.",
+                    );
+                }
+            },
+        );
+    }
+
+    // The show-once panel. Model B hands a transport secret over, and this is the
+    // one moment a value is readable by a person.
+    let has_secrets = app
+        .wizard
+        .secrets
+        .as_ref()
+        .is_some_and(|s| !s.entries().is_empty());
+    if has_secrets {
+        ui.add_space(14.0);
+        super::titled_card(ui, "Write these down now — shown once", |ui| {
+            super::notice(
+                ui,
+                CalloutTone::Warning,
+                "These are transport secrets. Nothing keeps a copy: once this panel is \
+                 dismissed they are gone, and a key whose PIN is lost has to be reset.",
+            );
+            ui.add_space(8.0);
+            if let Some(panel) = &app.wizard.secrets {
+                for secret in panel.for_the_holder() {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{}:", secret.kind().label()));
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(secret.expose()).monospace().size(18.0),
+                            )
+                            .selectable(true),
+                        );
+                    });
+                }
+            }
+            ui.add_space(12.0);
+            if ui
+                .add(Button::new("I have written them down — dismiss"))
+                .clicked()
+            {
+                app.dismiss_secrets();
+            }
+        });
+    }
+
+    ui.add_space(14.0);
+    if ui.add(Button::new("Start another")).clicked() {
+        app.reset_wizard();
+    }
 
     ui.add_space(18.0);
     plan_table(app, ui);

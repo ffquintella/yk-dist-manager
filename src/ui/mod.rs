@@ -340,3 +340,91 @@ pub fn row_button_danger(ui: &mut egui::Ui, label: &str) -> egui::Response {
             .size(elegance::ButtonSize::Small),
     )
 }
+
+/// A search box plus the paging controls, drawn above a table.
+///
+/// Returns true when the operator changed something that should reset the page.
+/// The *rules* live in [`crate::browse`] — this only collects what was typed and
+/// clicked, so the untestable part stays as thin as the coverage contract in
+/// `AGENTS.md` §4 requires.
+pub fn table_controls<S: Copy + PartialEq>(
+    ui: &mut egui::Ui,
+    browse: &mut crate::app::Browse<S>,
+    pages: usize,
+    page: usize,
+    summary: &str,
+) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.label("Search");
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut browse.query)
+                .hint_text("serial, name, e-mail, note…")
+                .desired_width(280.0),
+        );
+        if response.changed() {
+            // A new query makes the current page meaningless — and landing on an
+            // empty page after typing is how an operator concludes a key is not
+            // in the register.
+            browse.page = 0;
+            changed = true;
+        }
+        if !browse.query.is_empty() && ui.button("Clear").clicked() {
+            browse.query.clear();
+            browse.page = 0;
+            changed = true;
+        }
+
+        ui.add_space(12.0);
+        if pages > 1 {
+            // Enabled-state, not just colour: a disabled button reads as
+            // disabled to a screen reader too (`gui-shell` phase 10).
+            if ui
+                .add_enabled(page > 0, egui::Button::new("◀ Previous"))
+                .clicked()
+            {
+                browse.page = browse.page.saturating_sub(1);
+                changed = true;
+            }
+            if ui
+                .add_enabled(page + 1 < pages, egui::Button::new("Next ▶"))
+                .clicked()
+            {
+                browse.page += 1;
+                changed = true;
+            }
+        }
+        ui.add_space(12.0);
+        ui.label(summary);
+    });
+    changed
+}
+
+/// A clickable column header that sorts by its column.
+///
+/// The arrow is text rather than colour, so the sorted column is identifiable
+/// without seeing hue — `features/gui-shell.md` phase 10.
+pub fn sort_header<S: Copy + PartialEq>(
+    ui: &mut egui::Ui,
+    browse: &mut crate::app::Browse<S>,
+    label: &str,
+    column: S,
+) {
+    let marker = if browse.sort == column {
+        browse.direction.arrow()
+    } else {
+        ""
+    };
+    let text = if marker.is_empty() {
+        label.to_owned()
+    } else {
+        format!("{label} {marker}")
+    };
+    if ui
+        .add(egui::Button::new(egui::RichText::new(text).strong()).frame(false))
+        .on_hover_text(format!("Sort by {label}"))
+        .clicked()
+    {
+        browse.sort_by(column);
+    }
+}

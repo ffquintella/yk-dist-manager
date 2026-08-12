@@ -72,6 +72,16 @@ pub enum KeyStatus {
 }
 
 impl KeyStatus {
+    /// Every state, in lifecycle order — the order a filter list should offer.
+    pub const ALL: [KeyStatus; 6] = [
+        KeyStatus::InStock,
+        KeyStatus::Bootstrapped,
+        KeyStatus::Distributed,
+        KeyStatus::Returned,
+        KeyStatus::Lost,
+        KeyStatus::Retired,
+    ];
+
     pub fn label(&self) -> &'static str {
         match self {
             KeyStatus::InStock => "In stock",
@@ -250,7 +260,7 @@ pub fn summarise_note(note: &str, max: usize) -> String {
         return "—".to_owned();
     }
     match folded.char_indices().nth(max) {
-        Some((cut, _)) => format!("{}…", &folded[..cut].trim_end()),
+        Some((cut, _)) => format!("{}…", folded[..cut].trim_end()),
         None => folded,
     }
 }

@@ -82,12 +82,12 @@ confirmation — that trains people to click through.
 | # | Phase | Wave | State | Notes |
 |---|---|---|---|---|
 | 1 | Selection, per-step opt-out, plan review, dry run | 0 | Done | |
-| 2 | Live run view with per-step status and touch prompts | 1 | Todo | needs the executor |
-| 3 | Secret prompt / generate / show-once panels | 1 | Todo | `features/secrets-custody.md` |
-| 4 | Single pre-flight confirmation naming what is irreversible | 1 | **In progress** | the *gate* exists in the engine — `bootstrap::Confirmation` cannot be forged and is re-checked against the plan, and `bootstrap::irreversible_steps` supplies what the dialog must list. The dialog itself is not painted yet, and the wizard does not call the executor |
+| 2 | Live run view with per-step status and touch prompts | 1 | **Done** | per-step status as words, the tally, and the custody model. Touch prompts still come from the transport's own stderr |
+| 3 | Secret prompt / generate / show-once panels | 1 | **Done** | the show-once panel, dismissed deliberately and audited as `secret.shown`; values are wiped on dismissal and on drop |
+| 4 | Single pre-flight confirmation naming what is irreversible | 1 | **Done** | the dialog lists the irreversible steps and the pre-flight findings, and the *Execute* button is disabled when the pre-flight blocks or the build has no transport |
 | 5 | Resume a suspended run (unplugged key, awaiting CA) | 1 | Todo | `features/ca-integration.md` |
-| 6 | Post-run summary with the evidence, and "attach to a hand-over" in one click | 1 | Todo | closes the loop with the distribution screen |
-| 7 | Pre-flight checks: firmware gates, applications enabled, key already configured | 1 | **Core done** | [`bootstrap::preflight`](../src/bootstrap/preflight.rs) — firmware gates, disabled applets, already-configured state, and a block when the run would write nothing. Paint wiring pending |
+| 6 | Post-run summary with the evidence, and "attach to a hand-over" in one click | 1 | **Partly done** | the summary and its evidence are shown; one-click attachment to a hand-over is still Todo |
+| 7 | Pre-flight checks: firmware gates, applications enabled, key already configured | 1 | **Done** | [`bootstrap::preflight`](../src/bootstrap/preflight.rs), shown on the confirmation. Applet state is not read yet, so already-configured checks need a write transport open |
 | 8 | Batch mode | 2 | Todo | `features/bulk-enrollment.md` |
 
 ## Audit events

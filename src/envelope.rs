@@ -304,7 +304,7 @@ mod tests {
         // Below firmware 5.7, and for PIV always, this sentence is the only thing
         // standing between a transport PIN and a permanent one.
         let text = render_text(&request(), &panel()).unwrap();
-        assert!(text.contains("NOT force you"), "got: {}", &*text);
+        assert!(text.contains("NOT force you"), "got: {}", *text);
 
         let enforced = SlipRequest {
             change_enforced_by_firmware: true,
@@ -314,7 +314,7 @@ mod tests {
         assert!(
             text.contains("will require you to choose"),
             "got: {}",
-            &*text
+            *text
         );
         assert!(!text.contains("NOT force you"));
     }

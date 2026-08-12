@@ -381,6 +381,12 @@ impl Secret {
     /// Crate-private on purpose. Invalid UTF-8 cannot occur — the only constructor
     /// takes a `&str` — but is answered with an empty string rather than a panic,
     /// because a panic message is one of the places a secret must never reach.
+    ///
+    /// Only [`windows`] and [`macos`] have a connector that can present a password.
+    /// On every other platform [`system`] refuses to mount rather than hand one to
+    /// `mount.cifs`, so this reader is unused there **by design** — hence the narrow
+    /// `allow`, gated on exactly the platforms that lack a caller.
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
     pub(crate) fn expose(&self) -> &str {
         std::str::from_utf8(&self.0).unwrap_or("")
     }
@@ -404,6 +410,10 @@ pub struct Credential {
     pub access: Access,
     /// `DOMAIN\user` or `user`. Empty unless [`Access::Named`].
     pub user: String,
+    /// Read only through [`Credential::password`], and only on the platforms whose
+    /// connector can present one — see [`Secret::expose`] for why that is not every
+    /// platform.
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
     password: Secret,
 }
 
@@ -443,6 +453,9 @@ impl Credential {
         }
     }
 
+    /// The password, for the connector that has to present it. See
+    /// [`Secret::expose`] for why no caller exists on some platforms.
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
     pub(crate) fn password(&self) -> &Secret {
         &self.password
     }

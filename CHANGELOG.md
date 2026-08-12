@@ -117,6 +117,17 @@ Maintenance instructions (see AGENTS.md §5):
 
 ### Fixed
 
+- **The build is warning-free again on Linux and under Rust 1.97.** Two unrelated
+  breakages, both of which CI treats as failures because `RUSTFLAGS: -D warnings`.
+  The SMB password reader is called only by the Windows and macOS connectors, so on
+  Linux — where [`store::smb::system`](src/store/smb/system.rs) refuses to mount
+  rather than hand a password to `mount.cifs` — `Secret::expose`,
+  `Credential::password` and the field behind them are dead *by design*; they now
+  carry an `allow(dead_code)` gated on exactly the platforms that lack a caller,
+  rather than the whole module going quiet. Separately, 1.97 flags a redundant
+  reference in a `format!`/`assert!` argument, which four call sites had. The
+  deref in the envelope's assertions was kept: `text` is `Zeroizing`, and only the
+  `&` in front of it was redundant.
 - **The standard procedure ships as `org-standard` v2, so a register seeded by an
   older build gets the corrected ordering.** Fixing the constructor was not
   enough: seeding deliberately never overwrites a stored `(id, version)`, so a

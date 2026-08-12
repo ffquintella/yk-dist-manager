@@ -16,6 +16,7 @@
 //! See `docs/yubikey-reference.md` for the capability matrix and
 //! `features/native-device-transport.md` for the migration plan.
 
+pub mod composite;
 pub mod mock;
 #[cfg(feature = "native-piv")]
 pub mod native;

@@ -368,6 +368,89 @@ impl Default for DistForm {
     }
 }
 
+/// Search, sort and page state for one table.
+///
+/// The rules live in [`crate::browse`], where they are tested; this is only what
+/// the operator has currently typed and clicked.
+#[derive(Debug, Clone, Default)]
+pub struct Browse<S> {
+    pub query: String,
+    pub sort: S,
+    pub direction: crate::browse::Direction,
+    pub page: usize,
+}
+
+impl<S: Copy + PartialEq> Browse<S> {
+    /// Clicking a column header sorts by it, or reverses it if it was already
+    /// the sorted one — the behaviour every table in every tool has, so it needs
+    /// no explaining at a desk.
+    pub fn sort_by(&mut self, column: S) {
+        if self.sort == column {
+            self.direction = self.direction.toggled();
+        } else {
+            self.sort = column;
+            self.direction = crate::browse::Direction::Ascending;
+        }
+        // A new ordering makes the current page meaningless.
+        self.page = 0;
+    }
+
+    pub fn query(&self) -> crate::browse::Query {
+        crate::browse::Query::new(&self.query)
+    }
+}
+
+/// What the wizard is doing right now.
+#[derive(Debug, Default, PartialEq, Eq, Clone, Copy)]
+pub enum WizardStage {
+    /// Choosing key, holder and template; building a plan.
+    #[default]
+    Selecting,
+    /// The plan is built and the pre-flight has run; the confirmation is on
+    /// screen and nothing has been written.
+    Confirming,
+    /// A run is in progress or has finished.
+    Running,
+}
+
+/// Persists a run's progress and its audit entries as the executor produces them.
+///
+/// Owns the `Store` for the duration of the run rather than borrowing it: the
+/// executor needs `&mut dyn RunRecorder` while the app is also handing it a
+/// `&mut dyn WriteBackend`, and taking the store out and putting it back is
+/// simpler to read than threading two disjoint borrows of `self` through.
+///
+/// A failure here stops the run before the next write. That is deliberate and it
+/// is the strictest rule in the engine: a configured key with no record of what
+/// was applied is the failure this whole tool exists to prevent.
+struct StoreRecorder {
+    store: Store,
+    operator: String,
+    /// The first failure, kept so the status line can name it.
+    failure: Option<String>,
+}
+
+impl crate::bootstrap::RunRecorder for StoreRecorder {
+    fn run_updated(&mut self, run: &BootstrapRun) -> Result<(), String> {
+        self.store.insert_run(run).map_err(|e| {
+            let message = e.to_string();
+            self.failure.get_or_insert(message.clone());
+            message
+        })
+    }
+
+    fn audit(&mut self, event: &str, target: &str, detail: &str) -> Result<(), String> {
+        self.store
+            .append_audit(&self.operator, event, target, detail)
+            .map(|_| ())
+            .map_err(|e| {
+                let message = e.to_string();
+                self.failure.get_or_insert(message.clone());
+                message
+            })
+    }
+}
+
 /// Bootstrap wizard state.
 #[derive(Default)]
 pub struct Wizard {
@@ -378,6 +461,29 @@ pub struct Wizard {
     pub step_enabled: Vec<bool>,
     pub plan: Vec<PlannedCommand>,
     pub error: Option<String>,
+    pub stage: WizardStage,
+    /// What the pre-flight found for the current plan and key.
+    pub findings: Vec<crate::bootstrap::Finding>,
+    /// The run in progress or just finished, for the live view and the summary.
+    pub run: Option<crate::domain::BootstrapRun>,
+    /// Generated secrets, shown once and wiped when the panel is dismissed.
+    ///
+    /// Not `Clone` and never persisted — see [`crate::secret::ShowOnce`].
+    pub secrets: Option<crate::secret::ShowOnce>,
+}
+
+impl std::fmt::Debug for Wizard {
+    /// Hand-written because [`crate::secret::ShowOnce`] must never be printed by
+    /// an accident of derivation. It redacts itself, but the wizard is the type
+    /// most likely to end up in a panic message, so this is belt and braces.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Wizard")
+            .field("serial", &self.serial)
+            .field("stage", &self.stage)
+            .field("steps", &self.plan.len())
+            .field("secrets", &self.secrets.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 pub struct YkDistApp {
@@ -431,6 +537,19 @@ pub struct YkDistApp {
     pub term_templates: Vec<crate::term::TermTemplate>,
     /// How many documents each distribution has.
     pub document_counts: std::collections::BTreeMap<uuid::Uuid, usize>,
+
+    /// Search, sort and page state for the three tables (`gui-shell` 3, 4).
+    pub browse_keys: Browse<crate::browse::KeySort>,
+    pub browse_holders: Browse<crate::browse::HolderSort>,
+    pub browse_distributions: Browse<crate::browse::DistributionSort>,
+    /// Show only keys in this state, when the operator has narrowed it.
+    pub key_status_filter: Option<crate::domain::KeyStatus>,
+    /// Show only hand-overs nobody has returned.
+    pub outstanding_only: bool,
+    /// Recent log lines, for the panel (`gui-shell` 8).
+    pub log: crate::logbuf::LogBuffer,
+    pub log_panel_open: bool,
+    pub log_min_level: crate::logbuf::Level,
 }
 
 impl YkDistApp {
@@ -492,6 +611,14 @@ impl YkDistApp {
             term_editor: TermEditor::default(),
             term_templates: Vec::new(),
             document_counts: std::collections::BTreeMap::new(),
+            browse_keys: Browse::default(),
+            browse_holders: Browse::default(),
+            browse_distributions: Browse::default(),
+            key_status_filter: None,
+            outstanding_only: false,
+            log: crate::logbuf::LogBuffer::new(),
+            log_panel_open: false,
+            log_min_level: crate::logbuf::Level::Info,
         };
 
         app.db_form.path = app.config.path.display().to_string();
@@ -2349,6 +2476,200 @@ impl YkDistApp {
         }
     }
 
+    /// Execute the confirmed plan against the attached key.
+    ///
+    /// The confirmation is passed rather than assumed: `Executor::run` re-checks
+    /// it against the request, so a plan changed after the operator agreed does
+    /// not inherit their agreement.
+    ///
+    /// Returns without writing when this build has no transport — the button is
+    /// disabled in that case, and this is the second guard behind it.
+    pub fn execute_run(&mut self, confirmation: crate::bootstrap::Confirmation) {
+        use crate::bootstrap::{ExecutionRequest, Executor, Transports};
+
+        let Ok(serial) = self.wizard.serial.trim().parse::<u32>() else {
+            self.wizard.error = Some("invalid serial".into());
+            return;
+        };
+        let Some(template) = self.selected_template().cloned() else {
+            self.wizard.error = Some("no template selected".into());
+            return;
+        };
+        let holder = self.holders.get(self.wizard.holder_index).cloned();
+
+        // The SAN comes from the deployment's policy, not from the template:
+        // which form it takes follows from which CA issues the certificate.
+        let ctx = holder
+            .as_ref()
+            .map(|h| RenderContext::for_holder(h, serial, &self.operator, &self.org));
+        let san = match ctx.as_ref().map(|c| self.settings.san.render(c)) {
+            Some(Ok(value)) => value,
+            Some(Err(e)) => {
+                self.wizard.error = Some(format!("the certificate SAN is not usable: {e}"));
+                return;
+            }
+            None => String::new(),
+        };
+
+        let request = ExecutionRequest {
+            template: &template,
+            commands: &self.wizard.plan,
+            serial,
+            holder_id: holder.as_ref().map(|h| h.id),
+            operator: self.operator.clone(),
+            relying_party: self.org.clone(),
+            certificate_subject: holder
+                .as_ref()
+                .map(|h| h.certificate_subject(&self.org, &h.unit))
+                .unwrap_or_default(),
+            certificate_email: san,
+            holder_display: holder.as_ref().map(|h| h.display()).unwrap_or_default(),
+        };
+
+        let mut backend = match Self::write_backend(serial) {
+            Some(backend) => backend,
+            None => {
+                self.wizard.error = Some(
+                    "this build has no transport that can write to a key — rebuild with \
+                     `--features native-device`"
+                        .into(),
+                );
+                return;
+            }
+        };
+
+        // The recorder is built here and dropped at the end of the call, so the
+        // executor never holds the store across a frame.
+        let outcome = {
+            let Some(store) = self.store.take() else {
+                self.wizard.error = Some("no database is open".into());
+                return;
+            };
+            let mut recorder = StoreRecorder {
+                store,
+                operator: self.operator.clone(),
+                failure: None,
+            };
+            let result = {
+                let mut executor = Executor::new(Transports {
+                    backend: backend.as_mut(),
+                });
+                let run = executor.run(&request, &confirmation, &mut recorder);
+                // Take the secrets out whatever happened: a failed run may still
+                // have generated one, and it must not outlive this call.
+                self.wizard.secrets = Some(crate::secret::ShowOnce::new(executor.take_secrets()));
+                run
+            };
+            self.store = Some(recorder.store);
+            result
+        };
+
+        self.wizard.stage = crate::app::WizardStage::Running;
+        match outcome {
+            Ok(run) => {
+                self.status = format!(
+                    "run {:?}: {} done, {} failed, {} skipped",
+                    run.status,
+                    run.tally().0,
+                    run.tally().1,
+                    run.tally().2
+                );
+                self.wizard.run = Some(run);
+            }
+            Err(e) => {
+                self.wizard.error = Some(e.to_string());
+                self.status = format!("the run did not complete: {e}");
+            }
+        }
+        self.refresh();
+    }
+
+    /// The write transport for this build, if it has one.
+    ///
+    /// [`crate::device::composite::NativeBackend`] routes each applet to
+    /// whatever is compiled in and answers `TransportUnavailable` for the rest,
+    /// so a partially-implemented build produces a step that skips with a reason
+    /// rather than a run that cannot start.
+    fn write_backend(serial: u32) -> Option<Box<dyn crate::device::write::WriteBackend>> {
+        crate::device::composite::NativeBackend::is_available()
+            .then(|| -> Box<dyn crate::device::write::WriteBackend> {
+                Box::new(crate::device::composite::NativeBackend::for_key(serial))
+            })
+    }
+
+    /// Dismiss the show-once panel, wiping the values.
+    pub fn dismiss_secrets(&mut self) {
+        if let Some(panel) = &mut self.wizard.secrets {
+            let detail = panel.audit_detail();
+            panel.dismiss();
+            let serial = self.wizard.serial.trim().to_owned();
+            self.record("secret.shown", &format!("serial:{serial}"), &detail);
+        }
+        self.wizard.secrets = None;
+    }
+
+    /// Start again, leaving the recorded run on file.
+    pub fn reset_wizard(&mut self) {
+        self.dismiss_secrets();
+        self.wizard.stage = crate::app::WizardStage::Selecting;
+        self.wizard.findings.clear();
+        self.wizard.run = None;
+        self.wizard.plan.clear();
+        self.wizard.error = None;
+    }
+
+    /// Run the pre-flight against the current plan and move to the confirmation.
+    ///
+    /// Separate from `build_plan` because the operator may change the key after
+    /// planning, and the checks are about *this key* rather than the procedure.
+    /// Nothing is written here — that is the whole point of the stage.
+    pub fn preflight(&mut self) {
+        use crate::bootstrap::{AppletSnapshot, Preflight};
+
+        if self.wizard.plan.is_empty() {
+            self.wizard.error = Some("build a plan first".into());
+            return;
+        }
+        let serial = self.wizard.serial.trim().parse::<u32>().ok();
+        let key = serial.and_then(|s| self.keys.iter().find(|k| k.serial == s));
+
+        // No applet snapshot yet: reading one needs a write-capable transport
+        // open, and this build has none by default. The checks that do not need
+        // it — firmware gates, enabled applications — still run, and the ones
+        // that do simply produce no finding rather than a wrong one.
+        let applets = AppletSnapshot::default();
+        self.wizard.findings = Preflight {
+            commands: &self.wizard.plan,
+            key,
+            applets: &applets,
+            can_write: Self::can_write_to_a_key(),
+        }
+        .run();
+
+        self.wizard.stage = crate::app::WizardStage::Confirming;
+        self.status = crate::bootstrap::preflight::summarise(&self.wizard.findings);
+    }
+
+    /// Does this build have a transport that can write to a key?
+    ///
+    /// Compile-time, because it is a property of the build rather than of the
+    /// session. A default build answers `false`, which is what makes the
+    /// pre-flight block rather than letting an operator confirm a run that
+    /// cannot happen.
+    pub fn can_write_to_a_key() -> bool {
+        crate::device::composite::NativeBackend::is_available()
+    }
+
+    /// Go back to selection, discarding the confirmation.
+    ///
+    /// Named for what it protects: a confirmation is for one plan on one key, so
+    /// changing either has to invalidate it rather than carry it forward.
+    pub fn cancel_confirmation(&mut self) {
+        self.wizard.stage = crate::app::WizardStage::Selecting;
+        self.wizard.findings.clear();
+        self.status = "nothing was written".into();
+    }
+
     /// Persist the plan as a `Planned` bootstrap run: evidence of intent, with
     /// every step marked `Skipped` because nothing was executed.
     ///
@@ -2681,6 +3002,99 @@ impl YkDistApp {
 
         let theme = elegance::Theme::current(ui.ctx());
         let severity = crate::status::classify(&self.status);
+
+        // Remember where the window is and which screen is open. Compared before
+        // writing, because this runs every frame and the settings file is on
+        // disk — a per-frame write would be a per-frame fsync, on a share.
+        {
+            let size = ui.max_rect().size();
+            let maximised = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+            let tab = self.tab.label().to_owned();
+            let current = crate::settings::WindowState {
+                width: size.x,
+                height: size.y,
+                tab,
+                maximised,
+            };
+            if current != self.settings.window {
+                self.settings.window = current;
+                // Cosmetic: a settings write that fails costs the operator a
+                // window position, so it is logged rather than surfaced.
+                if let Err(e) = self.settings.save() {
+                    tracing::warn!(event = "settings.window.save_failed", reason = %e);
+                }
+            }
+        }
+
+        // The log panel, above the status bar so an error is one click from the
+        // line that mentions it (`features/gui-shell.md` phase 8).
+        if self.log_panel_open {
+            egui::Panel::bottom("log-panel")
+                .resizable(true)
+                .frame(gutter_frame(egui::Frame::side_top_panel(ui.style())))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.heading("Log");
+                        ui.label(self.log.describe());
+                        ui.add_space(12.0);
+                        egui::ComboBox::from_id_salt("log-level")
+                            .selected_text(self.log_min_level.label())
+                            .show_ui(ui, |ui| {
+                                for level in [
+                                    crate::logbuf::Level::Debug,
+                                    crate::logbuf::Level::Info,
+                                    crate::logbuf::Level::Warn,
+                                    crate::logbuf::Level::Error,
+                                ] {
+                                    ui.selectable_value(
+                                        &mut self.log_min_level,
+                                        level,
+                                        level.label(),
+                                    );
+                                }
+                            });
+                        // The whole point of the panel: turn "it didn't work"
+                        // into a paste into a ticket.
+                        if ui.button("Copy all").clicked() {
+                            let block = self.log.to_clipboard(self.log_min_level);
+                            ui.ctx().copy_text(block);
+                            self.status = "log copied to the clipboard".into();
+                        }
+                        if ui.button("Clear").clicked() {
+                            self.log.clear();
+                        }
+                        if ui.button("Close").clicked() {
+                            self.log_panel_open = false;
+                        }
+                    });
+                    ui.separator();
+                    egui::ScrollArea::vertical()
+                        .stick_to_bottom(true)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            for line in self.log.lines(self.log_min_level) {
+                                // Level as text as well as colour, so severity
+                                // survives a monochrome screen (phase 10).
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(line.level.label())
+                                                .monospace()
+                                                .strong(),
+                                        )
+                                        .selectable(true),
+                                    );
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(&line.text).monospace(),
+                                        )
+                                        .selectable(true),
+                                    );
+                                });
+                            }
+                        });
+                });
+        }
 
         egui::Panel::bottom("status")
             .frame(gutter_frame(egui::Frame::side_top_panel(ui.style())))

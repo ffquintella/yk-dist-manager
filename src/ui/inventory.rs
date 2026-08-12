@@ -73,7 +73,78 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
     let mut note_requested: Option<u32> = None;
     let mut removal_requested: Option<u32> = None;
 
-    super::titled_card(ui, format!("{} key(s)", app.keys.len()), |ui| {
+    // Filter, sort and page before painting. The rules are in `crate::browse`,
+    // where they are covered; this screen only shows the result.
+    let page = crate::browse::keys(
+        &app.keys,
+        &app.browse_keys.query(),
+        app.key_status_filter,
+        app.browse_keys.sort,
+        app.browse_keys.direction,
+        app.browse_keys.page,
+    );
+    let rows: Vec<crate::domain::YubiKeyRecord> = page.rows.iter().map(|k| (*k).clone()).collect();
+    let summary = page.describe("keys");
+    let (pages, current) = (page.pages, page.page);
+    drop(page);
+
+    super::titled_card(ui, summary.clone(), |ui| {
+        super::table_controls(ui, &mut app.browse_keys, pages, current, &summary);
+
+        // The status filter sits with the search box because it is the same
+        // question asked a different way: "show me less".
+        ui.horizontal(|ui| {
+            ui.label("Status");
+            let mut selected = app.key_status_filter;
+            egui::ComboBox::from_id_salt("key-status-filter")
+                .selected_text(match selected {
+                    None => "any".to_owned(),
+                    Some(status) => status.label().to_owned(),
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut selected, None, "any");
+                    for status in crate::domain::KeyStatus::ALL {
+                        ui.selectable_value(&mut selected, Some(status), status.label());
+                    }
+                });
+            if selected != app.key_status_filter {
+                app.key_status_filter = selected;
+                app.browse_keys.page = 0;
+            }
+        });
+        ui.add_space(8.0);
+
+        // Sortable headers, painted as buttons above the grid so a click can
+        // change the ordering without the grid needing to know.
+        ui.horizontal(|ui| {
+            ui.label("Sort:");
+            super::sort_header(
+                ui,
+                &mut app.browse_keys,
+                "Serial",
+                crate::browse::KeySort::Serial,
+            );
+            super::sort_header(
+                ui,
+                &mut app.browse_keys,
+                "Model",
+                crate::browse::KeySort::Model,
+            );
+            super::sort_header(
+                ui,
+                &mut app.browse_keys,
+                "Status",
+                crate::browse::KeySort::Status,
+            );
+            super::sort_header(
+                ui,
+                &mut app.browse_keys,
+                "Last seen",
+                crate::browse::KeySort::Updated,
+            );
+        });
+        ui.add_space(6.0);
+
         super::table(
             ui,
             "keys",
@@ -88,7 +159,7 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
                 "Actions",
             ],
             |ui| {
-                for key in &app.keys {
+                for key in &rows {
                     super::mono(ui, &key.serial.to_string());
                     ui.label(&key.model);
                     ui.label(&key.firmware);
