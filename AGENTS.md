@@ -131,7 +131,7 @@ make coverage          # whole crate, including untested paint code
 make coverage-html     # browsable report
 ```
 
-Current: **86.91%** core line coverage (85.79% region), 545 tests.
+Current: **83.25%** core line coverage (82.31% region), 595 tests.
 Whole-crate line coverage is lower, the difference being the egui paint code the
 gate excludes.
 

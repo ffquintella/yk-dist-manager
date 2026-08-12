@@ -2591,10 +2591,11 @@ impl YkDistApp {
     /// so a partially-implemented build produces a step that skips with a reason
     /// rather than a run that cannot start.
     fn write_backend(serial: u32) -> Option<Box<dyn crate::device::write::WriteBackend>> {
-        crate::device::composite::NativeBackend::is_available()
-            .then(|| -> Box<dyn crate::device::write::WriteBackend> {
+        crate::device::composite::NativeBackend::is_available().then(
+            || -> Box<dyn crate::device::write::WriteBackend> {
                 Box::new(crate::device::composite::NativeBackend::for_key(serial))
-            })
+            },
+        )
     }
 
     /// Dismiss the show-once panel, wiping the values.
@@ -2992,6 +2993,31 @@ impl YkDistApp {
                     Tab::ALL.map(|tab| tab.label()),
                 ));
                 self.tab = Tab::from_index(index);
+
+                // A shortcut nobody knows about is not a shortcut. The log
+                // toggle carries an error count so a failure is visible without
+                // opening the panel — text, not a coloured dot.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let (_, _, warnings, errors) = self.log.counts();
+                    let label = match (errors, warnings) {
+                        (0, 0) => "Log".to_owned(),
+                        (0, w) => format!("Log ({w} warning)"),
+                        (e, _) => format!("Log ({e} ERROR)"),
+                    };
+                    if ui
+                        .selectable_label(self.log_panel_open, label)
+                        .on_hover_text("⌘L / Ctrl+L")
+                        .clicked()
+                    {
+                        self.log_panel_open = !self.log_panel_open;
+                    }
+                    ui.label(
+                        egui::RichText::new("⌘R refresh · ⌘D detect · ⌘± size")
+                            .small()
+                            .weak(),
+                    )
+                    .on_hover_text("Ctrl on Windows and Linux. ⌘0 resets the size.");
+                });
             });
     }
 
@@ -3002,6 +3028,43 @@ impl YkDistApp {
 
         let theme = elegance::Theme::current(ui.ctx());
         let severity = crate::status::classify(&self.status);
+
+        // Keyboard flow (`features/gui-shell.md` phase 6). These matter for a
+        // repeated hand-over: an operator with a key in one hand should not have
+        // to find a button with the mouse for the two things they do fifty times
+        // a day.
+        //
+        // Read before anything paints, so a shortcut is not swallowed by whatever
+        // widget happens to have focus.
+        {
+            let pressed = |ui: &egui::Ui, key: egui::Key| {
+                ui.ctx()
+                    .input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, key))
+            };
+            if pressed(ui, egui::Key::R) {
+                self.refresh();
+                self.status = "refreshed".into();
+            }
+            if pressed(ui, egui::Key::D) {
+                self.detect_keys();
+            }
+            if pressed(ui, egui::Key::L) {
+                self.log_panel_open = !self.log_panel_open;
+            }
+            // Font scaling, for the same reason the contrast pass exists: the
+            // register is read at a desk by whoever is on shift.
+            if pressed(ui, egui::Key::Plus) || pressed(ui, egui::Key::Equals) {
+                let zoom = (ui.ctx().zoom_factor() + 0.1).min(2.0);
+                ui.ctx().set_zoom_factor(zoom);
+            }
+            if pressed(ui, egui::Key::Minus) {
+                let zoom = (ui.ctx().zoom_factor() - 0.1).max(0.8);
+                ui.ctx().set_zoom_factor(zoom);
+            }
+            if pressed(ui, egui::Key::Num0) {
+                ui.ctx().set_zoom_factor(1.0);
+            }
+        }
 
         // Remember where the window is and which screen is open. Compared before
         // writing, because this runs every frame and the settings file is on

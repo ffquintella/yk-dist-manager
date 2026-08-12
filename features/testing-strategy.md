@@ -18,7 +18,7 @@ whole even though every part passes.
 
 **Suites in place, and CI now enforces the gate.**
 
-- **545 tests** pass on the default features (`cargo test`); one fewer
+- **595 tests** pass on the default features (`cargo test`); one fewer
   with `--all-features`, the difference being a test that only exists when
   `encrypted-db` is *off*. Plus 4 hardware tests, ignored by default.
 - **CI runs on every push and pull request**

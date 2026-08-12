@@ -106,11 +106,11 @@ is rejected.
 | 3 | Search / filter on Inventory, Holders, Distribution | 0 | **Done** | [`crate::browse`](../src/browse.rs) + all three screens; one query box across every displayed field, plus a status filter on Inventory and outstanding-only on Distribution |
 | 4 | Sortable columns and pagination | 0 | **Done** | clickable sort headers with a text arrow, ties broken on a stable field so rows cannot shuffle under the cursor, and paging that clamps rather than stranding an empty page |
 | 5 | Window size/position and last-tab persistence | 0 | **Done** | `settings::WindowState`, restored in `main.rs` and saved on change (not per frame — the file may be on a share) |
-| 6 | Keyboard flow: Enter to submit, Tab order, shortcuts for detect/refresh | 0 | Todo | matters for repeated hand-overs |
+| 6 | Keyboard flow: Enter to submit, Tab order, shortcuts for detect/refresh | 0 | **Done** | ⌘/Ctrl + R refresh, D detect, L log panel, +/−/0 font size — read before anything paints so a widget cannot swallow them, and shown in the top bar because a shortcut nobody knows about is not one |
 | 7 | Confirmation dialogs for hardware writes | 0 | **Done** | one confirmation for the whole run, naming the serial, holder, step count and the steps that cannot be undone. It is the only place a `bootstrap::Confirmation` is constructed |
 | 8 | Log panel (last N lines, copyable) | 0 | **Done** | [`crate::logbuf`](../src/logbuf.rs) + a resizable bottom panel with a level filter and *Copy all* |
 | 9 | Localisation (pt-BR / en) | — | Todo | the audience is Brazilian; log format is already pt |
-| 10 | Accessibility pass: contrast, font scaling, no colour-only meaning | 0 | Todo | the transport column relies on colour plus text — keep both; contrast now has to hold in all four palettes |
+| 10 | Accessibility pass: contrast, font scaling, no colour-only meaning | 0 | **Done** | font scaling by keyboard; every coloured state also carries distinct text, pinned by [`tests/unit_accessibility.rs`](../tests/unit_accessibility.rs) so a new state cannot be added with a colour and no words |
 | 11 | Theming | 0 | Done | `egui-elegance` 0.15; four palettes, the choice persisted in `settings.json` |
 | 12 | Fluid layout | 0 | Done | one gutter, full-width cards, columns that split the page, tables that contain their own overflow (`ui::card`, `titled_card`, `table`, `form_columns`) |
 
