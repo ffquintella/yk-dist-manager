@@ -100,6 +100,11 @@ impl TemplateDraft {
             version: "1".into(),
             description: self.description.trim().to_owned(),
             steps,
+            // An edited procedure is unsigned, and there is nothing to decide
+            // here: changing a step changes the bytes a signature was made over.
+            // Getting a signature back means exporting the new version and having
+            // whoever holds the key sign it (`template::signing`).
+            signature: None,
         })
     }
 
@@ -160,7 +165,17 @@ impl TemplateDraft {
     /// that cannot even be turned into a template is certainly edited.
     pub fn is_dirty(&self, stored: Option<&BootstrapTemplate>) -> bool {
         match (self.to_template(), stored) {
-            (Ok(draft), Some(stored)) => draft.as_version(&stored.version) != *stored,
+            // Compared as *canonical bytes* rather than by `==`, for two reasons
+            // that both matter. The version is not part of them, so a draft is not
+            // dirty for having been loaded from a different version; and neither is
+            // the signature, so opening a signed template does not read as an edit
+            // the moment it is loaded (the draft cannot carry a signature — see
+            // `to_template`). Trimming and parameter re-spacing were already
+            // handled by comparing the stored form, and still are.
+            (Ok(draft), Some(stored)) => {
+                crate::template::signing::canonical_bytes(&draft)
+                    != crate::template::signing::canonical_bytes(stored)
+            }
             (Ok(draft), None) => {
                 !draft.id.is_empty()
                     || !draft.name.is_empty()

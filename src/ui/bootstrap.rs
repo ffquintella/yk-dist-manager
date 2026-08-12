@@ -97,10 +97,45 @@ fn confirmation(app: &mut YkDistApp, ui: &mut egui::Ui) {
     let steps = app.wizard.plan.len();
     let blocked = preflight::blocks(&app.wizard.findings);
 
+    // The signature verdict for the procedure about to be applied, and whether it
+    // is allowed. Computed here so the confirmation can *refuse* rather than
+    // letting the operator click and be told afterwards — and so the sentence
+    // beside the button is the same sentence the run would have logged.
+    let template = app.selected_template().cloned();
+    let permission = template
+        .as_ref()
+        .map(|template| (template.clone(), app.template_run_permission(template)));
+
     super::titled_card(ui, "Confirm — nothing has been written yet", |ui| {
         ui.label(format!("Key serial: {serial}"));
         ui.label(format!("Holder: {holder}"));
         ui.label(format!("Steps: {steps}"));
+
+        if let Some((template, permission)) = &permission {
+            ui.label(format!(
+                "Procedure: {} version {}",
+                template.id, template.version
+            ));
+            ui.add_space(10.0);
+            match permission {
+                // A verified signature is worth saying out loud: it is the one
+                // state in which somebody other than the person at this keyboard
+                // has approved what is about to be written.
+                Ok(trust) if trust.is_verified() => {
+                    super::notice(ui, CalloutTone::Success, &trust.describe())
+                }
+                Ok(trust) => super::notice(
+                    ui,
+                    CalloutTone::Warning,
+                    &format!(
+                        "{} — this run is allowed because unsigned templates are permitted on \
+                         this workstation, and it will be recorded as such.",
+                        trust.describe()
+                    ),
+                ),
+                Err(refusal) => super::error_label(ui, refusal),
+            }
+        }
         ui.add_space(10.0);
 
         // Rule 8 of the engine: no rollback pretence. Name what cannot be undone
@@ -149,16 +184,23 @@ fn confirmation(app: &mut YkDistApp, ui: &mut egui::Ui) {
             if ui.add(Button::new("Cancel")).clicked() {
                 app.cancel_confirmation();
             }
+            // Two independent gates on the same button: the pre-flight's findings,
+            // and whether this deployment accepts this procedure's signature. The
+            // app re-checks the signature before the first write regardless — a
+            // disabled button is a courtesy, not a control.
+            let unsigned_refusal = permission
+                .as_ref()
+                .and_then(|(_, permission)| permission.as_ref().err().cloned());
             let confirm = ui
                 .add(
                     Button::new(format!("Write {steps} step(s) to serial {serial}"))
                         .accent(Accent::Red)
-                        .enabled(!blocked),
+                        .enabled(!blocked && unsigned_refusal.is_none()),
                 )
-                .on_hover_text(if blocked {
-                    "the pre-flight found something that blocks this run"
-                } else {
-                    "this writes to the key"
+                .on_hover_text(match (&unsigned_refusal, blocked) {
+                    (Some(_), _) => "this deployment requires a signed template",
+                    (None, true) => "the pre-flight found something that blocks this run",
+                    (None, false) => "this writes to the key",
                 });
             if confirm.clicked() {
                 // The only place a `Confirmation` is constructed. It carries the

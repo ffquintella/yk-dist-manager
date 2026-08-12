@@ -37,6 +37,22 @@ hex = "0.4"
 zeroize = { version = "1", features = ["derive"] }
 getrandom = "0.3"
 
+# Verifying the signature on a bootstrap template
+# (`features/bootstrap-templates.md` phase 5). A template decides what is written
+# to security hardware, so an unauthorised edit of one is an attack — and the only
+# signature scheme this tool can carry is a *public-key* one, because AGENTS.md §2
+# forbids it holding a secret anywhere that can persist. So the private key lives
+# wherever the organisation keeps it and never comes near this application: the
+# tool verifies, and signing is an out-of-band step over the documented canonical
+# bytes.
+#
+# Not behind a feature flag: a build that could not verify a signature would treat
+# every template as unsigned, which is the state the flag would have been meant to
+# protect against. `default-features = false` drops the `fast` backend (a
+# performance choice, for one verification per run) and `rand_core` (only signing
+# needs it, and this crate does not sign).
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+
 # The workstation name written into the single-writer lock file that guards a
 # database hosted in a cloud-sync folder (`store::cloud`). One syscall wrapper,
 # already in the dependency graph, and the alternative was a hand-rolled

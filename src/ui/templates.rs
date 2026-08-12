@@ -31,6 +31,10 @@ enum Action {
     Retire(String, String),
     Reinstate(String, String),
     Remove(String, String),
+    /// Show what changed between this version and the newest of its id (phase 6).
+    Compare(String, String),
+    /// Write this version to a file (phase 4).
+    Export(String, String),
 }
 
 /// One catalogue row, snapshotted so the table can be painted while the actions
@@ -47,6 +51,13 @@ struct Row {
     runs: usize,
     updated: String,
     refusal: Option<String>,
+    /// Whether this version's signature verifies under this deployment's keys
+    /// (phase 5). Snapshotted with the row: it is pure computation over the
+    /// cached catalogue and the settings, so it needs no database read.
+    trust: crate::template::Trust,
+    /// How many versions of this id are on record, so *Compare* is offered only
+    /// where there is something to compare against.
+    siblings: usize,
 }
 
 pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
@@ -76,15 +87,56 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
         app.template_editor.loaded = true;
     }
 
+    signing_state(app, ui);
     catalogue(app, ui);
     ui.add_space(14.0);
     if app.template_editor.pending_removal.is_some() {
         removal(app, ui);
         ui.add_space(14.0);
     }
+    if app.template_editor.compare.is_some() {
+        comparison(app, ui);
+        ui.add_space(14.0);
+    }
+    transfer(app, ui);
+    ui.add_space(14.0);
     editor(app, ui);
     ui.add_space(14.0);
     variables(ui);
+}
+
+/// Whether this deployment requires a signed template, said out loud
+/// (`features/bootstrap-templates.md` phase 5).
+///
+/// The spec's condition on pilot mode is that it must be **visible**, and this is
+/// where it is visible: a banner on the screen that decides what a template is,
+/// not a checkbox in Settings that nobody revisits. A control that silently allows
+/// unsigned procedures is indistinguishable from having no control.
+fn signing_state(app: &YkDistApp, ui: &mut egui::Ui) {
+    if app.settings.templates_must_be_signed {
+        let keys = app.settings.template_keys.len();
+        super::notice(
+            ui,
+            CalloutTone::Neutral,
+            &format!(
+                "Signed templates are required on this workstation: a bootstrap will not run from \
+                 a procedure whose signature does not verify against one of the {keys} trusted \
+                 key(s). Editing a template here produces an unsigned version — export it, have \
+                 it signed, and import it back."
+            ),
+        );
+    } else {
+        super::notice(
+            ui,
+            CalloutTone::Warning,
+            "Pilot mode: unsigned templates may be run. Every run from one is recorded as \
+             `template.unsigned_used`, so the register says which keys were prepared under it. A \
+             template decides what is written to a security key, so this is a decision to make \
+             deliberately — add a signing key in Settings and require signatures once the \
+             organisation has one.",
+        );
+    }
+    ui.add_space(14.0);
 }
 
 /// Every template version on record, what state it is in, and what can be done
@@ -108,6 +160,12 @@ fn catalogue(app: &mut YkDistApp, ui: &mut egui::Ui) {
             runs: stored.runs,
             updated: stored.updated_at.chars().take(10).collect(),
             refusal: stored.removal_refusal(),
+            trust: app.template_trust(&stored.template),
+            siblings: app
+                .template_catalogue
+                .iter()
+                .filter(|s| s.template.id == stored.template.id)
+                .count(),
         })
         .collect();
 
@@ -157,6 +215,18 @@ fn catalogue(app: &mut YkDistApp, ui: &mut egui::Ui) {
                         if row.builtin {
                             ui.add(Badge::new("built-in", BadgeTone::Neutral));
                         }
+                        // The signature verdict, in words as well as a tone: the
+                        // difference between "unsigned" and "signature does not
+                        // match" is the difference between a deployment that has
+                        // not started signing and a procedure that has been
+                        // altered, and no colour conveys that.
+                        let tone = match &row.trust {
+                            crate::template::Trust::Signed { .. } => BadgeTone::Ok,
+                            crate::template::Trust::Unsigned => BadgeTone::Neutral,
+                            _ => BadgeTone::Warning,
+                        };
+                        ui.add(Badge::new(row.trust.label(), tone))
+                            .on_hover_text(row.trust.describe());
                     });
                     super::faint(ui, &row.updated);
                     // One line, like every other row-action cell in the app: a
@@ -174,6 +244,25 @@ fn catalogue(app: &mut YkDistApp, ui: &mut egui::Ui) {
                             .clicked()
                         {
                             action = Some(Action::Duplicate(row.id.clone(), row.version.clone()));
+                        }
+                        if row.siblings > 1
+                            && super::row_button(ui, "Compare")
+                                .on_hover_text(
+                                    "what changed between this version and the newest one of \
+                                     this template",
+                                )
+                                .clicked()
+                        {
+                            action = Some(Action::Compare(row.id.clone(), row.version.clone()));
+                        }
+                        if super::row_button(ui, "Export")
+                            .on_hover_text(
+                                "write this procedure to a file, to share it with another unit \
+                                 or to have it signed",
+                            )
+                            .clicked()
+                        {
+                            action = Some(Action::Export(row.id.clone(), row.version.clone()));
                         }
                         if row.retired {
                             if super::row_button(ui, "Reinstate")
@@ -245,6 +334,8 @@ fn catalogue(app: &mut YkDistApp, ui: &mut egui::Ui) {
         Some(Action::Retire(id, version)) => app.retire_template(&id, &version),
         Some(Action::Reinstate(id, version)) => app.reinstate_template(&id, &version),
         Some(Action::Remove(id, version)) => app.request_template_removal(&id, &version),
+        Some(Action::Compare(id, version)) => app.compare_with_latest(&id, &version),
+        Some(Action::Export(id, version)) => export(app, &id, &version),
         None => {}
     }
     if new_template {
@@ -313,6 +404,317 @@ fn removal(app: &mut YkDistApp, ui: &mut egui::Ui) {
     }
     if cancel {
         app.cancel_template_removal();
+    }
+}
+
+/// What changed between two versions of one procedure
+/// (`features/bootstrap-templates.md` phase 6).
+///
+/// Two version pickers and a table. The comparison is recomputed every frame from
+/// the cached catalogue — it is pure data over two templates, so there is nothing
+/// to cache and nothing that can go stale after a save.
+///
+/// Every row says what *kind* of change it is in words as well as by colour, which
+/// is the `gui-shell` phase 10 rule and also the more useful presentation: "moved"
+/// is a different fact from "changed", and the ordering of FIDO2 steps is exactly
+/// the fact that made `org-standard` v1 unable to complete on hardware.
+fn comparison(app: &mut YkDistApp, ui: &mut egui::Ui) {
+    use crate::template::Change;
+
+    let Some((id, from, to)) = app.template_editor.compare.clone() else {
+        return;
+    };
+    let versions: Vec<String> = app
+        .template_catalogue
+        .iter()
+        .filter(|s| s.template.id == id)
+        .map(|s| s.template.version.clone())
+        .collect();
+
+    let mut chosen = (from.clone(), to.clone());
+    let mut close = false;
+
+    super::titled_card(ui, format!("Compare `{id}`"), |ui| {
+        super::form_columns(ui, |left, right, width| {
+            left.add(
+                Select::strings("template-diff-from", &mut chosen.0, &versions)
+                    .label("From version")
+                    .width(width.min(200.0)),
+            );
+            right.add(
+                Select::strings("template-diff-to", &mut chosen.1, &versions)
+                    .label("To version")
+                    .width(width.min(200.0)),
+            );
+        });
+        ui.add_space(10.0);
+
+        match app.template_diff() {
+            Some(diff) => {
+                super::hint(ui, &diff.summary());
+                ui.add_space(8.0);
+                if diff.is_identical() {
+                    super::notice(
+                        ui,
+                        CalloutTone::Neutral,
+                        "These two versions describe the same procedure. That happens \
+                         legitimately: a template saved again without an edit, or the same \
+                         procedure imported into a register that numbered it differently.",
+                    );
+                } else {
+                    super::table(
+                        ui,
+                        "template-diff",
+                        &["Change", "What", "Before", "After"],
+                        |ui| {
+                            for line in diff.changes() {
+                                let tone = match line.change {
+                                    Change::Added => BadgeTone::Ok,
+                                    Change::Removed => BadgeTone::Warning,
+                                    Change::Moved => BadgeTone::Info,
+                                    Change::Changed => BadgeTone::Neutral,
+                                    Change::Same => BadgeTone::Neutral,
+                                };
+                                ui.add(Badge::new(line.change.label(), tone));
+                                super::mono(ui, &line.what);
+                                super::faint(ui, &line.before);
+                                super::mono(ui, &line.after);
+                                ui.end_row();
+                            }
+                        },
+                    );
+                }
+            }
+            None => super::error_label(
+                ui,
+                "one of those versions is no longer on record — pick two that are",
+            ),
+        }
+
+        ui.add_space(12.0);
+        if ui.add(Button::new("Close").outline()).clicked() {
+            close = true;
+        }
+    });
+
+    // Deferred, as everywhere: the selects wrote into a local copy.
+    if close {
+        app.template_editor.compare = None;
+    } else if chosen != (from, to) {
+        app.template_editor.compare = Some((id, chosen.0, chosen.1));
+    }
+}
+
+/// Import and export (`features/bootstrap-templates.md` phase 4).
+///
+/// Export is a row action in the catalogue — it is about one version. Import
+/// belongs here, because it is about the register as a whole, and because it is a
+/// *two-step* operation: read the file, look at what it would do, then store it.
+/// The same shape as the CSV import, for the same reason — a procedure decides
+/// what is written to a security key, so nobody should discover what they imported
+/// afterwards.
+fn transfer(app: &mut YkDistApp, ui: &mut egui::Ui) {
+    let mut read = false;
+    let mut apply = false;
+    let mut cancel = false;
+
+    super::titled_card(ui, "Share a procedure with another unit", |ui| {
+        super::hint(
+            ui,
+            "A template exports as one readable JSON file: the same procedure, step for step, \
+             including its signature if it has one. The receiving register numbers the version \
+             itself — a version number is local bookkeeping, and two units both calling theirs \
+             “version 2” is the normal case.",
+        );
+        ui.add_space(10.0);
+
+        super::capped_input(
+            ui,
+            &mut app.template_editor.file_path,
+            crate::domain::MAX_NOTE,
+            |input| {
+                input
+                    .label("File")
+                    .hint("/Users/you/Downloads/org-standard-v2.json")
+                    .id_salt("template-file-path")
+            },
+        );
+        ui.add_space(10.0);
+
+        let has_path = !app.template_editor.file_path.trim().is_empty();
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .add(Button::new("Read this file").enabled(has_path))
+                .on_hover_text("shows what it contains and what it would change; stores nothing")
+                .clicked()
+            {
+                read = true;
+            }
+            #[cfg(feature = "file-dialog")]
+            if ui.add(Button::new("Choose a file…").outline()).clicked()
+                && let Some(path) = rfd::FileDialog::new()
+                    .set_title("Import a bootstrap template")
+                    .add_filter(
+                        "template export",
+                        &[crate::template::portable::FILE_EXTENSION],
+                    )
+                    .pick_file()
+            {
+                app.template_editor.file_path = path.display().to_string();
+                read = true;
+            }
+        });
+        if !cfg!(feature = "file-dialog") {
+            ui.add_space(8.0);
+            super::hint(
+                ui,
+                "File dialogs need a build with `--features file-dialog`; the path field always \
+                 works, for import and for export alike.",
+            );
+        }
+
+        // The preview. Everything an operator needs to decide, and nothing stored
+        // until they do.
+        if let Some(pending) = app.template_editor.pending_import.as_ref() {
+            ui.add_space(14.0);
+            let incoming = &pending.file.template;
+            super::card(ui, |ui| {
+                ui.label(format!(
+                    "`{}` — {} ({} step(s))",
+                    incoming.id,
+                    incoming.name,
+                    incoming.steps.len()
+                ));
+                super::faint(ui, &incoming.description);
+                ui.add_space(6.0);
+                super::faint(
+                    ui,
+                    &format!(
+                        "from {} · exported by {} on {} as version {} · fingerprint {}",
+                        pending.source,
+                        if pending.file.exported_by.is_empty() {
+                            "an unnamed build"
+                        } else {
+                            &pending.file.exported_by
+                        },
+                        pending
+                            .file
+                            .exported_at
+                            .chars()
+                            .take(10)
+                            .collect::<String>(),
+                        pending.file.exported_version,
+                        crate::template::signing::fingerprint(incoming),
+                    ),
+                );
+
+                ui.add_space(10.0);
+                // The trust verdict of the *incoming* file, which is the question
+                // an import is really asking: do we accept a procedure from
+                // outside this register?
+                let tone = match &pending.trust {
+                    crate::template::Trust::Signed { .. } => CalloutTone::Success,
+                    crate::template::Trust::Unsigned => CalloutTone::Neutral,
+                    _ => CalloutTone::Warning,
+                };
+                super::notice(ui, tone, &pending.trust.describe());
+
+                ui.add_space(10.0);
+                match &pending.against {
+                    Some((version, diff)) if diff.is_identical() => super::hint(
+                        ui,
+                        &format!(
+                            "this register already holds the same procedure as version {version} \
+                             — importing it would store nothing"
+                        ),
+                    ),
+                    Some((version, diff)) => {
+                        super::hint(
+                            ui,
+                            &format!(
+                                "against version {version}, the newest this register holds: {}",
+                                diff.summary()
+                            ),
+                        );
+                        ui.add_space(6.0);
+                        for line in diff.changes().take(12) {
+                            super::faint(ui, &line.to_text());
+                        }
+                        let more = diff.changes().count().saturating_sub(12);
+                        if more > 0 {
+                            super::faint(ui, &format!("… and {more} more"));
+                        }
+                    }
+                    None => super::hint(
+                        ui,
+                        "this register has no template with that id — it would be added as a new \
+                         one",
+                    ),
+                }
+
+                ui.add_space(12.0);
+                ui.horizontal_wrapped(|ui| {
+                    if ui
+                        .add(Button::new("Store as a new version").accent(Accent::Green))
+                        .on_hover_text("this register assigns the version number")
+                        .clicked()
+                    {
+                        apply = true;
+                    }
+                    if ui.add(Button::new("Discard").outline()).clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        }
+    });
+
+    if read {
+        let path = std::path::PathBuf::from(app.template_editor.file_path.trim());
+        app.read_template_file(&path);
+    }
+    if apply {
+        app.apply_template_import();
+    }
+    if cancel {
+        app.cancel_template_import();
+    }
+}
+
+/// Write one version to the path in the transfer card, or to a chosen file.
+fn export(app: &mut YkDistApp, id: &str, version: &str) {
+    let suggested = app
+        .template_catalogue
+        .iter()
+        .find(|s| s.template.id == id && s.template.version == version)
+        .map(|s| crate::template::TemplateFile::suggested_name(&s.template))
+        .unwrap_or_else(|| format!("{id}-v{version}.json"));
+
+    #[cfg(feature = "file-dialog")]
+    if let Some(path) = rfd::FileDialog::new()
+        .set_title("Export a bootstrap template")
+        .set_file_name(&suggested)
+        .add_filter(
+            "template export",
+            &[crate::template::portable::FILE_EXTENSION],
+        )
+        .save_file()
+    {
+        app.export_template(id, version, &path);
+    }
+
+    // Without a dialog, the path field is the mechanism — and a bare file name
+    // there would land wherever the process happens to be running, so it is
+    // resolved against the operator's own directory rather than the cwd.
+    #[cfg(not(feature = "file-dialog"))]
+    {
+        let typed = app.template_editor.file_path.trim().to_owned();
+        let path = if typed.is_empty() {
+            crate::paths::data_dir().join(suggested)
+        } else {
+            std::path::PathBuf::from(typed)
+        };
+        app.export_template(id, version, &path);
     }
 }
 

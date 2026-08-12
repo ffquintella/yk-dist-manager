@@ -21,11 +21,17 @@
 //!   *retired* (withdrawn from the wizard, kept on record); only a version
 //!   nothing refers to can be removed outright. See [`StoredTemplate`].
 
+pub mod diff;
 pub mod draft;
 pub mod plan;
+pub mod portable;
+pub mod signing;
 
+pub use diff::{Change, DiffLine, TemplateDiff};
 pub use draft::{StepDraft, TemplateDraft};
 pub use plan::{Arg, NativeOp, PlannedCommand, Transport, native_op, plan};
+pub use portable::{PortableError, TemplateFile};
+pub use signing::{TemplateKey, TemplateSignature, Trust};
 
 use std::collections::BTreeMap;
 
@@ -448,6 +454,24 @@ pub struct BootstrapTemplate {
     pub version: String,
     pub description: String,
     pub steps: Vec<TemplateStep>,
+    /// Who signed this procedure, when anybody has
+    /// ([`signing`], `features/bootstrap-templates.md` phase 5).
+    ///
+    /// It lives *inside* the template rather than in a column of its own for one
+    /// reason that decides it: the signature has to travel wherever the procedure
+    /// travels — into the wizard, into an exported file, into the pre-flight check
+    /// before a run — and a field on the model does that everywhere at once, where
+    /// a column would have to be threaded through every path by hand and would be
+    /// dropped by the first one somebody forgot.
+    ///
+    /// It is skipped when absent, so a body written by a build before this field
+    /// existed reads back unchanged and an unsigned template's stored JSON is
+    /// byte-for-byte what it always was.
+    ///
+    /// The signature does not cover itself: [`signing::canonical_bytes`] ignores
+    /// this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<TemplateSignature>,
 }
 
 impl BootstrapTemplate {
@@ -460,6 +484,7 @@ impl BootstrapTemplate {
             version: "1".into(),
             description: String::new(),
             steps: Vec::new(),
+            signature: None,
         }
     }
 
@@ -475,6 +500,11 @@ impl BootstrapTemplate {
             version: "1".into(),
             description: self.description.clone(),
             steps: self.steps.clone(),
+            // A duplicate is a *different* procedure: the id is part of what a
+            // signature covers, so carrying the signature across would produce a
+            // template that fails verification and looks tampered with. Dropping
+            // it says the truth — this copy has not been signed by anybody.
+            signature: None,
         }
     }
 
@@ -486,6 +516,11 @@ impl BootstrapTemplate {
             version: version.trim().to_owned(),
             description: self.description.trim().to_owned(),
             steps: self.steps.clone(),
+            // Renumbering keeps the signature, and that is the point of leaving
+            // the version out of the canonical bytes: the store assigns version
+            // numbers, so a signature that broke on renumbering could never
+            // survive being stored or imported.
+            signature: self.signature.clone(),
         }
     }
 
@@ -715,6 +750,13 @@ impl BootstrapTemplate {
                 .with_param("expect_fido_pin", "true")
                 .with_param("expect_piv_slot", "9c"),
             ],
+            // The built-ins ship **unsigned**, and that is not an omission. A
+            // signature is only worth what the key behind it is worth, and this
+            // build has no organisation's key to sign with — shipping one signed by
+            // the author of the tool would say something untrue about who approved
+            // the procedure for a given deployment. A unit that signs its templates
+            // exports these, has them signed, and imports them back.
+            signature: None,
         }
     }
 
@@ -752,6 +794,7 @@ impl BootstrapTemplate {
                     )
                 })
                 .collect(),
+            signature: None,
         }
     }
 

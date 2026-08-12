@@ -62,8 +62,20 @@ down; then it is a procedure. Making it declarative buys three things:
 - The wizard offers `latest_per_id()` — the newest version of each template that is
   not retired.
 
-Not yet done: import / export as a file, template signing, per-key applicability
-rules, and a diff view between versions.
+**Done for Wave 0.** What is left in this spec is Wave 1: per-key
+applicability rules (phase 3) and the per-step retry policy (phase 7).
+
+- **Files** (`src/template/portable.rs`): `TemplateFile` wraps one version as
+  pretty-printed JSON with its provenance outside the signed bytes. Export writes
+  the procedure *and* its canonical bytes; import reads, verifies, previews and only
+  then stores.
+- **Signatures** (`src/template/signing.rs`): Ed25519 over
+  [canonical bytes](#the-canonical-bytes-are-a-wire-format-2026-08-12) that cover the
+  procedure and its id but not its version. `Trust` distinguishes five states, and
+  only one of them may run where signatures are required.
+- **Diffs** (`src/template/diff.rs`): steps matched by id, so *moved* is its own kind
+  of change — the one that matters most in a feature whose known production failure
+  was two steps in the wrong order.
 
 ## Design
 
@@ -130,9 +142,68 @@ nobody can correct gets worked around in a spreadsheet.
 ### Signing (Phase 5)
 
 A template decides what gets written to security hardware, so an unauthorised edit
-of a template is an attack. Planned: templates carry a signature over their
-canonical JSON, verified before a run; unsigned templates are usable only in a
-pilot mode that is visible in the UI and in the audit entry.
+of a template is an attack: change `pin_policy`, point `san_email` elsewhere, drop
+the step that forces the holder to change the transport PIN, and every key prepared
+from then on is quietly wrong. The audit trail says *who* changed a template, which
+is accountability after the fact. A signature is what stops the changed template
+from being used.
+
+**The application verifies and cannot sign.** That is not a limitation to be lifted
+later, it follows from AGENTS.md §2: a signing key is a secret, and this tool holds
+no secret anywhere it can persist. So the private half lives wherever the
+organisation keeps its keys and signing is an out-of-band step over the canonical
+bytes, which are documented (and exported beside every template) precisely so that
+`openssl`, an HSM or a smartcard can produce the signature with nothing in between.
+`tests/interop_template_signing.rs` runs the documented `openssl` commands and feeds
+the result back through `verify`, so the runbook is a tested claim rather than a
+plausible one.
+
+What that costs, stated plainly: **a template edited in this application is
+unsigned** until whoever holds the key signs it again. Pilot mode is what makes that
+workable, and the spec's condition on it is met three times over — a banner on the
+Templates screen, a sentence in the run confirmation, and a `template.unsigned_used`
+audit entry per run.
+
+The five verdicts are separate states because they call for opposite responses:
+
+| `Trust` | What it means | What to do |
+|---|---|---|
+| `Signed` | verified against a key in Settings | the only state that may run where signatures are required |
+| `Unsigned` | no signature at all | pilot mode, or get it signed |
+| `UnknownKey` | signed by a key id this deployment does not have | add the key *if you trust it* — a signature nobody can check is not a signature |
+| `Invalid` | a key we have, and it does not verify | **the procedure has been altered since it was signed.** Do not run it |
+| `UnknownAlgorithm` | an algorithm this build cannot check | treated as unverified, never as trusted |
+
+`Unsigned` and `Invalid` are the pair that must never be conflated: the first is a
+deployment that has not started signing, the second is an attack or a damaged file.
+
+### The canonical bytes are a wire format (2026-08-12)
+
+A signature is over one exact encoding, so the encoding is a compatibility surface
+from the moment anything is signed with it. Three decisions follow.
+
+**Netstrings, not `serde_json`.** Serialising the struct would tie every signature
+to serde's output and to the struct's field order, so adding a field would silently
+invalidate every signature in the field. The encoding is instead written out by
+hand as length-prefixed strings (`<len>:<bytes>`), which need no escaping and cannot
+be made ambiguous by a value that contains a separator. A golden-vector test pins
+the exact bytes; if it fails, the answer is a new format tag and not a new
+expectation.
+
+**The version is not signed.** A version number is assigned by whichever database
+stored the template (`versioning::next_version`), so two units importing the same
+signed procedure will number it differently. A signature over the version would
+break on import — it would be verifying local bookkeeping rather than the
+procedure. The **id** is signed, so a signed procedure cannot be re-labelled as a
+different template.
+
+**Every field of every step is covered, in order.** Enabled, required, kind,
+description and each parameter, with the step count written before the steps so one
+template's steps cannot be re-partitioned into another's. Order is covered because
+order is the order of execution: `org-standard` v1 could not complete on hardware
+precisely because two FIDO2 steps were the wrong way round, and a signature that
+did not cover the order would have authorised that swap. One test changes each field
+in turn and asserts the signature breaks every time.
 
 ## Phases
 
@@ -142,9 +213,9 @@ pilot mode that is visible in the UI and in the audit entry.
 | 2 | GUI editor with version bump on edit | 0 | **Done** | Templates screen; save is always a new version, and the id is immutable once stored |
 | 2b | Add / duplicate / retire / remove a template | 0 | **Done** | schema v4 `retired_at`; removal refused where a run or the seeding would contradict it |
 | 3 | Applicability rules per key (firmware, applications present) | 1 | Todo | partially covered by the firmware gates today |
-| 4 | Import / export a template as a file | 0 | Todo | for sharing between units |
-| 5 | Template signing and verification | 0 | Todo | pilot mode must be visible |
-| 6 | Diff view between two versions | 0 | Todo | "what changed since the batch we shipped in June?" |
+| 4 | Import / export a template as a file | 0 | **Done** | [`template::portable`](../src/template/portable.rs) — one readable JSON wrapper per version, exported with the **canonical bytes** beside it; import is a *preview* (trust verdict plus a diff against what this register holds) and then a decision. The receiving register assigns the version; an import that changes nothing stores nothing |
+| 5 | Template signing and verification | 0 | **Done** | [`template::signing`](../src/template/signing.rs) — Ed25519 over documented canonical bytes, **verification only**: the private key never comes near this application. Trusted public keys live in Settings; a run is refused when signatures are required and one does not verify; pilot mode is a banner on the Templates screen, a sentence in the confirmation, and a `template.unsigned_used` entry per run |
+| 6 | Diff view between two versions | 0 | **Done** | [`template::diff`](../src/template/diff.rs) — structural, matched by step id, so a reordered step reads as **moved** rather than as a removal and an addition. Reached from a catalogue row (*Compare*) and shown in the import preview |
 | 7 | Per-step retry / continue-on-failure policy | 1 | Todo | today only `required` distinguishes them |
 
 ## Audit events
@@ -157,7 +228,9 @@ pilot mode that is visible in the UI and in the audit entry.
 | `template.retired` | A version was withdrawn from the wizard |
 | `template.reinstated` | A retired version was put back in use |
 | `template.removed` | A version was deleted outright |
-| `template.unsigned_used` | Phase 5: a run used an unsigned template |
+| `template.exported` | A version was written to a file — with its fingerprint and the path, so "where did this come from" is answerable at the other end |
+| `template.imported` | A version arrived from a file: the version assigned here, the previous newest, the fingerprint, the **signature verdict**, and the file it came from |
+| `template.unsigned_used` | A run used a template whose signature does not verify, under pilot mode. Written **before the first write to the key**, not after the run, so the entry exists for the run that crashed |
 
 Every entry carries `id`, `version`, the previous version (or `none`), the step
 count and the run count. **Never the procedure text**: the steps live in the
@@ -205,6 +278,52 @@ chain still verifies.
 `scenario_a_stored_template_round_trips`. `tests/unit_store.rs`:
 `a_v1_database_migrates_forward_keeping_its_rows` covers the v4 column.
 
+### Phases 4, 5 and 6
+
+Unit tests live with the code (`src/template/signing.rs`, `diff.rs`, `portable.rs`
+— 33 between them). The ones worth naming:
+
+- `the_canonical_encoding_is_pinned_byte_for_byte` — the golden vector. A refactor
+  that changes the encoding fails here instead of silently rejecting every signed
+  template in the field.
+- `every_field_of_a_step_is_covered_by_the_signature` and
+  `reordering_the_steps_breaks_the_signature` — twelve single-field mutations and a
+  swap, each of which must break verification on its own.
+- `the_version_is_not_signed_because_the_database_assigns_it`,
+  `a_signature_survives_renumbering_but_not_an_edited_step`.
+- `an_unknown_key_id_is_not_treated_as_signed`,
+  `an_unknown_algorithm_is_refused_rather_than_ignored`,
+  `a_malformed_key_in_the_settings_blames_the_settings` — the operator has to be
+  sent to the right problem.
+- `a_reordered_step_is_reported_as_moved_not_as_a_removal_and_an_addition`,
+  `the_same_procedure_under_two_numbers_is_reported_as_identical`.
+- `a_template_round_trips_through_a_file_byte_for_byte`,
+  `an_unplannable_template_is_refused_at_the_file_boundary`,
+  `a_file_from_a_newer_build_is_refused_by_name`.
+
+Behaviour, in `tests/behaviour_templates.rs`: a procedure crosses between two
+registers through a file and arrives step for step under a version the receiver
+assigned; importing the same file twice stores nothing; an import that differs
+becomes a new version rather than overwriting the one a run recorded; a file that
+cannot be planned reaches neither the reader nor the store; a signed procedure
+survives the journey *and* the renumbering while a tampered one does not; editing a
+signed procedure produces an unsigned version; a duplicate does not inherit the
+signature; and an operator asks what changed since the batch they shipped.
+
+`tests/behaviour_app_template_signing.rs` drives the application: read a file (which
+stores nothing), see `UnknownKey` because the deployment has no key yet, add the key
+in Settings, read again and see it verify, store it, and find the import audited with
+`signature=verified`. Then requiring signatures refuses the unsigned built-ins by
+name, and pilot mode allows them.
+
+`tests/interop_template_signing.rs` is **ignored by default** and runs the documented
+`openssl` signing commands for real, because a documented command line nobody has run
+is a guess:
+
+```bash
+cargo test --test interop_template_signing -- --ignored --nocapture
+```
+
 ## Open questions and gates
 
 - **Who may author or edit a template?** Now that the editor exists this is live,
@@ -217,10 +336,30 @@ chain still verifies.
   procedure.
 - Should a template be pinned per batch, so a whole procurement batch is guaranteed
   to have had the identical procedure?
+- **Whose key signs a procedure, and where does it live?** *(ESI)* The mechanism is
+  built and the trust store is a setting, so this is now a question with somewhere to
+  put the answer rather than a blocker. It has two halves: which key, and what
+  protects it — an HSM or a smartcard rather than a file on the workstation that
+  edits templates, or the signature is only as good as that workstation.
+- **Is Ed25519 the algorithm the organisation wants?** *(ESI)* Chosen here for having
+  no parameters to get wrong; named inside every signature, so a build meeting an
+  algorithm it does not know refuses rather than treating the template as unsigned.
+  Adding a second algorithm later is additive. This is the same class of decision as
+  the database cipher (`features/db-password-and-encryption.md` phase 4) and is
+  recorded so it is ratified rather than inherited.
+- **When does pilot mode end?** Off is the shipped default because the built-in
+  procedures are unsigned and a fresh install must be able to bootstrap a key. That
+  makes it an *operational* decision to turn it on, not a code change — and one worth
+  making, because a control that is never switched on is documentation.
 
 ## References
 
-- `src/template/mod.rs`, `src/template/draft.rs`, `src/ui/templates.rs`
+- `src/template/mod.rs`, `src/template/draft.rs`, `src/template/signing.rs`,
+  `src/template/diff.rs`, `src/template/portable.rs`, `src/ui/templates.rs`
+- `src/store/mod.rs` (`import_template`, `TemplateImport`), `src/app.rs`
+  (`template_trust`, `template_run_permission`, `export_template`,
+  `read_template_file`, `apply_template_import`, `add_template_key`)
+- `docs/operations.md` — the runbooks: share a procedure, and have one signed
 - `src/store/mod.rs` (`templates`, `template_catalogue`, `save_template_version`,
   `retire_template`, `delete_template`, `seed_builtin_templates`)
 - `src/versioning.rs` — the numbering shared with the consignment terms

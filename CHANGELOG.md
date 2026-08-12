@@ -17,6 +17,71 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+### Added
+
+- **A bootstrap procedure exports and imports as a file**
+  ([`features/bootstrap-templates.md`](features/bootstrap-templates.md) phase 4).
+  Until now a procedure crossed between two installations by somebody retyping it,
+  which is the one transfer method guaranteed to introduce a difference nobody
+  notices — and this feature already knows what a one-step difference costs, because
+  a FIDO2 ordering mistake made `org-standard` v1 unable to complete on hardware.
+  One readable JSON file per version, with the provenance outside what a signature
+  covers so re-exporting the same procedure does not change what was signed.
+
+  **Import is a preview, then a decision**, the same shape as the CSV import: what
+  the file contains, whether its signature verifies *on this workstation*, and a
+  diff against the newest version this register already holds. Three rules that each
+  follow from a decision this feature had already made — the receiving register
+  assigns the version number (a version is local bookkeeping, and two units both
+  calling theirs "version 2" is the normal case); an import that changes nothing
+  stores nothing (an operator will import the same file twice, from the mail and
+  then from the share); and a procedure that cannot be *planned* reaches neither the
+  reader nor the store, because a file is untrusted input.
+- **Templates can be signed, and a deployment can refuse to run an unsigned one**
+  (phase 5). A template decides what is written to security hardware, so an
+  unauthorised edit of one is an attack rather than a data-quality problem: change
+  `pin_policy`, point `san_email` elsewhere, drop the step that forces the holder to
+  change the transport PIN, and every key prepared from then on is quietly wrong.
+  The audit trail attributes the change afterwards; the signature is what stops the
+  changed procedure being used.
+
+  **The application verifies and cannot sign**, which is not a limitation to lift
+  later but a consequence of AGENTS.md §2 — a signing key is a secret, and this tool
+  holds none that can persist. So the private half stays wherever the organisation
+  keeps its keys, and signing is an out-of-band step over documented canonical bytes
+  that every export now writes beside the procedure. Ed25519, named inside each
+  signature so a build meeting an algorithm it does not know refuses rather than
+  treating the template as unsigned. Trusted public keys are a per-deployment
+  setting, and one that could not verify anything is refused as it is typed — a trust
+  store with a broken key reports every template as *altered*, sending the operator
+  after the wrong problem.
+
+  Five verdicts rather than a yes/no, because *unsigned* (a deployment that has not
+  started signing) and *signature does not match* (an altered procedure) call for
+  opposite responses, and conflating them trains an operator to ignore the second.
+  The signature covers every field of every step **in order** — order is the order of
+  execution, and one test changes each field in turn to prove it — but deliberately
+  not the version number, so a signature survives the renumbering that storing or
+  importing performs.
+
+  **Pilot mode is visible three times over**, which was the spec's condition on it: a
+  banner on the Templates screen, a sentence in the run confirmation, and a
+  `template.unsigned_used` audit entry written *before* the first write to the key.
+  Off by default, deliberately — the procedures this build ships are unsigned, since
+  a signature from the tool's author would say something untrue about who approved a
+  procedure for a given deployment.
+- **A structural diff between two versions of a procedure** (phase 6) — the spec's
+  own question, *"what changed since the batch we shipped in June?"*, asked by
+  somebody holding a key the register says was prepared with a version the wizard no
+  longer offers. Steps are matched by id, so a step that changed places reads as
+  **moved** rather than as a removal and an addition; a text diff would report the
+  ordering that broke `org-standard` v1 as four unrelated lines. Reached from a
+  catalogue row and reused inside the import preview.
+- **`tests/interop_template_signing.rs`**, ignored by default, runs the documented
+  `openssl` signing commands for real and feeds the result back through verification.
+  A documented command line nobody has run is a guess, and this one is now a tested
+  claim.
+
 ### Changed
 
 - **The interface is English** *(decided 2026-08-12)*, which closes

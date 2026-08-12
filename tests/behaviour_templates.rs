@@ -457,3 +457,321 @@ fn scenario_every_change_to_a_template_is_audited() {
     }
     store.verify_audit().unwrap();
 }
+
+// --------------------------------------------------- sharing a procedure (4)
+
+/// A procedure signed by a key a test holds. Not a credential: the private half
+/// exists for the length of this call and protects nothing.
+fn signed_by(template: &BootstrapTemplate, key_id: &str, seed: [u8; 32]) -> BootstrapTemplate {
+    use yk_dist_manager::template::TemplateSignature;
+    use yk_dist_manager::template::signing::{ALGORITHM, canonical_bytes};
+
+    let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let signature = ed25519_dalek::Signer::sign(&signing, &canonical_bytes(template));
+    let mut signed = template.clone();
+    signed.signature = Some(TemplateSignature {
+        key_id: key_id.into(),
+        algorithm: ALGORITHM.into(),
+        signature: hex::encode(signature.to_bytes()),
+    });
+    signed
+}
+
+fn trusted(key_id: &str, seed: [u8; 32]) -> Vec<yk_dist_manager::template::TemplateKey> {
+    let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
+    vec![yk_dist_manager::template::TemplateKey {
+        id: key_id.into(),
+        public_key: hex::encode(signing.verifying_key().to_bytes()),
+        comment: "the test's key".into(),
+    }]
+}
+
+#[test]
+fn scenario_a_procedure_crosses_between_two_registers_through_a_file() {
+    use yk_dist_manager::store::TemplateImport;
+    use yk_dist_manager::template::TemplateFile;
+
+    // Given a unit that has written its own procedure and edited it once, so its
+    // register holds two versions
+    let source = Store::open_in_memory().unwrap();
+    let v1 = source.save_template_version(&unit_template()).unwrap();
+    let mut edited = TemplateDraft::from_template(&v1, true);
+    edited.steps[0].params_text = "min_length = 8\nsource = operator-entered".into();
+    let v2 = source
+        .save_template_version(&edited.to_template().unwrap())
+        .unwrap();
+    assert_eq!(v2.version, "2");
+
+    // When it exports the newest version and another unit imports the file
+    let exported = TemplateFile::of(&v2, chrono::Utc::now()).to_json();
+    let target = Store::open_in_memory().unwrap();
+    let read = TemplateFile::from_json(&exported).expect("the file reads");
+    let outcome = target.import_template(&read.template).unwrap();
+
+    // Then the receiving register holds the procedure exactly — step for step,
+    // parameter for parameter — under a version *it* assigned
+    let TemplateImport::Stored { template, previous } = outcome else {
+        panic!("a register that did not have it must store it");
+    };
+    assert_eq!(previous, None, "this register had no version of that id");
+    assert_eq!(template.version, "1", "the receiver numbers it, from 1");
+    assert_eq!(template.id, v2.id);
+    assert_eq!(template.steps, v2.steps);
+    assert_eq!(
+        yk_dist_manager::template::signing::fingerprint(&template),
+        yk_dist_manager::template::signing::fingerprint(&v2),
+        "the same procedure has the same fingerprint on both sides"
+    );
+
+    // And importing the same file again stores nothing: an operator will do this,
+    // from the mail and then from the share, and two identical versions would be
+    // the catalogue growing a row per attempt
+    let again = target.import_template(&read.template).unwrap();
+    assert!(matches!(
+        again,
+        TemplateImport::AlreadyPresent { version, .. } if version == "1"
+    ));
+    assert_eq!(target.template_versions(&template.id).unwrap().len(), 1);
+
+    // And an edit on top of an imported procedure is a new version here too, so
+    // the imported one stays exactly as it arrived
+    let mut local = TemplateDraft::from_template(&template, true);
+    local.description = "Ours, with a local note".into();
+    let v2_here = target
+        .save_template_version(&local.to_template().unwrap())
+        .unwrap();
+    assert_eq!(v2_here.version, "2");
+    assert_eq!(
+        latest_of(&target.templates().unwrap(), &template.id)
+            .unwrap()
+            .description,
+        "Ours, with a local note"
+    );
+}
+
+#[test]
+fn scenario_an_imported_procedure_that_differs_becomes_a_new_version_not_an_overwrite() {
+    use yk_dist_manager::store::TemplateImport;
+
+    // Given a register with a procedure a run has already recorded
+    let store = Store::open_in_memory().unwrap();
+    let stored = store.save_template_version(&unit_template()).unwrap();
+    store.insert_run(&run_of(&stored)).unwrap();
+
+    // When a file arrives carrying the same id with a different procedure —
+    // another unit's edit of the same template
+    let mut theirs = stored.clone();
+    theirs.steps[0]
+        .params
+        .insert("min_length".into(), "8".into());
+    let outcome = store.import_template(&theirs).unwrap();
+
+    // Then it is stored beside the version the run recorded, never over it
+    let TemplateImport::Stored { template, previous } = outcome else {
+        panic!("a different procedure is a new version");
+    };
+    assert_eq!(previous.as_deref(), Some("1"));
+    assert_eq!(template.version, "2");
+
+    let v1 = store.stored_template(&stored.id, "1").unwrap();
+    assert_eq!(
+        v1.template.steps[0]
+            .params
+            .get("min_length")
+            .map(String::as_str),
+        Some("6"),
+        "the version the run recorded must be untouched"
+    );
+    assert_eq!(v1.runs, 1);
+}
+
+#[test]
+fn scenario_a_file_that_cannot_be_planned_never_reaches_the_database() {
+    use yk_dist_manager::template::{PortableError, TemplateFile};
+
+    // A file is untrusted input: hand-edited, mailed, or written by something
+    // else entirely. The gate that keeps an unplannable procedure out of the
+    // register has to apply to it exactly as it applies to the editor.
+    let store = Store::open_in_memory().unwrap();
+    let mut broken = unit_template();
+    broken
+        .steps
+        .iter_mut()
+        .find(|s| s.kind == StepKind::Fido2Credential)
+        .unwrap()
+        .params
+        .insert("rp_id".into(), "{{org.department}}".into());
+
+    let raw = TemplateFile::of(&broken, chrono::Utc::now()).to_json();
+    assert!(matches!(
+        TemplateFile::from_json(&raw),
+        Err(PortableError::Refused(_))
+    ));
+
+    // And the store refuses it too, so neither door depends on the other
+    // remembering to check.
+    assert!(store.import_template(&broken).is_err());
+    assert!(store.template_catalogue().unwrap().is_empty());
+}
+
+// ------------------------------------------- signing and verification (5)
+
+#[test]
+fn scenario_a_signed_procedure_survives_the_journey_and_a_tampered_one_does_not() {
+    use yk_dist_manager::template::TemplateFile;
+    use yk_dist_manager::template::signing::{Trust, verify};
+
+    let keys = trusted("esi-templates-2026", [42u8; 32]);
+
+    // Given a procedure signed by the organisation's key, in a file
+    let signed = signed_by(&unit_template(), "esi-templates-2026", [42u8; 32]);
+    let file = TemplateFile::of(&signed, chrono::Utc::now()).to_json();
+
+    // When a unit imports it
+    let store = Store::open_in_memory().unwrap();
+    let read = TemplateFile::from_json(&file).unwrap();
+    let outcome = store.import_template(&read.template).unwrap();
+    let stored = match outcome {
+        yk_dist_manager::store::TemplateImport::Stored { template, .. } => template,
+        other => panic!("expected a store, got {other:?}"),
+    };
+
+    // Then the signature still verifies *after* the register renumbered it, which
+    // is the whole reason the version is not part of what is signed
+    assert_eq!(stored.version, "1");
+    assert_eq!(
+        verify(&stored, &keys),
+        Trust::Signed {
+            key_id: "esi-templates-2026".into()
+        }
+    );
+
+    // And it still verifies when read back out of the database, so the signature
+    // survives serialisation as well as transport
+    let reloaded = latest_of(&store.templates().unwrap(), &stored.id)
+        .cloned()
+        .unwrap();
+    assert!(verify(&reloaded, &keys).is_verified());
+
+    // When somebody changes one parameter of the stored procedure — the attack
+    // this feature exists for: a template decides what is written to a key
+    let mut tampered = reloaded.clone();
+    tampered
+        .steps
+        .iter_mut()
+        .find(|s| s.kind == StepKind::Fido2Pin)
+        .unwrap()
+        .params
+        .insert("min_length".into(), "4".into());
+    store.upsert_template(&tampered).unwrap();
+
+    // Then it no longer verifies, and the verdict says it was altered rather than
+    // that it was never signed
+    let altered = latest_of(&store.templates().unwrap(), &stored.id)
+        .cloned()
+        .unwrap();
+    match verify(&altered, &keys) {
+        Trust::Invalid { key_id, .. } => assert_eq!(key_id, "esi-templates-2026"),
+        other => panic!("a tampered procedure must not verify: {other:?}"),
+    }
+}
+
+#[test]
+fn scenario_editing_a_signed_procedure_produces_an_unsigned_version() {
+    use yk_dist_manager::template::signing::verify;
+
+    // The cost of the feature, made explicit: a unit that edits a signed procedure
+    // has an unsigned one until whoever holds the key signs it again. Anything else
+    // would mean the application could sign, which would mean it held the key.
+    let keys = trusted("esi", [7u8; 32]);
+    let store = Store::open_in_memory().unwrap();
+    let signed = signed_by(&unit_template(), "esi", [7u8; 32]);
+    let stored = match store.import_template(&signed).unwrap() {
+        yk_dist_manager::store::TemplateImport::Stored { template, .. } => template,
+        other => panic!("{other:?}"),
+    };
+    assert!(verify(&stored, &keys).is_verified());
+
+    // When the operator opens it and changes a step
+    let mut draft = TemplateDraft::from_template(&stored, true);
+    draft.steps[0].params_text = "min_length = 8\nsource = operator-entered".into();
+    // The draft is dirty — and only because of the edit, not because loading a
+    // signed template looks like one.
+    assert!(draft.is_dirty(Some(&stored)));
+    assert!(
+        !TemplateDraft::from_template(&stored, true).is_dirty(Some(&stored)),
+        "opening a signed template must not read as an edit"
+    );
+    let saved = store
+        .save_template_version(&draft.to_template().unwrap())
+        .unwrap();
+
+    // Then the new version is unsigned, and the signed one is still there
+    assert_eq!(saved.version, "2");
+    assert_eq!(saved.signature, None);
+    assert_eq!(
+        verify(&saved, &keys),
+        yk_dist_manager::template::Trust::Unsigned
+    );
+    assert!(
+        verify(
+            &store.stored_template(&stored.id, "1").unwrap().template,
+            &keys
+        )
+        .is_verified()
+    );
+}
+
+#[test]
+fn scenario_a_duplicated_procedure_does_not_inherit_the_signature() {
+    // A duplicate is a different procedure — the id is part of what is signed —
+    // so carrying the signature over would produce something that reads as
+    // *altered*, which is a lie about a template nobody has tampered with.
+    let signed = signed_by(&unit_template(), "esi", [3u8; 32]);
+    let copy = signed.duplicated_as("contractor-copy", "Contractor keys (copy)");
+    assert_eq!(copy.signature, None);
+    assert_eq!(
+        yk_dist_manager::template::signing::verify(&copy, &trusted("esi", [3u8; 32])),
+        yk_dist_manager::template::Trust::Unsigned
+    );
+}
+
+// ------------------------------------------------ comparing two versions (6)
+
+#[test]
+fn scenario_an_operator_asks_what_changed_since_the_batch_they_shipped() {
+    use yk_dist_manager::template::diff::{Change, diff};
+
+    // Given a register where the procedure has moved on twice since a run
+    let store = Store::open_in_memory().unwrap();
+    let v1 = store.save_template_version(&unit_template()).unwrap();
+    store.insert_run(&run_of(&v1)).unwrap();
+
+    let mut draft = TemplateDraft::from_template(&v1, true);
+    draft.steps[0].params_text = "min_length = 8\nsource = operator-entered".into();
+    draft.add_step(StepKind::Verify).unwrap();
+    draft.move_step(2, true);
+    let v2 = store
+        .save_template_version(&draft.to_template().unwrap())
+        .unwrap();
+
+    // When the operator compares the version that run recorded with the newest
+    let d = diff(&v1, &v2);
+
+    // Then every kind of change is named, with the step and both values
+    assert!(!d.is_identical());
+    assert_eq!(d.from, "1");
+    assert_eq!(d.to, "2");
+    assert_eq!(d.count(Change::Added), 1, "{:#?}", d.lines);
+    assert!(d.count(Change::Moved) >= 1, "{:#?}", d.lines);
+
+    let changed = d
+        .changes()
+        .find(|l| l.what.contains("min_length"))
+        .expect("the PIN length changed");
+    assert_eq!(changed.before, "6");
+    assert_eq!(changed.after, "8");
+
+    // And the summary is one line somebody can put in a ticket
+    assert!(d.summary().starts_with("1 -> 2:"), "{}", d.summary());
+}

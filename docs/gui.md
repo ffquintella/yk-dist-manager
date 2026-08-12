@@ -182,10 +182,26 @@ templates…* opens the Templates screen on whichever one is selected.
 Where the bootstrap procedure itself is edited. Same argument as the Terms screen: the
 procedure is content the unit owns, so changing a step must not mean changing Rust.
 
+- **A signing banner at the top**, because the spec's condition on pilot mode is that it
+  be visible: either *signatures are required on this workstation*, or *pilot mode:
+  unsigned templates may be run*. A control that silently permits unsigned procedures is
+  indistinguishable from having no control.
 - **On record** lists every template version: name and id, version, how many steps are
   selected by default, how many runs recorded it, badges (`offered` / `superseded` /
-  `retired`, plus `built-in`), and the date. Per row: *Edit*, *Duplicate*,
+  `retired`, plus `built-in`), the **signature verdict** as a badge with the whole sentence
+  on hover, and the date. Per row: *Edit*, *Duplicate*, *Compare*, *Export*,
   *Retire* / *Reinstate*, and *Remove*.
+- **Compare** shows what changed between two versions of one procedure, from two version
+  pickers. Structural rather than a text diff: steps are matched by id, so a step that
+  changed places reads as **moved** — the fact that matters, since the order of the steps
+  is the order of execution. Every row says its kind of change in words as well as by
+  colour.
+- **Share a procedure with another unit** exports a version as one readable JSON file
+  (with the canonical bytes beside it, for signing) and imports one. Import is a
+  *preview*: what the file contains, whether its signature verifies here, and a diff
+  against the newest version this register holds — and only then *Store as a new version*.
+  The receiving register assigns the version number, and importing the same file twice
+  stores nothing. See the runbooks in `operations.md`.
 - **Remove is disabled where it cannot be granted**, with the reason on the button — a
   version a run recorded, or one this build ships (that one would be re-created on the next
   open). Both point at retirement instead. When it is allowed, it asks first, in a panel
@@ -267,6 +283,14 @@ the sentence about there being no recovery is on screen while the operator types
 removal asks for a confirmation of its own that names what becomes readable. The
 register is backed up first and reopened under the new password afterwards. In a build
 without `encrypted-db` the card says which build would do it instead of hiding.
+
+A **Template signatures** card holds the public keys this deployment accepts on a
+bootstrap procedure, and the switch that makes a signature mandatory. Public keys only:
+the application verifies signatures and cannot make one, so the private half never comes
+near it. A key that could not verify anything is refused as it is typed — a trust store
+with a broken key in it reports every template as *altered*, which sends the operator
+after the wrong problem. Requiring signatures while trusting nobody is called out as an
+error, because it would refuse every procedure including the ones the build ships.
 
 For a database in a cloud-sync folder there is one more row — the **single-writer lock**:
 held by this workstation, by whom since when, and the path of the lock file. The warning

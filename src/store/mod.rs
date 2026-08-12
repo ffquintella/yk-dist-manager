@@ -403,6 +403,66 @@ impl ChainStatus {
     }
 }
 
+/// What [`Store::import_template`] did.
+///
+/// Two outcomes rather than one, because "stored as version 4" and "you already
+/// have this" want different sentences on screen — and because the second is the
+/// common case when a file goes round a unit by mail and gets imported twice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TemplateImport {
+    /// Stored under a version this database assigned. `previous` is the newest
+    /// version of that id before the import, or `None` for a new template.
+    Stored {
+        template: BootstrapTemplate,
+        previous: Option<String>,
+    },
+    /// A version of this id already describes exactly this procedure, with the
+    /// same signature. Nothing was written.
+    AlreadyPresent {
+        version: String,
+        /// It is on record but withdrawn from the wizard — worth saying, or the
+        /// operator concludes the import worked and then cannot find it.
+        retired: bool,
+    },
+}
+
+impl TemplateImport {
+    /// The sentence for the status line.
+    pub fn describe(&self) -> String {
+        match self {
+            TemplateImport::Stored {
+                template,
+                previous: Some(previous),
+            } => format!(
+                "`{}` imported as version {} ({} step(s)) — version {previous} stays on record",
+                template.id,
+                template.version,
+                template.steps.len()
+            ),
+            TemplateImport::Stored {
+                template,
+                previous: None,
+            } => format!(
+                "`{}` imported as version {} ({} step(s)) — a template this register did not have",
+                template.id,
+                template.version,
+                template.steps.len()
+            ),
+            TemplateImport::AlreadyPresent {
+                version,
+                retired: false,
+            } => format!("already on record as version {version} — nothing to import"),
+            TemplateImport::AlreadyPresent {
+                version,
+                retired: true,
+            } => format!(
+                "already on record as version {version}, which is retired — nothing was imported. \
+                 Reinstate that version to offer it in the wizard again"
+            ),
+        }
+    }
+}
+
 impl Store {
     /// `$YKDM_DB`, else the per-user data directory.
     pub fn default_path() -> PathBuf {
@@ -1738,6 +1798,59 @@ impl Store {
             params![id, version],
         )?;
         Ok(stored)
+    }
+
+    /// Store a template that arrived in a file, as a new version of its id.
+    ///
+    /// `features/bootstrap-templates.md` phase 4. Three rules, and each of them is
+    /// a decision this feature had already made for the editor:
+    ///
+    /// 1. **The gate applies.** [`BootstrapTemplate::check`] runs — again, having
+    ///    already run when the file was read — because nothing reaches the
+    ///    database without being planned against sample data, whatever door it
+    ///    came in by.
+    /// 2. **The receiving database numbers the version.** The file's version is
+    ///    information, not an instruction: two units both calling their procedure
+    ///    "version 2" is the normal case, and honouring an incoming number would
+    ///    either collide with a different local procedure of that number or
+    ///    silently redefine what "v2" means in this register.
+    /// 3. **An import that changes nothing stores nothing.** If a version of this
+    ///    id already has the same canonical bytes *and* the same signature, the
+    ///    import is reported as already present. Importing the same file twice is
+    ///    something an operator will do — from a mail thread, then from a share —
+    ///    and answering it with two identical versions would leave the catalogue
+    ///    growing a row per attempt.
+    pub fn import_template(&self, incoming: &BootstrapTemplate) -> Result<TemplateImport> {
+        incoming.check()?;
+
+        let bytes = crate::template::signing::canonical_bytes(incoming);
+        for stored in self.template_catalogue()? {
+            if stored.template.id != incoming.id {
+                continue;
+            }
+            if crate::template::signing::canonical_bytes(&stored.template) == bytes
+                && stored.template.signature == incoming.signature
+            {
+                return Ok(TemplateImport::AlreadyPresent {
+                    retired: stored.is_retired(),
+                    version: stored.template.version,
+                });
+            }
+        }
+
+        let existing = self.template_versions(&incoming.id)?;
+        let previous = existing
+            .iter()
+            .max_by(|a, b| {
+                crate::versioning::version_order(a).cmp(&crate::versioning::version_order(b))
+            })
+            .cloned();
+        let stored = incoming.as_version(&crate::versioning::next_version(&existing));
+        self.upsert_template(&stored)?;
+        Ok(TemplateImport::Stored {
+            template: stored,
+            previous,
+        })
     }
 
     /// Make sure the built-in templates exist, without clobbering edits to a

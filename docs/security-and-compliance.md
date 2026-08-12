@@ -257,6 +257,23 @@ Beyond the norm, because this tool writes to security hardware:
 - Destructive operations name what will be lost before they run.
 - A refusal is explained ("illegal status transition: In stock -> Distributed"), never
   silent.
+- **The procedure applied to a key can be signed, and a deployment can refuse to run an
+  unsigned one** (`../features/bootstrap-templates.md` phase 5). A template decides what
+  is written to security hardware, so an unauthorised edit of one is an attack rather
+  than a data-quality problem: the audit trail attributes the change afterwards, and the
+  signature is what prevents the changed procedure from being used. Ed25519 over a
+  documented canonical encoding; **verification only** — the private key never comes near
+  this application, because §2 above forbids it holding a secret that persists, so
+  signing is an out-of-band step and the tool exports the exact bytes to sign. The
+  trusted public keys are a per-deployment setting. Two gates for the **ESI**: whose key
+  it is and what protects it, and whether Ed25519 is the algorithm the organisation
+  wants. Until a deployment turns the requirement on it runs in *pilot mode*, which is
+  stated on screen and recorded per run as `template.unsigned_used` rather than being
+  silent.
+- **A procedure crossing between installations is a file, not retyping** (phase 4).
+  Export and import are both audited, with the procedure's fingerprint and — on import —
+  the signature verdict and the file it came from. An imported procedure goes through the
+  same gate as an edited one, because a file is untrusted input.
 
 ---
 
@@ -268,6 +285,8 @@ Beyond the norm, because this tool writes to security hardware:
 | Security verification before production, every version | **ESI** |
 | Every integration mechanism (AD, CA, BastionVault) | **ESI** |
 | Cipher and KDF parameters for the encrypted database | **ESI** |
+| The key that signs a bootstrap procedure, and what protects it | **ESI** |
+| Whether Ed25519 is the signature algorithm for procedures | **ESI** |
 | Audit and log retention | **ESI** |
 | Classification level | **ESI** |
 | Privacy notice, lawful basis, consent | **DPO** |

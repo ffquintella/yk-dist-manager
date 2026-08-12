@@ -133,6 +133,52 @@ fn every_password_strength_has_its_own_words() {
 }
 
 #[test]
+fn every_template_trust_state_has_its_own_words() {
+    // The catalogue paints this as a badge, and two of the states are opposite
+    // operational situations that must never be told apart by hue alone:
+    // *unsigned* is a deployment that has not started signing, *signature does not
+    // match* is a procedure that has been altered since it was signed.
+    use yk_dist_manager::template::Trust;
+
+    let states = [
+        Trust::Unsigned,
+        Trust::Signed { key_id: "k".into() },
+        Trust::UnknownKey { key_id: "k".into() },
+        Trust::Invalid {
+            key_id: "k".into(),
+            reason: "r".into(),
+        },
+        Trust::UnknownAlgorithm {
+            key_id: "k".into(),
+            algorithm: "a".into(),
+        },
+    ];
+    let labels: Vec<&str> = states.iter().map(|s| s.label()).collect();
+    distinct("Trust", &labels);
+    assert!(
+        states.iter().filter(|s| s.is_verified()).count() == 1,
+        "exactly one state may run where a signature is required"
+    );
+}
+
+#[test]
+fn every_kind_of_template_change_has_its_own_words() {
+    // The diff table colours its rows, and "moved" against "changed" is the
+    // distinction that matters most: a reordered step is what made org-standard v1
+    // unable to complete on hardware, and a reader who cannot separate the colours
+    // still has to see it.
+    use yk_dist_manager::template::Change;
+
+    let labels: Vec<&str> = Change::ALL.iter().map(|c| c.label()).collect();
+    distinct("Change", &labels);
+    assert_eq!(
+        Change::ALL.len(),
+        5,
+        "a new kind of change needs a word before it needs a colour"
+    );
+}
+
+#[test]
 fn the_status_line_severity_is_derived_from_the_text_not_from_the_caller() {
     // `status::classify` reads the message, so the words and the colour cannot
     // disagree — the colour is a function of the text rather than a second,

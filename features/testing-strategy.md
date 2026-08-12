@@ -18,9 +18,13 @@ whole even though every part passes.
 
 **Suites in place, and CI now enforces the gate.**
 
-- **595 tests** pass on the default features (`cargo test`); one fewer
-  with `--all-features`, the difference being a test that only exists when
-  `encrypted-db` is *off*. Plus 4 hardware tests, ignored by default.
+- **662 tests** pass on the default features (`cargo test`), **679** with
+  `--all-features` — the encrypted-database paths account for the difference, minus
+  the one test that exists only when `encrypted-db` is *off*. Plus tests ignored by
+  default for what a build machine need not have: 4 read-only hardware tests, and
+  the `openssl` interop test that proves the documented template-signing commands
+  produce a signature this build accepts
+  ([`interop_template_signing.rs`](../tests/interop_template_signing.rs)).
 - **CI runs on every push and pull request**
   ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)): fmt, clippy with
   `-D warnings`, the no-default-features build, the full test suite, and the

@@ -217,6 +217,124 @@ file, which is what the length floor is for.
 
 ---
 
+## Runbook: share a bootstrap procedure with another unit
+
+**Templates → Share a procedure with another unit.** A procedure crosses between two
+installations as one readable JSON file instead of being retyped, which is the one
+transfer method guaranteed to introduce a difference nobody notices.
+
+**Sending.** *Export* on the catalogue row writes two files:
+
+| File | What it is |
+|---|---|
+| `org-standard-v2.json` | the procedure, pretty-printed and reviewable |
+| `org-standard-v2.canonical` | the exact bytes a signature is made over |
+
+The export is audited, and the notice gives the procedure's **fingerprint** (16 hex
+characters). Read that out to the receiving unit: if their import shows the same
+fingerprint, the two of you have the same procedure, and neither of you had to read
+the file down the phone.
+
+**Receiving.** Put the path in the field and *Read this file*. Nothing is stored yet
+— the preview shows what the file contains, whether its signature verifies **on this
+workstation**, and what it would change against the newest version this register
+already holds. *Store as a new version* then stores it.
+
+Three things the import deliberately does:
+
+- **This register assigns the version number.** The file's version is information.
+  Two units both calling their procedure "version 2" is the normal case, so honouring
+  an incoming number would silently redefine what "v2" means here.
+- **Importing the same file twice stores nothing.** You will do this — once from the
+  mail, once from the share. The second attempt says "already on record as version N".
+- **A procedure that cannot be planned never reaches the register**, whether it
+  arrived by file or was typed in the editor.
+
+## Runbook: have a procedure signed, and require signatures
+
+A template decides what is written to a security key, so an unauthorised edit of one
+is an attack rather than a data-quality problem. Signing is the control; the audit
+trail is only the record.
+
+**This application verifies signatures and cannot make them.** It holds no private
+key — the same rule that keeps PINs and access codes out of every file it writes. So
+the signing step belongs to whoever holds the organisation's key, and it happens
+outside the tool.
+
+**Once, to set up a key.** On the machine that will hold it — ideally not the
+workstation that edits templates, or the signature is only as good as that machine:
+
+```bash
+openssl genpkey -algorithm ed25519 -out template-key.pem
+```
+
+Publish the public half as hex, and give it to every workstation:
+
+```bash
+openssl pkey -in template-key.pem -pubout -outform DER | tail -c 32 | xxd -p -c 32
+```
+
+**Settings → Template signatures → Trust this key**: the key id (the label
+signatures will carry, e.g. `esi-templates-2026`), that hex, and a note saying whose
+it is. A malformed key is refused as it is typed — a trust store with a broken key in
+it reports every template as *altered*, which sends you after the wrong problem.
+
+**Per procedure.** Export it, sign the `.canonical` file, and hex-encode the result:
+
+```bash
+openssl pkeyutl -sign -inkey template-key.pem -rawin -in org-standard-v2.canonical -out sig.bin
+xxd -p -c 64 sig.bin
+```
+
+Add the signature to the exported JSON, beside `"steps"`, and import the file:
+
+```json
+  "signature": {
+    "key_id": "esi-templates-2026",
+    "algorithm": "ed25519",
+    "signature": "a6d66509…04f06"
+  }
+```
+
+The import preview says immediately whether it verifies, so a mistake here is caught
+by the tool rather than discovered later.
+
+**Then turn the control on:** Settings → *Refuse to run a bootstrap from a template
+whose signature does not verify*. Until you do, the Templates screen shows a **pilot
+mode** banner, the run confirmation says the procedure is unverified, and every such
+run is recorded as `template.unsigned_used`.
+
+Two consequences worth knowing before you switch it on:
+
+- **The procedures shipped with the application are unsigned**, deliberately — a
+  signature from the tool's author would say something untrue about who approved the
+  procedure for your deployment. Export them, have them signed, import them back.
+- **Editing a template produces an unsigned version.** Changing a step changes the
+  bytes the signature was made over; there is no way round that, and a tool that
+  could re-sign would be a tool holding the key.
+
+| Badge on a version | What it means | What to do |
+|---|---|---|
+| `signed` | verifies against a key you trust | nothing |
+| `unsigned` | no signature | pilot mode, or get it signed |
+| `signed by an unknown key` | you do not have that key | add it **if you trust it**; a signature nobody can check is not one |
+| `signature does not match` | **altered since it was signed** | do not run it; get the procedure again from whoever signed it |
+| `unknown signature algorithm` | a newer scheme than this build | upgrade the workstation |
+
+## Runbook: what changed between two versions of a procedure
+
+*Compare* on a catalogue row, or the two version pickers in the compare card. The
+comparison is structural rather than a text diff, so a step that changed places reads
+as **moved** — which is the fact that matters, because the order of the steps is the
+order of execution, and `org-standard` v1 could not complete on real hardware for
+exactly that reason.
+
+Use it when a key comes back and the register says it was prepared with a version the
+wizard no longer offers: the diff is the difference between what that key got and what
+a key gets today.
+
+---
+
 ## Runbook: import the spreadsheet you keep today
 
 Most units already have a register: a spreadsheet with a serial column, a name

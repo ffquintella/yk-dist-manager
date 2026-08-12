@@ -19,6 +19,8 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
     ui.add_space(16.0);
     password_card(app, ui);
     ui.add_space(16.0);
+    template_signing(app, ui);
+    ui.add_space(16.0);
     maintenance(app, ui);
 
     ui.add_space(16.0);
@@ -497,6 +499,160 @@ fn password_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
     }
     if let Some(request) = request {
         app.db_request = Some(request);
+    }
+}
+
+/// Whose signature this deployment accepts on a bootstrap template, and whether
+/// one is required (`features/bootstrap-templates.md` phase 5).
+///
+/// Public keys only. This application verifies signatures and cannot make one —
+/// a signing key is a secret, and AGENTS.md §2 forbids it holding one — so what
+/// lives here is the answer to "whose approval counts on this workstation", which
+/// is a per-deployment question and belongs in the settings file.
+fn template_signing(app: &mut YkDistApp, ui: &mut egui::Ui) {
+    let mut changed = false;
+    let mut remove: Option<usize> = None;
+
+    super::titled_card(ui, "Template signatures", |ui| {
+        let mut required = app.settings.templates_must_be_signed;
+        if ui
+            .add(elegance::Checkbox::new(
+                &mut required,
+                "Refuse to run a bootstrap from a template whose signature does not verify",
+            ))
+            .changed()
+        {
+            app.settings.templates_must_be_signed = required;
+            changed = true;
+        }
+
+        ui.add_space(6.0);
+        if app.settings.templates_must_be_signed && app.settings.template_keys.is_empty() {
+            // The one combination that cannot work, said before it is discovered
+            // in front of a key: required signatures and nobody to trust means
+            // every template is refused, including the ones this build ships.
+            super::error_label(
+                ui,
+                "signatures are required and no trusted key is listed, so no template can be run \
+                 at all — the ones shipped with the application are unsigned. Add the key that \
+                 signs your procedures, or leave the requirement off until there is one.",
+            );
+        } else {
+            super::hint(
+                ui,
+                "Off is pilot mode: unsigned templates may be run, the Templates screen says so, \
+                 and each such run is recorded as `template.unsigned_used`. On, a run is refused \
+                 unless the procedure's signature verifies against one of the keys below.",
+            );
+        }
+
+        ui.add_space(12.0);
+        if app.settings.template_keys.is_empty() {
+            super::faint(ui, "No trusted key. Every template reads as unsigned.");
+        } else {
+            super::table(
+                ui,
+                "template-keys",
+                &["Key id", "Public key", "Whose it is", ""],
+                |ui| {
+                    for (index, key) in app.settings.template_keys.iter().enumerate() {
+                        super::mono(ui, &key.id);
+                        // Truncated: 64 hex characters identify nothing to a human,
+                        // and the first and last few are what somebody compares
+                        // against a printed fingerprint. Counted in characters
+                        // rather than sliced by byte, because a hand-edited
+                        // settings file can put anything in this field.
+                        super::mono(ui, &shortened(&key.public_key))
+                            .on_hover_text(key.public_key.clone());
+                        super::faint(ui, &key.comment);
+                        if super::row_button_danger(ui, "Forget")
+                            .on_hover_text(
+                                "stop accepting signatures from this key — templates it signed \
+                                 will read as signed by an unknown key",
+                            )
+                            .clicked()
+                        {
+                            remove = Some(index);
+                        }
+                        ui.end_row();
+                    }
+                },
+            );
+        }
+
+        ui.add_space(12.0);
+        add_template_key(app, ui, &mut changed);
+    });
+
+    if let Some(index) = remove {
+        let key = app.settings.template_keys.remove(index);
+        tracing::info!(event = "template.key.forgotten", key = key.id.as_str());
+        changed = true;
+    }
+    if changed {
+        app.settings.save_quietly();
+    }
+}
+
+/// `1a2b3c4d…9f8e7d6c` — enough to recognise a key, not enough to read one out.
+fn shortened(value: &str) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    if chars.len() <= 20 {
+        return value.to_owned();
+    }
+    format!(
+        "{}…{}",
+        chars[..8].iter().collect::<String>(),
+        chars[chars.len() - 8..].iter().collect::<String>()
+    )
+}
+
+/// The "add a key" form: an id, the public key, and who it belongs to.
+fn add_template_key(app: &mut YkDistApp, ui: &mut egui::Ui, changed: &mut bool) {
+    let mut add = false;
+    super::form_columns(ui, |left, right, _width| {
+        super::capped_input(left, &mut app.key_form.id, MAX_TEXT, |input| {
+            input
+                .label("Key id")
+                .hint("the label the signature carries, e.g. esi-templates-2026")
+                .id_salt("template-key-id")
+        });
+        super::capped_input(right, &mut app.key_form.comment, MAX_TEXT, |input| {
+            input
+                .label("Whose key it is")
+                .hint("for the next operator to read")
+                .id_salt("template-key-comment")
+        });
+    });
+    super::capped_input(ui, &mut app.key_form.public_key, MAX_TEXT, |input| {
+        input
+            .label("Public key")
+            .hint("64 hex characters — an Ed25519 public key")
+            .id_salt("template-key-hex")
+    });
+    super::hint(
+        ui,
+        "A public key, never a private one: this application verifies signatures and cannot make \
+         them. Whoever signs your procedures holds the private half and never gives it to this \
+         tool.",
+    );
+
+    if let Some(error) = app.key_form.error.clone() {
+        ui.add_space(8.0);
+        super::error_label(ui, &error);
+    }
+
+    ui.add_space(10.0);
+    if ui
+        .add(Button::new("Trust this key").accent(Accent::Green))
+        .clicked()
+    {
+        add = true;
+    }
+
+    if add {
+        app.add_template_key();
+        *changed = app.key_form.error.is_none();
     }
 }
 

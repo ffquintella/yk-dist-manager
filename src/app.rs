@@ -15,7 +15,7 @@ use crate::domain::{
 use crate::domain::{DocumentKind, SerialSource};
 use crate::settings::AppSettings;
 use crate::store::{Location, Store, StoreConfig};
-use crate::template::{BootstrapTemplate, PlannedCommand, RenderContext};
+use crate::template::{BootstrapTemplate, PlannedCommand, RenderContext, Trust};
 
 /// Placeholder organisation, used until the operator sets their own in Settings.
 ///
@@ -319,6 +319,50 @@ pub struct TemplateEditor {
     pub pending_removal: Option<(String, String)>,
     pub error: Option<String>,
     pub notice: Option<String>,
+
+    /// Path typed for an import or an export, so both work in a build without
+    /// `file-dialog` — and so the whole flow is testable without a modal dialog,
+    /// which is the reason it is a field rather than a local in the paint code.
+    pub file_path: String,
+    /// A template read from a file and **not yet stored**: the import is a
+    /// preview, then a decision.
+    ///
+    /// Held here rather than applied on the spot because an import deserves the
+    /// same treatment as the CSV import — see what it would do, then say yes. The
+    /// preview carries the trust verdict and the diff against what this register
+    /// already holds, which together answer "should I store this?".
+    pub pending_import: Option<PendingImport>,
+
+    /// Which two versions the compare card is showing.
+    ///
+    /// `(id, from, to)`. Kept across frames because the diff is recomputed from
+    /// the cached catalogue every frame — it is pure data, so there is nothing to
+    /// cache, and nothing to go stale after a save.
+    pub compare: Option<(String, String, String)>,
+}
+
+/// The "trust this key" form on the Settings screen.
+///
+/// A form of its own rather than three locals in the paint code, so the refusal a
+/// malformed key gets survives the frame it was typed in.
+#[derive(Default)]
+pub struct TemplateKeyForm {
+    pub id: String,
+    pub public_key: String,
+    pub comment: String,
+    pub error: Option<String>,
+}
+
+/// A template read from a file, waiting for the operator to accept it.
+pub struct PendingImport {
+    /// Where it came from, for the summary. Not stored anywhere.
+    pub source: String,
+    pub file: crate::template::TemplateFile,
+    /// The signature verdict under *this* deployment's trusted keys.
+    pub trust: crate::template::Trust,
+    /// What it would change, against the newest version of the same id this
+    /// register holds. `None` when the id is new here.
+    pub against: Option<(String, crate::template::TemplateDiff)>,
 }
 
 /// Serial-scanning panel state (inventory screen).
@@ -578,6 +622,8 @@ pub struct YkDistApp {
     pub share_form: ShareForm,
     /// Setting, changing or removing the database password.
     pub password_form: PasswordForm,
+    /// The public key being added to the template trust store.
+    pub key_form: TemplateKeyForm,
     /// Wrong passwords at the unlock prompt, and the wait they have earned
     /// (`features/db-password-and-encryption.md` phase 3).
     ///
@@ -675,6 +721,7 @@ impl YkDistApp {
             share: None,
             share_form: ShareForm::default(),
             password_form: PasswordForm::default(),
+            key_form: TemplateKeyForm::default(),
             throttle: crate::password::Throttle::new(),
             share_connector: Box::new(crate::store::smb::platform_connector),
             scan: ScanPanel::default(),
@@ -2150,6 +2197,315 @@ impl YkDistApp {
         }
     }
 
+    // ------------------------------- templates as files, signatures, and diffs
+
+    /// The signature verdict for a template, under this deployment's trusted keys.
+    ///
+    /// One place, so the badge in the catalogue, the pre-flight check before a run
+    /// and the import preview cannot disagree about whether a template is signed.
+    pub fn template_trust(&self, template: &crate::template::BootstrapTemplate) -> Trust {
+        crate::template::signing::verify(template, &self.settings.template_keys)
+    }
+
+    /// May a run use this template?
+    ///
+    /// `Ok(trust)` when it may, carrying the verdict so the caller can audit it —
+    /// an unsigned template that ran under pilot mode is a fact the trail has to
+    /// keep. `Err(message)` when signatures are required and this one does not
+    /// verify.
+    ///
+    /// Deliberately **not** a bare bool: "may I run this" and "what was the
+    /// signature state" are both needed at the same moment, and computing them
+    /// separately is how the audit entry ends up disagreeing with the decision.
+    pub fn template_run_permission(
+        &self,
+        template: &crate::template::BootstrapTemplate,
+    ) -> std::result::Result<Trust, String> {
+        let trust = self.template_trust(template);
+        if trust.is_verified() || !self.settings.templates_must_be_signed {
+            return Ok(trust);
+        }
+        Err(format!(
+            "this deployment requires a signed template, and `{}` version {} is {}. {}",
+            template.id,
+            template.version,
+            trust.label(),
+            trust.describe()
+        ))
+    }
+
+    /// Is this session allowed to run unsigned templates, and should it say so?
+    pub fn pilot_mode(&self) -> bool {
+        !self.settings.templates_must_be_signed
+    }
+
+    /// Write a template version to a file (phase 4).
+    ///
+    /// The path comes from the field the operator typed, or from the save dialog
+    /// in a build that has one. Nothing is exported that is not already on record:
+    /// this writes what the database holds, so a file cannot carry a procedure
+    /// nobody stored.
+    pub fn export_template(&mut self, id: &str, version: &str, path: &Path) {
+        self.template_editor.error = None;
+        self.template_editor.notice = None;
+
+        let Some(stored) = self
+            .template_catalogue
+            .iter()
+            .find(|s| s.template.id == id && s.template.version == version)
+            .map(|s| s.template.clone())
+        else {
+            self.template_editor.error = Some(format!("no template `{id}` version {version}"));
+            return;
+        };
+
+        let file = crate::template::TemplateFile::of(&stored, chrono::Utc::now());
+        match std::fs::write(path, file.to_json()) {
+            Ok(()) => {
+                // The **canonical bytes**, beside the export, because without them
+                // the signing half of phase 5 cannot be performed at all: a
+                // signature is over those exact bytes, and this application
+                // deliberately cannot make one. Writing them here is what lets
+                // `openssl pkeyutl -sign -rawin` — or an HSM, or a smartcard — do
+                // it, with no tool in between that could disagree about the
+                // encoding. Derivable, so it costs nothing to regenerate, and
+                // useless to anybody without the key.
+                let canonical = path.with_extension("canonical");
+                let bytes = crate::template::signing::canonical_bytes(&stored);
+                let also = match std::fs::write(&canonical, &bytes) {
+                    Ok(()) => format!(
+                        " The bytes to sign are beside it in {} ({} bytes) — see \
+                         docs/operations.md for the signing step.",
+                        canonical.display(),
+                        bytes.len()
+                    ),
+                    Err(e) => {
+                        // Not fatal: the procedure itself is exported, which is what
+                        // was asked for. Said out loud rather than swallowed,
+                        // because somebody about to have it signed needs to know.
+                        tracing::warn!(
+                            event = "template.export.canonical_failed",
+                            path = %canonical.display(),
+                            reason = %e
+                        );
+                        format!(
+                            " The bytes to sign could not be written to {}: {e}",
+                            canonical.display()
+                        )
+                    }
+                };
+
+                // Audited: a procedure leaving this register is a fact worth
+                // keeping, for the same reason an export of personal data is. It
+                // carries no secret — a template holds none — and it names the
+                // file so "where did this come from" is answerable.
+                self.record(
+                    "template.exported",
+                    &format!("template:{id}"),
+                    &format!(
+                        "version={version} steps={} fingerprint={} file={}",
+                        stored.steps.len(),
+                        crate::template::signing::fingerprint(&stored),
+                        path.display()
+                    ),
+                );
+                self.status = format!("{id} version {version} written to {}", path.display());
+                self.template_editor.notice = Some(format!(
+                    "exported to {}. Its fingerprint is {} — whoever receives it can check they \
+                     have the same procedure without reading the whole file.{also}",
+                    path.display(),
+                    crate::template::signing::fingerprint(&stored)
+                ));
+            }
+            Err(e) => {
+                tracing::error!(event = "template.export.failed", template = id, reason = %e);
+                self.template_editor.error =
+                    Some(format!("could not write {}: {e}", path.display()));
+            }
+        }
+    }
+
+    /// Read a template file and hold it as a preview (phase 4).
+    ///
+    /// Reading is not importing. The operator sees what the file contains, whether
+    /// its signature verifies *here*, and what it would change against the version
+    /// this register already holds — and then decides. The same shape as the CSV
+    /// import, and for the same reason: a procedure decides what is written to
+    /// security hardware, so "I did not realise it would change that" is not an
+    /// acceptable outcome of a click.
+    pub fn read_template_file(&mut self, path: &Path) {
+        self.template_editor.error = None;
+        self.template_editor.notice = None;
+        self.template_editor.pending_import = None;
+
+        let raw = match std::fs::read_to_string(path) {
+            Ok(raw) => raw,
+            Err(e) => {
+                self.template_editor.error =
+                    Some(format!("could not read {}: {e}", path.display()));
+                return;
+            }
+        };
+        let file = match crate::template::TemplateFile::from_json(&raw) {
+            Ok(file) => file,
+            Err(e) => {
+                tracing::warn!(event = "template.import.refused", path = %path.display(), reason = %e);
+                self.template_editor.error = Some(e.to_string());
+                return;
+            }
+        };
+
+        let trust = self.template_trust(&file.template);
+        let against = self
+            .latest_stored_template(&file.template.id)
+            .map(|current| {
+                (
+                    current.version.clone(),
+                    crate::template::diff::diff(current, &file.template),
+                )
+            });
+
+        self.template_editor.pending_import = Some(PendingImport {
+            source: path.display().to_string(),
+            file,
+            trust,
+            against,
+        });
+    }
+
+    /// Store the previewed import as a new version (phase 4).
+    pub fn apply_template_import(&mut self) {
+        self.template_editor.error = None;
+        self.template_editor.notice = None;
+
+        let Some(pending) = self.template_editor.pending_import.take() else {
+            return;
+        };
+        let incoming = pending.file.template.clone();
+        let Some(store) = &self.store else {
+            self.template_editor.error = Some("no database open".into());
+            return;
+        };
+
+        match store.import_template(&incoming) {
+            Ok(outcome) => {
+                if let crate::store::TemplateImport::Stored { template, previous } = &outcome {
+                    // One event for an import, distinct from `template.created`
+                    // and `template.changed`: where a procedure came from is
+                    // exactly what a reviewer will want years later, and it is not
+                    // recoverable from the body.
+                    self.record(
+                        "template.imported",
+                        &format!("template:{}", template.id),
+                        &format!(
+                            "version={} previous={} steps={} fingerprint={} {} source={}",
+                            template.version,
+                            previous.as_deref().unwrap_or("none"),
+                            template.steps.len(),
+                            crate::template::signing::fingerprint(template),
+                            pending.trust.audit_detail(),
+                            pending.source
+                        ),
+                    );
+                }
+                self.status = outcome.describe();
+                self.template_editor.notice = Some(outcome.describe());
+                self.refresh();
+            }
+            Err(e) => {
+                tracing::warn!(event = "template.import.failed", reason = %e);
+                self.template_editor.error = Some(e.to_string());
+            }
+        }
+    }
+
+    /// Drop a previewed import the operator declined.
+    pub fn cancel_template_import(&mut self) {
+        self.template_editor.pending_import = None;
+        self.template_editor.error = None;
+    }
+
+    /// Compare two versions of a template (phase 6).
+    ///
+    /// Computed from the cached catalogue, so it is pure data and needs no database
+    /// read inside a paint pass.
+    pub fn template_diff(&self) -> Option<crate::template::TemplateDiff> {
+        let (id, from, to) = self.template_editor.compare.as_ref()?;
+        let find = |version: &str| {
+            self.template_catalogue
+                .iter()
+                .find(|s| s.template.id == *id && s.template.version == version)
+                .map(|s| &s.template)
+        };
+        Some(crate::template::diff::diff(find(from)?, find(to)?))
+    }
+
+    /// Add a public key to the template trust store.
+    ///
+    /// Checked before it is stored: a malformed key would make every template
+    /// signed by that id read as *altered* rather than as *misconfigured*, sending
+    /// the operator after the wrong problem entirely. Replacing an id that is
+    /// already listed is allowed and is the normal way to rotate a key — with the
+    /// consequence stated, because every template signed by the old one starts
+    /// failing verification at that moment.
+    pub fn add_template_key(&mut self) {
+        self.key_form.error = None;
+        let key = crate::template::TemplateKey {
+            id: self.key_form.id.trim().to_owned(),
+            public_key: self.key_form.public_key.trim().to_lowercase(),
+            comment: self.key_form.comment.trim().to_owned(),
+        };
+        if let Err(refusal) = key.check() {
+            self.key_form.error = Some(refusal);
+            return;
+        }
+
+        let replacing = self
+            .settings
+            .template_keys
+            .iter()
+            .position(|existing| existing.id == key.id);
+        match replacing {
+            Some(index) => {
+                let old = std::mem::replace(&mut self.settings.template_keys[index], key.clone());
+                self.status = if old.public_key == key.public_key {
+                    format!(
+                        "`{}` was already trusted — its description was updated",
+                        key.id
+                    )
+                } else {
+                    format!(
+                        "`{}` now has different key material: every template signed by the old \
+                         one will read as altered until it is signed again",
+                        key.id
+                    )
+                };
+            }
+            None => {
+                self.status = format!("`{}` is now trusted to sign templates", key.id);
+                self.settings.template_keys.push(key.clone());
+            }
+        }
+        // The key id, never the key material, in the log: it is public, but a log
+        // line is read by people and 64 hex characters in it are noise.
+        tracing::info!(event = "template.key.trusted", key = key.id.as_str());
+        self.key_form = TemplateKeyForm::default();
+    }
+
+    /// Show the difference between a version and the newest one of its id.
+    ///
+    /// The question the spec asks — "what changed since the batch we shipped in
+    /// June?" — starts from a version a run recorded, so this is the entry point
+    /// from a catalogue row.
+    pub fn compare_with_latest(&mut self, id: &str, version: &str) {
+        let latest = self
+            .latest_stored_template(id)
+            .map(|t| t.version.clone())
+            .unwrap_or_else(|| version.to_owned());
+        self.template_editor.compare = Some((id.to_owned(), version.to_owned(), latest));
+        self.template_editor.error = None;
+    }
+
     // ------------------------------------------------------ consignment terms
 
     /// Render the consignment term for a hand-over, in the requested language.
@@ -2808,6 +3164,40 @@ impl YkDistApp {
             self.wizard.error = Some("no template selected".into());
             return;
         };
+
+        // The signature gate, before the first write and before anything is
+        // recorded (`features/bootstrap-templates.md` phase 5). A template decides
+        // what is written to security hardware, so this is the last moment at which
+        // "is this the procedure somebody approved?" can still be answered — after
+        // the first step it is a question about a key that has already changed.
+        let trust = match self.template_run_permission(&template) {
+            Ok(trust) => trust,
+            Err(refusal) => {
+                tracing::warn!(
+                    event = "bootstrap.refused.unsigned_template",
+                    template = template.id.as_str(),
+                    version = template.version.as_str(),
+                );
+                self.wizard.error = Some(refusal);
+                return;
+            }
+        };
+        if !trust.is_verified() {
+            // Pilot mode is *visible*, which is the whole condition the spec put on
+            // it: the run is allowed, and the trail says it was allowed without a
+            // verified signature. An entry written afterwards would be missing for
+            // exactly the run that crashed.
+            self.record(
+                "template.unsigned_used",
+                &format!("template:{}", template.id),
+                &format!(
+                    "version={} serial={serial} {} pilot_mode=on",
+                    template.version,
+                    trust.audit_detail()
+                ),
+            );
+        }
+
         let holder = self.holders.get(self.wizard.holder_index).cloned();
 
         // The SAN comes from the deployment's policy, not from the template:

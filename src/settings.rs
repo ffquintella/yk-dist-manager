@@ -232,6 +232,25 @@ pub struct AppSettings {
     /// being run: every template on a given deployment wants the same answer.
     /// See [`crate::san`].
     pub san: crate::san::SanPolicy,
+    /// Public keys this deployment accepts on a bootstrap template
+    /// (`features/bootstrap-templates.md` phase 5).
+    ///
+    /// Public keys only — a settings file holding a private key would break the
+    /// rule the whole application is built on (AGENTS.md §2), and this tool
+    /// verifies signatures rather than making them. Empty by default: a fresh
+    /// install trusts nobody, which is the honest starting point, and every
+    /// template reads as unsigned until somebody decides whose key counts here.
+    pub template_keys: Vec<crate::template::TemplateKey>,
+    /// Refuse to run a bootstrap from a template whose signature does not verify.
+    ///
+    /// **Off by default, and that is a deliberate default rather than a lax one.**
+    /// The templates this build ships are unsigned — signing them would say
+    /// something untrue about who approved the procedure for a given deployment —
+    /// so a default of `true` would mean a fresh install could not bootstrap a key
+    /// at all. Off is the *pilot mode* the spec asks for, it is visible on screen
+    /// and in the audit trail (`template.unsigned_used`), and turning it on is a
+    /// one-click decision once a unit has a key.
+    pub templates_must_be_signed: bool,
     /// Chosen palette, one of [`THEMES`]. Cosmetic only — nothing about the
     /// record depends on it.
     pub theme: String,
@@ -284,6 +303,8 @@ impl AppSettings {
             retention: RetentionPolicy::default(),
             window: WindowState::default(),
             san: crate::san::SanPolicy::default(),
+            template_keys: Vec::new(),
+            templates_must_be_signed: false,
             theme: DEFAULT_THEME.to_owned(),
         }
     }
