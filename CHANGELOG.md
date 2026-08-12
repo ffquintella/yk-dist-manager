@@ -17,6 +17,8 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-08-12
+
 ### Added
 
 - **A retention period for the register, configurable and defaulting to one year**
@@ -25,23 +27,6 @@ Maintenance instructions (see AGENTS.md §5):
   table refuses `DELETE` by trigger, so honouring a finite period means first
   deciding how a retention pass may break the hash chain. `describe()` says so
   plainly rather than implying a sweep that does not run.
-
-### Changed
-
-- **The OTP access code now travels to the holder on the sealed slip**, reversing
-  the generate-and-discard default this shipped with
-  ([`features/secrets-custody.md`](features/secrets-custody.md) sub-decision 2,
-  settled 2026-08-11). Discarding it froze the OTP slot: reprogramming later cost
-  an applet reset. Carrying it keeps that door open, at the price of one more line
-  on a slip the holder is told to destroy after use. The rule is now simply that
-  **every generated secret travels except the PIV management key**, which is
-  `--protect`ed onto the key itself and so has nothing to hand over.
-- **System classification set to level 2** (`docs/security-and-compliance.md` §1),
-  one below the level 3 that document proposed. The controls level 3 implied —
-  immutable hash-chained audit, encryption at rest — are kept regardless. Escrow
-  would put the level back in question, which is one more reason model B retains
-  nothing.
-
 - **The sealed-envelope slip** ([`features/secrets-custody.md`](features/secrets-custody.md)
   phase 5, [`features/receipts-and-terms.md`](features/receipts-and-terms.md) phase 0).
   Custody model B always hands a transport secret over, so for a posted or
@@ -126,6 +111,19 @@ Maintenance instructions (see AGENTS.md §5):
 
 ### Changed
 
+- **The OTP access code now travels to the holder on the sealed slip**, reversing
+  the generate-and-discard default this shipped with
+  ([`features/secrets-custody.md`](features/secrets-custody.md) sub-decision 2,
+  settled 2026-08-11). Discarding it froze the OTP slot: reprogramming later cost
+  an applet reset. Carrying it keeps that door open, at the price of one more line
+  on a slip the holder is told to destroy after use. The rule is now simply that
+  **every generated secret travels except the PIV management key**, which is
+  `--protect`ed onto the key itself and so has nothing to hand over.
+- **System classification set to level 2** (`docs/security-and-compliance.md` §1),
+  one below the level 3 that document proposed. The controls level 3 implied —
+  immutable hash-chained audit, encryption at rest — are kept regardless. Escrow
+  would put the level back in question, which is one more reason model B retains
+  nothing.
 - **CI checks out with `actions/checkout@v7`.** v4 runs on Node 20, which the
   hosted runners no longer provide — they force it onto Node 24 and annotate every
   job with the deprecation. The one breaking change between v4 and v7 that matters
@@ -898,7 +896,8 @@ become rows.
 - Uploaded filenames are treated as data: any directory component is stripped, so a
   name like `../../etc/passwd.pdf` cannot escape.
 
-[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/ffquintella/yk-dist-manager/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.4.0...v0.5.0

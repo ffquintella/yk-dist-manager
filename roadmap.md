@@ -37,7 +37,7 @@ deployment.
 > The counts above had drifted (they said 11 in progress against 13 `[/]` rows), as
 > had the test and coverage figures quoted in two places. Both are corrected here.
 
-Released: **v0.7.0**. Current wave: **Wave 1 — native execution.**
+Released: **v0.7.1**. Current wave: **Wave 1 — native execution.**
 
 **Out of turn, released in v0.6.0** (AGENTS.md §1 asks for the reason, in this file, in the
 same commit): **hosting the database in a OneDrive folder** —
