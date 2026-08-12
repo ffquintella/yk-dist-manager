@@ -39,78 +39,93 @@ fn run_of(template: &BootstrapTemplate) -> BootstrapRun {
     )
 }
 
-#[test]
-fn scenario_a_register_holding_the_broken_procedure_is_offered_the_corrected_one() {
-    // A real failure, seen on an installation: the database was seeded by a build
-    // whose `org-standard v1` marked the key for a forced PIN change *before*
-    // creating the resident credential — an ordering that cannot complete on
-    // hardware, because the mark takes the PIN out of use. Seeding deliberately
-    // never overwrites a stored (id, version), so correcting the constructor
-    // alone left the broken procedure in place and the operator met the refusal
-    // in the editor.
-    let store = Store::open_in_memory().unwrap();
-
-    // Given a register already holding the broken v1, as an older build wrote it
-    let mut broken = BootstrapTemplate::org_standard();
-    broken.version = "1".into();
-    let marker = broken
+/// A built-in as an older build wrote it: version 1, with the forced PIN change
+/// ahead of the credential — an ordering that cannot complete on hardware, because
+/// the mark takes the PIN out of use.
+fn broken_v1(mut template: BootstrapTemplate) -> BootstrapTemplate {
+    template.version = "1".into();
+    let marker = template
         .steps
         .iter()
         .position(|s| s.kind == StepKind::Fido2ForcePinChange)
         .unwrap();
-    let step = broken.steps.remove(marker);
-    let credential = broken
+    let step = template.steps.remove(marker);
+    let credential = template
         .steps
         .iter()
         .position(|s| s.kind == StepKind::Fido2Credential)
         .unwrap();
-    broken.steps.insert(credential, step);
+    template.steps.insert(credential, step);
     assert!(
-        broken.validate().is_err(),
+        template.validate().is_err(),
         "the fixture has to be the broken ordering, or this proves nothing"
     );
-    store.upsert_template(&broken).unwrap();
+    template
+}
 
-    // When the application seeds its built-ins, as it does on every open
-    store.seed_builtin_templates().unwrap();
+#[test]
+fn scenario_a_register_holding_the_broken_procedure_is_offered_the_corrected_one() {
+    // A real failure, seen on an installation: the database was seeded by a build
+    // whose `org-standard v1` marked the key for a forced PIN change *before*
+    // creating the resident credential. Seeding deliberately never overwrites a
+    // stored (id, version), so correcting the constructor alone left the broken
+    // procedure in place and the operator met the refusal in the editor.
+    //
+    // Every built-in that sets a FIDO2 PIN is checked, not just the standard one.
+    // The first pass of this fix bumped `org-standard` alone, and `fido-only` —
+    // whose steps are a filtered view of it, so its ordering was corrected in the
+    // code for free — stayed at v1 and kept the broken ordering in every register
+    // already seeded. Same bug, second id, and it was met in the editor the same
+    // way.
+    for builtin in BootstrapTemplate::builtin() {
+        let store = Store::open_in_memory().unwrap();
+        let id = builtin.id.clone();
+        let corrected = builtin.version.clone();
 
-    // Then the broken version is still on record — a run may have recorded it,
-    // and rewriting what a version *said* would rewrite what a key was told to
-    // have applied to it
-    let versions = store.template_versions("org-standard").unwrap();
-    assert!(versions.contains(&"1".to_string()), "{versions:?}");
+        // Given a register already holding the broken v1
+        store.upsert_template(&broken_v1(builtin)).unwrap();
 
-    // And the corrected version is there beside it
-    assert!(versions.contains(&"2".to_string()), "{versions:?}");
+        // When the application seeds its built-ins, as it does on every open
+        store.seed_builtin_templates().unwrap();
 
-    // And the wizard is offered the corrected one
-    let offered = latest_per_id(&store.templates().unwrap());
-    let standard = offered
-        .iter()
-        .find(|t| t.id == "org-standard")
-        .expect("the standard procedure is offered");
-    assert_eq!(standard.version, "2");
-    assert!(
-        standard.validate().is_ok(),
-        "what the wizard offers must be a procedure that can actually complete"
-    );
+        // Then the broken version is still on record — a run may have recorded it,
+        // and rewriting what a version *said* would rewrite what a key was told to
+        // have applied to it
+        let versions = store.template_versions(&id).unwrap();
+        assert!(versions.contains(&"1".to_string()), "{id}: {versions:?}");
 
-    let ordering: Vec<&str> = standard
-        .steps
-        .iter()
-        .filter(|s| {
-            matches!(
-                s.kind,
-                StepKind::Fido2Credential | StepKind::Fido2ForcePinChange
-            )
-        })
-        .map(|s| s.id.as_str())
-        .collect();
-    assert_eq!(
-        ordering,
-        vec!["fido2-credential", "fido2-force-pin-change"],
-        "the credential must be created before the PIN is taken out of use"
-    );
+        // And the corrected version is there beside it
+        assert!(versions.contains(&corrected), "{id}: {versions:?}");
+
+        // And the wizard is offered the corrected one
+        let offered = latest_per_id(&store.templates().unwrap());
+        let latest = offered
+            .iter()
+            .find(|t| t.id == id)
+            .unwrap_or_else(|| panic!("{id} is offered"));
+        assert_eq!(latest.version, corrected, "{id}");
+        assert!(
+            latest.validate().is_ok(),
+            "{id}: what the wizard offers must be a procedure that can actually complete"
+        );
+
+        let ordering: Vec<&str> = latest
+            .steps
+            .iter()
+            .filter(|s| {
+                matches!(
+                    s.kind,
+                    StepKind::Fido2Credential | StepKind::Fido2ForcePinChange
+                )
+            })
+            .map(|s| s.id.as_str())
+            .collect();
+        assert_eq!(
+            ordering,
+            vec!["fido2-credential", "fido2-force-pin-change"],
+            "{id}: the credential must be created before the PIN is taken out of use"
+        );
+    }
 }
 
 #[test]
@@ -264,8 +279,11 @@ fn scenario_retiring_a_builtin_survives_the_next_time_the_database_is_opened() {
     let store = Store::open_in_memory().unwrap();
     store.seed_builtin_templates().unwrap();
 
-    // When the operator withdraws the FIDO-only procedure
-    store.retire_template("fido-only", "1").unwrap();
+    // When the operator withdraws the FIDO-only procedure. The version comes from
+    // the built-in itself, so a future bump does not quietly turn this into a
+    // retirement of a version nobody is offered.
+    let fido = BootstrapTemplate::fido_only();
+    store.retire_template(&fido.id, &fido.version).unwrap();
 
     // Then re-seeding — which happens on every open — does not bring it back
     assert_eq!(store.seed_builtin_templates().unwrap(), 0);
@@ -291,8 +309,9 @@ fn scenario_a_builtin_cannot_be_deleted_because_seeding_would_bring_it_back() {
     let store = Store::open_in_memory().unwrap();
     store.seed_builtin_templates().unwrap();
 
+    let fido = BootstrapTemplate::fido_only();
     let error = store
-        .delete_template("fido-only", "1")
+        .delete_template(&fido.id, &fido.version)
         .expect_err("deleting a built-in would only look like it worked");
     assert!(
         error.to_string().contains("retire"),

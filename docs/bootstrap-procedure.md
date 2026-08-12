@@ -243,8 +243,10 @@ applied on the bootstrap" a year later.
 
 ## Variants
 
-- **`fido-only`** — FIDO2 PIN, minimum PIN length, forced change, credential, verification.
-  For keys that only need WebAuthn.
+- **`fido-only`** — FIDO2 PIN, minimum PIN length, credential, forced change, verification.
+  For keys that only need WebAuthn. Its steps are a filtered view of `org-standard`,
+  order included — so the forced change is last here for the same reason, and its
+  version is taken from that procedure rather than numbered on its own.
 - **`org-sysadmin`** (planned) — adds an SSH credential
   ([`../features/ssh-authentication.md`](../features/ssh-authentication.md)).
 - **Stock preparation** (planned) — everything that does not need a holder, so keys can be

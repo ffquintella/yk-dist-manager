@@ -128,6 +128,18 @@ Maintenance instructions (see AGENTS.md §5):
   reference in a `format!`/`assert!` argument, which four call sites had. The
   deref in the envelope's assertions was kept: `text` is `Zeroizing`, and only the
   `&` in front of it was redundant.
+- **`fido-only` gets the corrected ordering too, and is now versioned with the
+  procedure it is cut from.** The bump to `org-standard` v2 below fixed one id and
+  left the other: `fido-only`'s steps are a filtered view of the standard
+  procedure, so its *code* picked the correction up for free, but it still
+  declared version 1 — and seeding asks whether an `(id, version)` exists, not
+  whether it is right. So every register seeded by an earlier build kept a
+  `fido-only` v1 that marked the key for a forced PIN change before creating the
+  credential, and the operator met the same refusal in the editor, under the other
+  template. Its version now derives from `org_standard`, so a correction there
+  cannot again reach the code and stop at the database, and the behaviour scenario
+  that proves the seeding path runs over every built-in rather than the standard
+  one alone.
 - **The standard procedure ships as `org-standard` v2, so a register seeded by an
   older build gets the corrected ordering.** Fixing the constructor was not
   enough: seeding deliberately never overwrites a stored `(id, version)`, so a

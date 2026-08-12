@@ -184,6 +184,20 @@ fn fido_only_template_omits_piv_and_otp() {
 }
 
 #[test]
+fn the_fido_only_template_is_versioned_with_the_procedure_it_is_cut_from() {
+    // Its steps, and their order, come from `org_standard`. So a correction there
+    // has to arrive under a new `fido-only` version too, or a register seeded by an
+    // older build keeps the uncorrected subset for ever: seeding asks whether an
+    // (id, version) exists, not whether it is right. That is not hypothetical — it
+    // is how the forced-change ordering fix reached the code and stopped at the
+    // database.
+    assert_eq!(
+        BootstrapTemplate::fido_only().version,
+        BootstrapTemplate::org_standard().version,
+    );
+}
+
+#[test]
 fn the_standard_template_forces_the_holder_to_change_the_transport_pin() {
     // Custody model B: the operator's PIN is a transport PIN, so the template
     // must mark the key for a mandatory change.

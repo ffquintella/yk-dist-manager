@@ -719,12 +719,24 @@ impl BootstrapTemplate {
     }
 
     /// A minimal template for keys that only need WebAuthn.
+    ///
+    /// Its steps are a filtered view of [`Self::org_standard`], **including their
+    /// order** — so its version tracks that procedure's rather than being written
+    /// here. The alternative was tried and failed: `org-standard` was bumped to v2
+    /// to carry the corrected forced-change ordering into registers seeded by an
+    /// older build, this constructor picked the fix up for free, and yet every such
+    /// register kept a broken `fido-only` v1, because seeding asks whether an
+    /// `(id, version)` exists and not whether it is correct. Deriving the version
+    /// means a correction to the procedure this one is cut from cannot again reach
+    /// the code and stop at the database. The cost is a version whose steps are
+    /// unchanged when a bump only touched steps this subset drops — a spare entry in
+    /// the catalogue, which is the cheaper of the two failures.
     pub fn fido_only() -> Self {
         let full = Self::org_standard();
         Self {
             id: "fido-only".into(),
             name: "FIDO2 only".into(),
-            version: "1".into(),
+            version: full.version.clone(),
             description: "FIDO2 PIN plus the initial on-key credential. No PIV, no OTP.".into(),
             steps: full
                 .steps

@@ -17,6 +17,7 @@
 //! | [`settings`] | Which database to open, and the recent ones |
 //! | [`scan`] | Reading a serial from a barcode (label or camera) |
 //! | [`san`] | The certificate's rfc822Name: how it is produced, and how to check it |
+//! | [`password`] | The database password: how strong, and how slowly retried |
 //! | [`secret`] | The secrets a bootstrap sets: generated, shown once, wiped |
 //! | [`term`] | Consignment terms: multilingual templates and rendering |
 //! | [`pdf`] | The PDF a term is printed and signed on, written without a dependency |
@@ -42,6 +43,7 @@ pub mod domain;
 pub mod envelope;
 pub mod logbuf;
 pub mod logging;
+pub mod password;
 pub mod paths;
 pub mod pdf;
 pub mod san;

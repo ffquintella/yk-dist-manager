@@ -33,7 +33,11 @@ down; then it is a procedure. Making it declarative buys three things:
   procedure cannot do without, the length bounds, `validate()`, and a **trial
   `plan()` against `RenderContext::sample`** — including steps that arrive
   disabled, because the wizard can enable an optional step on any run.
-- Two built-ins: `org-standard` (11 steps) and `fido-only` (derived subset). Neither
+- Two built-ins: `org-standard` (11 steps) and `fido-only` (derived subset). Because
+  `fido-only` is cut from `org-standard` — steps *and* their order — its version is
+  taken from `org_standard` rather than written beside it: a correction to the
+  procedure has to arrive under a new version of both, or the register keeps the
+  uncorrected subset for ever. Neither
   is branded to an institution — the organisation comes from Settings and reaches the
   steps through `{{org}}`, so the shipped procedure is a starting point a unit edits
   rather than somebody else's policy. A database seeded by a build before v0.5.0 also
@@ -239,3 +243,13 @@ the wizard offers v2.
 This is the same shape as the `org-standard` rename in v0.5.0: a built-in is
 corrected by *adding*, never by rewriting the id or version a run referred to.
 Covered by `scenario_a_register_holding_the_broken_procedure_is_offered_the_corrected_one`.
+
+**And the same correction was needed for `fido-only`, which the first pass missed.**
+Its steps are a filtered view of `org-standard`, so the corrected ordering reached
+its constructor for free — but it still declared version 1, and seeding compares
+`(id, version)`, so every register already holding `fido-only v1` kept the broken
+ordering and met the same refusal under the other template. Its version is now taken
+from `org_standard`, which makes the bump automatic and this class of miss
+structural rather than a thing to remember. The scenario above now runs over
+`BootstrapTemplate::builtin()` rather than the standard procedure alone, for the same
+reason: a rule proved on one of two built-ins was what let this through.

@@ -83,10 +83,10 @@ the new key, verify it opens and its audit chain verifies, then swap — never
 |---|---|---|---|---|
 | 1 | Feature flag, `PRAGMA key`, unlock screen, typed errors | 0 | Done | plain files still open with no prompt |
 | 2 | Password change via re-encrypt-and-swap (not in-place `rekey`) | 0 | Todo | verify before swap; audit the event |
-| 3 | Unlock attempt throttling + audit of failures | 0 | Todo | 3 fails → delay, per AGENTS.md |
+| 3 | Unlock attempt throttling + audit of failures | 0 | **Core done** | [`password::Throttle`](../src/password.rs) — three free attempts then a doubling delay capped at 30s. Deliberately **not** a lockout: there is no administrator to unlock a shared register, so one would be a denial of service anybody with the file could trigger. Wiring into the unlock screen is pending |
 | 4 | Explicit KDF parameters (`PRAGMA kdf_iter`, cipher page size) | — | Todo | needs the ESI-approved cipher/parameter set |
 | 5 | "Encrypt an existing plain database" migration | 0 | Todo | one-way, confirmed, backup taken first |
-| 6 | Password strength meter + policy | 0 | Todo | reuse the organisation's password guidance |
+| 6 | Password strength meter + policy | 0 | **Core done** | [`password::assess`](../src/password.rs) — a 12-character floor with advice rather than mandatory character classes, because the threat is an offline attack on a copied file and composition rules push people towards `Password1!`. Meter wiring is pending |
 | 7 | Optional: unlock with a YubiKey instead of a typed password | 1 | Todo | HMAC-SHA1 challenge-response (OTP slot 2) as the KDF input — depends on `native-otp` |
 
 Phase 7 is the interesting one: the tool distributes YubiKeys, so using one to
@@ -131,3 +131,33 @@ configured (`features/audit-trail.md`).
 - `src/store/mod.rs` (`apply_key`, `is_encryption_error`), `src/ui/unlock.rs`
 - `features/storage-sqlite-single-file.md`, `docs/security-and-compliance.md`
 - [SQLCipher design](https://www.zetetic.net/sqlcipher/design/)
+
+## Why the policy is a length floor and not a composition rule (2026-08-11)
+
+Worth writing down, because it looks lax next to the usual advice.
+
+This password is not a login. There is no account to lock out, no reset e-mail
+and no administrator; losing it loses the data. And it is a **file** password —
+the threat is a copied file (a backup on a share, a sync client's conflict copy,
+a stolen laptop), where nobody is typing guesses at a prompt. They are running a
+cracker against the file at whatever rate the hardware allows.
+
+Against that, **length is the only thing that buys time**, and a composition rule
+reliably produces `Password1!` — short, decorated, and in every wordlist. So:
+
+* a floor of **12 characters**, counted in characters rather than bytes;
+* character classes as *advice*, worth at most one step of the meter;
+* refusals only for the things that are weak at any length — a repeated
+  character, and a monotone alphabet or keyboard run.
+
+The meter's reach is stated rather than implied: it has no dictionary and no
+period detector, so `123456789012345` scores Weak rather than being refused, and
+a test says so. Adding a strength library would mean carrying a dependency that
+needs keeping current forever for one text field.
+
+Throttling exists to make scripted guessing *at the prompt* pointless, not to
+pretend it affects an offline attack: three free attempts, then a doubling delay
+capped at thirty seconds so a mistyped password never looks like a hung
+application. It is **not** a lockout, and the message never implies one — there
+is no administrator to lift it, so a lockout on a shared register would be a
+denial of service anybody holding the file could trigger.
