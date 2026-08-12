@@ -69,7 +69,7 @@ entry.
 |---|---|---|---|
 | 1 | Single entry point, G-002 format, three levels | Done | `src/logging.rs` |
 | 2 | File sink with rotation | Todo | today output goes to stderr, which a GUI user never sees |
-| 3 | "Show log" panel in the GUI | Todo | last N lines, copyable, so an operator can send them without finding a file |
+| 3 | "Show log" panel in the GUI | **Done** | shipped as `features/gui-shell.md` phase 8: [`crate::logbuf`](../src/logbuf.rs) keeps the last N lines and a resizable bottom panel shows them with a level filter and *Copy all* (⌘/Ctrl + L). Recorded here because this spec is where somebody looks for it |
 | 4 | Structured (JSON) sink option | Todo | keep the same three fields; needs ESI agreement before diverging from the text format |
 | 5 | Correlation id per bootstrap run | Todo | one id threading every step's log lines and audit entries |
 

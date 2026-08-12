@@ -17,6 +17,35 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+### Fixed
+
+- **Four phases were marked Todo in specs that had already shipped them elsewhere**,
+  found while re-deriving what Wave 0 still needs: the log panel
+  ([`features/logging.md`](features/logging.md) 3, shipped as `gui-shell` 8), search
+  on Inventory and on Holders ([`features/key-inventory.md`](features/key-inventory.md)
+  5 and [`features/holder-registry.md`](features/holder-registry.md) 5, shipped as
+  `gui-shell` 3) and the spreadsheet import (`key-inventory` 8, shipped as `storage`
+  8). Each now says Done with a pointer to where. None of them changed the Wave 0
+  list — they were work already finished, not work still owed — but a Todo that is
+  really Done is how a plan stops being believed.
+- **The roadmap now says which part of its Wave 0 list is derived and which is
+  reasoned.** The `awk` one-liner it publishes reads the **Wave** column, and nine of
+  the 23 wave-0 rows link to specs that predate that column and never got one. All
+  nine are `[x]` with unfinished phases, so the command silently skips exactly the
+  rows where a hidden wave-0 phase could be. Their remaining phases were read one by
+  one — none is wave-0 work — and the paragraph that says so is now in the file,
+  along with the observation that giving those nine specs a Wave column is a planning
+  decision somebody has to make rather than a mechanical fix.
+- **Two ESI gates that arrived with template signing are now in the roadmap's Open
+  questions**, where they were only in the feature spec and
+  `docs/security-and-compliance.md`: whose key signs a bootstrap procedure and what
+  protects it, and whether Ed25519 is the algorithm the organisation wants. Neither
+  holds a phase — the mechanism shipped in 0.9.0 — but both hold the *switch-on*, and
+  a deployment stays in pilot mode until the first one is answered.
+- The GUI shell came off the "`[x]` with Todo phases" list without anything being
+  built: its last open row was localisation, which the interface being English closes
+  as *not needed*.
+
 ## [0.9.0] - 2026-08-12
 
 ### Added

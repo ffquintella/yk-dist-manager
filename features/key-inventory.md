@@ -119,11 +119,11 @@ real FIPS flag instead.
 | 2 | Guarded lifecycle transitions | Done | refusals surfaced, not swallowed |
 | 3 | Firmware capability gates | Done | 5.7 floor for min-PIN-length |
 | 4 | Batch / invoice / procurement fields in the UI | Todo | column exists in the schema |
-| 5 | Search and filter (serial, holder, status, firmware) | Todo | the table will not scale past ~50 rows |
+| 5 | Search and filter (serial, holder, status, firmware) | **Done** | shipped as `features/gui-shell.md` phase 3: [`browse::keys`](../src/browse.rs) matches the serial, model, firmware, form factor, batch and observation, with a status filter and paging. **Not** by holder — the Inventory table has no holder column, and "which key does Ana have" is answered on Distribution, where it does |
 | 6 | "Already configured" detection before re-bootstrap | Todo | occupied 9c slot, FIDO PIN already set |
 | 6b | "Unverified keys" view: scanned or typed, never read | Todo | the natural companion to provenance |
 | 7 | Reconciliation report: expected vs present vs unaccounted | Todo | `features/reports-and-export.md` |
-| 8 | Bulk import of an existing spreadsheet | Todo | CSV with a dry-run preview |
+| 8 | Bulk import of an existing spreadsheet | **Done** | shipped as `features/storage-sqlite-single-file.md` phase 8: [`store::import`](../src/store/import.rs) — column mapping, a preview that writes nothing, then apply |
 | 9 | Observation per key, and confirmed removal of an intake mistake | Done | out of turn, v0.4.0 — see the roadmap note |
 
 ## Audit events

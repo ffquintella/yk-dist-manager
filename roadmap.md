@@ -169,6 +169,35 @@ it was derived:
 awk -F'|' '$4 ~ /^ *0 *$/ && $5 !~ /[Dd]one/ {print FILENAME" phase"$2": "$3}' features/*.md
 ```
 
+**What that command cannot see, and what stands behind the list.** It reads the
+**Wave** column, and nine specs do not have one — they predate it and were never
+given one: consignment terms, database selection, distribution records, holder
+registry, key inventory, logging, serial scanning, signed-term documents and the
+`ykman` fallback. All nine are `[x]`, and all nine still have unfinished phases.
+
+Those phases were read one by one, and **none of them is wave-0 work**: they are
+later-wave or optional by nature (AD/LDAP lookup, reconciliation reports, batch
+hand-over, applet resets), or they duplicate a phase that is already on the list
+above under the spec that owns it — consignment terms 9 and distribution records 4
+are the return receipt and the signature state machine, which is exactly
+[receipts & terms](features/receipts-and-terms.md) 4 and 6.
+
+Four turned out to be **already done elsewhere** and are now marked so, with a
+pointer to where: the log panel (logging 3, shipped as gui-shell 8), search on
+Inventory and on Holders (key inventory 5, holder registry 5, shipped as gui-shell
+3) and the spreadsheet import (key inventory 8, shipped as storage 8). None of them
+changed this list — they were work already finished, not work still owed.
+
+So of the 23 rows in the Wave 0 tables below, **14 are derived** — their specs carry
+the column the rule is written against — and **nine are reasoned**, by having read
+their remaining phases. This paragraph is what says so, rather than the reader
+assuming the whole list came out of the command.
+
+Giving those nine a Wave column is the real fix, and it is a planning decision
+rather than a mechanical one: somebody has to say which wave each remaining phase
+belongs to. Worth doing before the next wave closes, because the same gap will be
+there.
+
 ### What is *not* on that list, and why
 
 Three groups of unticked boxes exist elsewhere in the specs and none of them gates
@@ -182,15 +211,17 @@ YubiKey: all **Wave 1**, all in the Wave 1 table below. A Windows `.ico` and a L
 `hicolor` icon are **Wave 3**, with the packaging they attach to. Concurrency,
 batch mode, the signed audit export and the cross-check transport are **Wave 2**.
 
-**Phases marked `—`, which gate no wave by definition.** Some of them are marked
-that way because they are held by a decision that is not the implementer's
-(AGENTS.md §8). These three are every such decision left anywhere in the specs —
-[Open questions](#open-questions) is otherwise empty:
+**Decisions that are not the implementer's** (AGENTS.md §8). None of them holds a
+wave-0 phase, which is why they are here rather than in the table above — but each
+one is somebody's to answer, and this is every such decision left anywhere in the
+specs. They are also in [Open questions](#open-questions), with the reasoning:
 
-| Question | Owner | Phase it holds |
+| Question | Owner | What it holds |
 |---|---|---|
-| The approved cipher and KDF parameter set | **ESI** | [db-password](features/db-password-and-encryption.md) 4 (`—`) — explicit `kdf_iter` and cipher page size. The defaults are SQLCipher's until then |
-| May an already-configured key be re-bootstrapped, and by whom? | operational | [device-detection](features/device-detection.md) 5, which is **Wave 1** rather than `—`, so it is not holding this wave either way |
+| The approved cipher and KDF parameter set | **ESI** | [db-password](features/db-password-and-encryption.md) phase 4, marked `—`: explicit `kdf_iter` and cipher page size. The defaults are SQLCipher's until then, which is reasonable and not the same thing as approved |
+| The key that signs a bootstrap procedure, and what protects it | **ESI** | nothing in the code — the mechanism shipped in 0.9.0. It holds the *switch-on*: until there is a key, every deployment runs in pilot mode ([bootstrap-templates](features/bootstrap-templates.md) phase 5) |
+| Whether Ed25519 is the signature algorithm the organisation wants | **ESI** | likewise nothing: the algorithm is named inside every signature, so a second one is additive. Recorded so it is ratified rather than inherited |
+| May an already-configured key be re-bootstrapped, and by whom? | operational | [device-detection](features/device-detection.md) phase 5, which is **Wave 1** rather than `—`, so it is not holding this wave either way |
 
 The interface language was the third of these until 2026-08-12: it is **English**,
 which closes [gui-shell](features/gui-shell.md) phase 9 as *not needed* rather than
@@ -207,11 +238,25 @@ archive-then-remove path that can break and rebuild the audit trigger, which is
 deliberately not a general capability.
 
 **Rows that reached `[x]` for this wave while their specs still show Todo phases.**
-Eight of them, and the Wave column is what makes that legitimate: native device
-transport, single-file SQLite storage, the audit trail, the bootstrap planner, the
-GUI shell, the bootstrap wizard, bootstrap templates and device detection have every
-wave-0 phase done and only Wave 1+ work left. The database password joined them in
-0.8.0.
+Eight of them, and the Wave column is what makes that legitimate — each has every
+wave-0 phase done and only Wave 1+ work left: native device transport, device
+detection, single-file SQLite storage, the optional database password, the audit
+trail, bootstrap templates, the bootstrap planner and the bootstrap wizard.
+
+Derive that list too, rather than trusting this paragraph:
+
+```bash
+# a [x] row whose spec still has an unfinished phase
+grep -oE 'features/[a-z0-9-]+\.md' roadmap.md | sort -u |
+  while read -r spec; do
+    grep -q "^| \`\[x\]\` .*$spec" roadmap.md &&
+      grep -qE '\| (Todo|In progress|Partly done)' "$spec" && echo "$spec"
+  done
+```
+
+The **GUI shell** left it in 0.9.0 without anything being built: its last open row
+was localisation, and the interface being English closes that as *not needed* rather
+than done. Its spec now has no unfinished phase at all.
 
 Camera scanning is a default feature, and on macOS it needs the bundled application:
 an unbundled build refuses with an explanation rather than aborting (v0.2.2). One
@@ -340,11 +385,11 @@ Full text in [AGENTS.md](AGENTS.md). The short version:
 
 Decisions that change what gets built, and are not the implementer's to make.
 
-Two, and **neither holds Wave 0** — each one's phase is marked `—` (gating no wave)
-or belongs to a later wave. They were dropped from this list when the big questions
-were settled on 2026-08-11, which was an error: an unanswered question that blocks
-nothing today still blocks something eventually, and a list that says "None"
-invites nobody to answer it.
+Four, and **none of them holds Wave 0** — each is a phase marked `—` (gating no
+wave), a later wave, or a control that is built and waiting to be switched on. They
+were dropped from this list when the big questions were settled on 2026-08-11, which
+was an error: an unanswered question that blocks nothing today still blocks something
+eventually, and a list that says "None" invites nobody to answer it.
 
 1. **The approved cipher and KDF parameter set.** *Owner: ESI.* Holds
    [`features/db-password-and-encryption.md`](features/db-password-and-encryption.md)
@@ -354,7 +399,29 @@ invites nobody to answer it.
    in `docs/security-and-compliance.md` §7. Everything else about the password is
    built.
 
-2. **May an already-configured key be re-bootstrapped, and by whom?** *Owner:
+2. **Whose key signs a bootstrap procedure, and what protects it?** *Owner: ESI.*
+   Holds nothing in the code — signing and verification shipped in 0.9.0
+   ([`features/bootstrap-templates.md`](features/bootstrap-templates.md) phase 5) —
+   but it holds the **switch-on**: until a deployment has a key, every template reads
+   as unsigned and the application runs in *pilot mode*, which is visible on screen
+   and recorded per run rather than silent. Two halves to answer: which key, and what
+   protects it. A signing key in a file on the workstation that edits templates makes
+   the signature worth exactly what that workstation is worth, so an HSM, a smartcard
+   or an offline machine is the point of the exercise.
+
+   Worth stating plainly because it is the failure mode: a control that is never
+   switched on is documentation. The mechanism cost nothing to build and buys nothing
+   until somebody owns the key.
+
+3. **Is Ed25519 the signature algorithm the organisation wants?** *Owner: ESI.* Also
+   holds nothing: the algorithm is named inside every signature, so a build meeting
+   one it does not know refuses rather than treating the template as unsigned, and
+   adding a second is additive. Chosen for having no parameters to get wrong.
+   Recorded so it is **ratified rather than inherited** — the same class of decision
+   as the database cipher above, and listed beside it in
+   `docs/security-and-compliance.md` §7.
+
+4. **May an already-configured key be re-bootstrapped, and by whom?** *Owner:
    operational.* Holds [`features/device-detection.md`](features/device-detection.md)
    phase 5, which is Wave 1. Under custody model B the holder is *told* to change
    the transport PIN, so a second run that silently set one would replace a PIN the
