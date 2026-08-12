@@ -82,27 +82,30 @@ what is recorded here is the *reference*, `escrowed:bastionvault:kv/yubikeys/204
 |---|---|---|
 | **FIDO2 PIN** | Operator sets a transport PIN; `forcePINChange` marks the key | **Firmware** from 5.7 (CTAP 2.1); **procedural** below. Two reference keys are now on the bench: a 5.4.3 (procedural path) and a **5.7.4** (firmware path), so both are testable |
 | **PIV PIN** | Operator sets a transport PIN; the term instructs the change | **Procedural always** — PIV has no force-change flag at any firmware level |
-| **PIV PUK** | Handed over in the same envelope; nothing retained | Procedural; see sub-decision below |
+| **PIV PUK** | Handed over in the same envelope; nothing retained | Procedural; **confirmed 2026-08-11** |
 | **PIV management key** | `--protect --generate`: random, stored on the key, PIN-guarded | Nothing to hand over and nothing to retain — unaffected by B |
-| **OTP access code** | Generated and discarded; the slot is deliberately frozen | The holder never needs it; see sub-decision below |
+| **OTP access code** | Handed over in the same envelope; nothing retained | **Reversed 2026-08-11** — was generate-and-discard |
 
 The honest consequence of "enforcement is sometimes procedural" is that a transport PIN
 can survive if the holder ignores the instruction. That is why the run records
 `ChangeEnforcement`: an audit can then tell an enforced change from an instructed one, and
 a report can list the keys where it was only instructed.
 
-#### Two sub-decisions B leaves open
+#### The two sub-decisions B left open — both settled 2026-08-11
 
-1. **The PUK.** Default taken: hand it to the holder in the same sealed envelope and retain
-   nothing. Consequence: a blocked PIN with a lost PUK costs a PIV applet reset and a new
-   certificate. Retaining the PUK for support would be escrow — a per-device secret store
+1. **The PUK: sealed envelope, nothing retained.** The default is confirmed. A blocked PIN
+   with a lost PUK costs a PIV applet reset and a new certificate; that price was accepted
+   over retaining the PUK for support, which would be escrow — a per-device secret store
    with everything that implies.
-2. **The OTP access code.** Default taken: generate and discard, freezing the slot
-   deliberately. Consequence: reprogramming the slot later requires an OTP applet reset.
-   The alternative is to put the code in the envelope, where it will never be used.
+2. **The OTP access code: sealed envelope too.** This *reverses* the default. Generate-and-
+   discard froze the slot deliberately, so reprogramming it later meant an OTP applet reset.
+   Carrying the code keeps that door open, at the price of one more line on a slip the
+   holder is told to destroy after use.
 
-Both are recorded as open items in `roadmap.md`; the defaults are what the templates do
-today.
+The rule that falls out is simpler than the one it replaces: **every generated secret
+travels except the management key**, which is `--protect`ed onto the key itself and so has
+nothing to hand over. That is exactly what `SecretKind::goes_to_the_holder` now says, and
+what the slip renders.
 
 ### Generation rules (when the tool generates)
 
@@ -182,10 +185,10 @@ distributing by courier or post.
 ## Open questions and gates
 
 1. ~~Which model?~~ **Answered 2026-08-10: model B.**
-2. **The PUK** — handed over (default, nothing retained) or retained for support
-   (escrow). `roadmap.md` open question #5.
-3. **The OTP access code** — generated and discarded (default, slot deliberately frozen)
-   or carried in the envelope. `roadmap.md` open question #6.
+2. ~~The PUK?~~ **Answered 2026-08-11: handed over in the sealed envelope, nothing
+   retained.** No escrow.
+3. ~~The OTP access code?~~ **Answered 2026-08-11: carried in the envelope**, reversing the
+   generate-and-discard default.
 4. **Reset policy**: who may reset a key whose PIN is forgotten, and does that require a
    second operator? Model B makes this more likely to be needed, not less: a holder who
    forgets the PIN they just set has no recovery path.

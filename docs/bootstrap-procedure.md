@@ -25,7 +25,7 @@ secret: the holder replaces it on first use, and this tool retains nothing.
 | PIV PIN | Holder replaces the transport PIN | Instructed on the term — PIV has no force-change flag |
 | PIV PUK | Handed over in the same sealed envelope | Instructed |
 | PIV management key | Nobody — random, on the key, PIN-guarded | n/a |
-| OTP access code | Nobody — generated and discarded, slot frozen | n/a |
+| OTP access code | The holder, on the sealed slip | Destroyed with the slip; nothing retained |
 
 The transport secrets must reach the holder out of band: in person, or a sealed printed
 envelope. Never the e-mail the key's own certificate protects.

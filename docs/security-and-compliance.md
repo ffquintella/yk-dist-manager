@@ -9,26 +9,30 @@ requirements, not recommendations.
 
 ---
 
-## 1. Classification — **proposal, pending ESI validation**
+## 1. Classification — **level 2**, set 2026-08-11
 
 Data processed: names, corporate e-mails and organisational units of employees; serial
 numbers of security tokens; and the map of which credential material sits on which token.
 
-**Proposed level: 3.**
+**Level: 2.** This document originally proposed 3, arguing that the token↔person map is
+reconnaissance an attacker wants before targeting authentication. The owner set the level at
+2: the personal data is ordinary corporate directory data, and the map is protected by the
+controls in this document rather than by the classification.
 
-The personal data alone would suggest level 2. What raises it is the token↔person map: it is
-precisely the reconnaissance an attacker wants before targeting authentication, which makes
-it strategically sensitive to the institution under NRM §2's broader definition of sensitive data.
+The obligations that follow the tool at level 2 are unchanged by that decision, because they
+were never conditional on the level: no secret persisted anywhere
+([§4](#4-secrets)), a hash-chained audit trail that the database itself refuses to rewrite
+([§5](#5-audit)), and an encryption option for the file.
 
-Level 3 brings: a change request for every version installed anywhere, known security
-defects taking priority over feature work, and a prohibition on discontinued or unsupported
-components.
+**Two things would put the level back in question**, and both should trigger a re-read rather
+than a quiet continuation:
 
-If secrets are ever escrowed in this tool, the level should be revisited upward — which is
-one more reason not to escrow them here
-([`../features/secrets-custody.md`](../features/secrets-custody.md)).
-
-**The ESI validates the level.** This document proposes; it does not decide.
+- **Escrow.** If this tool ever retains a per-device secret, it becomes a secret store, and
+  level 3 with it. Model B exists precisely so it does not
+  ([`../features/secrets-custody.md`](../features/secrets-custody.md)).
+- **Scale or scope.** A deployment covering a materially larger population, or one that
+  starts recording something beyond the fields above, is a different data set from the one
+  classified here.
 
 ---
 
@@ -75,7 +79,7 @@ on the hand-over term, and the run records which of the two applied.
 
 This is the reading of NRM §5.3.2 that fits: these secrets need neither one-way hashing nor
 reversible storage, because none of them is stored at all. The management key is random and
-kept on the key itself (PIN-guarded), and the OTP access code is generated and discarded.
+kept on the key itself (PIN-guarded), so it is the one generated secret that never travels.
 
 Consequences to be honest about:
 

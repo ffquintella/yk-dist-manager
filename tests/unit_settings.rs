@@ -105,3 +105,45 @@ fn the_recent_list_never_exceeds_its_cap_or_repeats_an_entry() {
     let unique: std::collections::BTreeSet<_> = settings.recent_databases.iter().collect();
     assert_eq!(unique.len(), settings.recent_databases.len());
 }
+
+#[test]
+fn retention_defaults_to_a_year_and_can_be_changed() {
+    // Decided 2026-08-11: one year, configurable. A fresh install starts there.
+    use yk_dist_manager::settings::RetentionPolicy;
+
+    assert_eq!(RetentionPolicy::default().months, Some(12));
+    assert!(RetentionPolicy::default().check().is_ok());
+
+    let longer = RetentionPolicy { months: Some(60) };
+    assert!(longer.check().is_ok());
+    assert!(RetentionPolicy::FOREVER.check().is_ok());
+    assert!(RetentionPolicy::FOREVER.is_forever());
+}
+
+#[test]
+fn a_retention_shorter_than_a_hand_over_cycle_is_refused() {
+    // The failure this guards: a key can be held for years, and a trail erased
+    // faster than that stops answering who carries what — which is the question
+    // the register exists for.
+    use yk_dist_manager::settings::RetentionPolicy;
+
+    let too_short = RetentionPolicy { months: Some(1) };
+    let refusal = too_short.check().unwrap_err();
+    assert!(refusal.contains("held for years"), "{refusal}");
+}
+
+#[test]
+fn the_retention_setting_says_that_nothing_is_deleted_yet() {
+    // Setting a period must not imply enforcement that does not exist: the audit
+    // table refuses DELETE by trigger, and the archive-then-remove path is not
+    // built. Saying so is the difference between a setting and a false promise.
+    use yk_dist_manager::settings::RetentionPolicy;
+
+    let described = RetentionPolicy::default().describe();
+    assert!(described.contains("12 month"), "{described}");
+    assert!(described.contains("nothing is deleted yet"), "{described}");
+    assert!(
+        described.contains("stops being live"),
+        "the clock starts when a record goes cold, not when it was written: {described}"
+    );
+}

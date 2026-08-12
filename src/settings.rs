@@ -54,6 +54,74 @@ pub struct ShareEntry {
     pub user: String,
 }
 
+/// How long the register keeps what it has recorded.
+///
+/// Decided 2026-08-11: **one year by default, configurable**. Two things about
+/// it are deliberate and worth not undoing:
+///
+/// * The clock starts when a record stops being **live**, not when the entry was
+///   written. A key can be held for years, and deleting the hand-over while the
+///   holder still carries it would remove the answer this register exists to
+///   give — "who was given serial 20423633, and when".
+/// * `disabled` is a real option and the initial behaviour. Until the
+///   archive-then-remove path exists (`features/storage-sqlite-single-file.md`
+///   phase 7) **nothing is deleted**, because the audit table refuses `DELETE`
+///   by trigger and weakening that guarantee is not a side effect to take on
+///   the way to implementing a setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RetentionPolicy {
+    /// Months to keep a record after it stops being live. `None` = keep for ever.
+    pub months: Option<u32>,
+}
+
+impl Default for RetentionPolicy {
+    fn default() -> Self {
+        Self { months: Some(12) }
+    }
+}
+
+impl RetentionPolicy {
+    /// Never delete anything.
+    pub const FOREVER: Self = Self { months: None };
+
+    /// The shortest period this tool will accept.
+    ///
+    /// A register whose trail is erased faster than a hand-over cycle is not a
+    /// register. Six months is already short for a key that may be held for
+    /// years; below it the setting stops being retention and becomes deletion.
+    pub const MIN_MONTHS: u32 = 6;
+
+    pub fn is_forever(&self) -> bool {
+        self.months.is_none()
+    }
+
+    /// Refuse a period that would erase live history.
+    pub fn check(&self) -> Result<(), String> {
+        match self.months {
+            None => Ok(()),
+            Some(m) if m >= Self::MIN_MONTHS => Ok(()),
+            Some(m) => Err(format!(
+                "{m} month(s) is shorter than the {} this tool will accept — a key can be held \
+                 for years, and a trail erased faster than a hand-over cycle stops answering who \
+                 carries what",
+                Self::MIN_MONTHS
+            )),
+        }
+    }
+
+    /// One line for Settings.
+    pub fn describe(&self) -> String {
+        match self.months {
+            None => "kept for ever".into(),
+            Some(m) => format!(
+                "kept {m} month(s) after a record stops being live (nothing is deleted yet — \
+                 see features/storage-sqlite-single-file.md phase 7)"
+            ),
+        }
+    }
+}
+
 /// Window geometry and the screen that was open, remembered between sessions.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -144,6 +212,12 @@ pub struct AppSettings {
     pub operator: String,
     /// Organisation, used in certificate subjects.
     pub org: String,
+    /// How long audit entries and logs are kept.
+    ///
+    /// One year by default, and a setting rather than a constant because the
+    /// period is the organisation's to choose and may change after a review —
+    /// the same reason the CA and the certificate SAN are configurable.
+    pub retention: RetentionPolicy,
     /// Where the window was, and which screen was open, last time.
     ///
     /// `features/gui-shell.md` phase 5. Cosmetic, and deliberately so: nothing
@@ -207,6 +281,7 @@ impl AppSettings {
             recent_shares: Vec::new(),
             operator: default_operator(),
             org: String::new(),
+            retention: RetentionPolicy::default(),
             window: WindowState::default(),
             san: crate::san::SanPolicy::default(),
             theme: DEFAULT_THEME.to_owned(),

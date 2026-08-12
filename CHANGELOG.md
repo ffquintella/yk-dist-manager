@@ -19,6 +19,29 @@ Maintenance instructions (see AGENTS.md §5):
 
 ### Added
 
+- **A retention period for the register, configurable and defaulting to one year**
+  (`settings::RetentionPolicy`). It refuses anything under six months and accepts
+  `FOREVER` for keeping everything. What it does *not* do yet is delete: the audit
+  table refuses `DELETE` by trigger, so honouring a finite period means first
+  deciding how a retention pass may break the hash chain. `describe()` says so
+  plainly rather than implying a sweep that does not run.
+
+### Changed
+
+- **The OTP access code now travels to the holder on the sealed slip**, reversing
+  the generate-and-discard default this shipped with
+  ([`features/secrets-custody.md`](features/secrets-custody.md) sub-decision 2,
+  settled 2026-08-11). Discarding it froze the OTP slot: reprogramming later cost
+  an applet reset. Carrying it keeps that door open, at the price of one more line
+  on a slip the holder is told to destroy after use. The rule is now simply that
+  **every generated secret travels except the PIV management key**, which is
+  `--protect`ed onto the key itself and so has nothing to hand over.
+- **System classification set to level 2** (`docs/security-and-compliance.md` §1),
+  one below the level 3 that document proposed. The controls level 3 implied —
+  immutable hash-chained audit, encryption at rest — are kept regardless. Escrow
+  would put the level back in question, which is one more reason model B retains
+  nothing.
+
 - **The sealed-envelope slip** ([`features/secrets-custody.md`](features/secrets-custody.md)
   phase 5, [`features/receipts-and-terms.md`](features/receipts-and-terms.md) phase 0).
   Custody model B always hands a transport secret over, so for a posted or

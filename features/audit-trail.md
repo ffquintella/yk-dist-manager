@@ -167,10 +167,16 @@ matching audit entry exists with the expected event name.
 - **Segregation vs single file** — the norm wants a separate instance; the
   deployment wants one file. Current answer: same file + triggers + optional
   mirror. **ESI must sign this off.**
-- **Retention** — not fixed by the norm. ESI decides; until then nothing is ever
-  deleted.
-- Audit of *reads* (who looked at the holder list) is not currently in scope; if
-  the classification lands at level 3, ask whether it should be.
+- **Retention** — **one year, configurable** *(2026-08-11)*. `settings::RetentionPolicy`
+  carries the period, defaults to 12 months and refuses anything under
+  `MIN_MONTHS = 6`; `RetentionPolicy::FOREVER` keeps everything. Note what the
+  setting does *not* do yet: nothing is deleted by it. The audit table refuses
+  `DELETE` by trigger, so honouring a finite period means deciding how a
+  retention pass is allowed to break the hash chain — which is its own piece of
+  work, not a side effect of this setting.
+- Audit of *reads* (who looked at the holder list) is not in scope. The
+  classification landed at **level 2** on 2026-08-11, so the question that would
+  have forced this — level 3 — did not arise. Revisit if the level ever moves.
 
 ## References
 

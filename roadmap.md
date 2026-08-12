@@ -9,7 +9,7 @@ for a unit handing out YubiKeys:
 1. **Tracks distribution** — which key (serial, model, firmware) went to which
    person, on what date, handed over by whom, against which receipt, and exactly
    what was applied to it during bootstrap.
-2. **Bootstraps keys from a template** — a versioned, declarative procedure that
+1. **Bootstraps keys from a template** — a versioned, declarative procedure that
    sets a PIN for FIDO2 and an access code for OTP, registers the initial FIDO2
    credential resident *on the key*, and puts a PIV signing certificate carrying
    the holder's e-mail on the key so it is signing-ready on hand-over.
@@ -289,42 +289,120 @@ Full text in [AGENTS.md](AGENTS.md). The short version:
 
 Decisions that change what gets built, and are not the implementer's to make.
 
-1. **Which CA issues the signing certificate?** Internal CA, BastionVault PKI, or
-   an enterprise CA. This decides whether we build the CSR ourselves (needed for
-   the SAN) or rely on a CA profile to inject it. *Blocks the certificate step
-   going live.*
-2. **Where does the audit trail live?** The norm wants audit storage segregated
-   from operational data; the requirement here is a *single file*. Current design:
-   audit in the same file, immutable by trigger, plus an optional append-only
-   mirror elsewhere. This needs ESI sign-off.
-3. **Retention** of audit entries and logs — not fixed by the norm; ESI decides.
-4. **Classification level** of the system. Proposed: level 3 (see
-   `docs/security-and-compliance.md`). ESI validates.
-5. **The term's wording.** The built-in pt-BR and en consignment terms are a
-   complete, plausible draft — including the undertaking and an LGPD paragraph — but
-   institutional text is not the implementer's to write. It needs review by whoever
-   owns the term, and the data-protection paragraph needs the DPO. Templates are data
-   precisely so that review is an edit, not a code change.
-6. **The PUK under model B.** The transport PIN is handed over and changed by the
-   holder; the PUK has no force-change mechanism. Default taken: hand the PUK to
-   the holder in the same sealed envelope and retain nothing, which means a
-   blocked PIN with a lost PUK costs an applet reset (and a new certificate).
-   Retaining the PUK instead would be escrow, with a store to protect. Confirm.
-7. **The OTP access code under model B.** The holder never needs it, so the
-   default taken is generate-and-discard: the slot is deliberately frozen, and
-   reprogramming it later requires an OTP applet reset. Confirm, or switch the
-   template to put the code in the envelope.
-8. **May the register live in a cloud-sync folder at all?** One installation already
-   keeps it in OneDrive, and the tool now makes that *survivable* — one workstation
-   at a time, by lock file
-   ([`features/cloud-sync-hosting.md`](features/cloud-sync-hosting.md)). Survivable is
-   not approved: the file holds personal data and the record of who carries which
-   security token, and the folder's sharing settings become its access control. Whether
-   a third-party sync client may hold it, and under what sharing rules, is **ESI**'s
-   call. It is also the strongest argument yet for finishing the database password
-   (`features/db-password-and-encryption.md`).
+None. Every question below has an owner's answer; re-open one by moving it back
+up here with the date and the reason.
 
 ### Answered
+
+- **The PUK under model B.** *(2026-08-11)* **Sealed envelope — the default is
+  confirmed.** The PUK travels to the holder alongside the transport PIN and
+  nothing is retained. A blocked PIN with a lost PUK therefore costs a PIV applet
+  reset and a new certificate; that price was accepted over holding an escrow
+  store the tool would then have to protect.
+- **The OTP access code under model B.** *(2026-08-11)* **In the envelope —
+  which reverses the default this was built with.** Generate-and-discard froze
+  the OTP slot deliberately, making any later reprogramming cost an applet reset.
+  Carrying the code on the sealed slip keeps that door open, at the price of one
+  more line on a slip the holder is told to destroy after use. Implemented in
+  `SecretKind::goes_to_the_holder`: the management key is now the only secret
+  that does not travel, because it is `--protect`ed onto the key itself.
+
+- **The term's wording.** *(2026-08-11)* **Left as it stands, and reviewed at
+  operational time rather than during development.** The built-in pt-BR and en
+  consignment terms ship as they are; whoever owns the term — and the DPO, for
+  the data-protection paragraph — reviews the wording when the tool is put into
+  service.
+
+  This is exactly what the Terms screen was built for. The wording is data keyed
+  `(id, language, version)`, so a review is an **edit and a new version**, not a
+  code change and not a release: the reviewer opens the screen, changes the text,
+  and terms generated from then on use the new version while every term already
+  signed still points at the version it was generated from. *Export as PDF…* is
+  what sends a reviewer the document rather than a template full of
+  `{{variables}}`.
+
+  What that means for the shipped text: it is a **plausible draft, not approved
+  wording**, and nothing in this repository should describe it otherwise until
+  the review happens.
+
+- **Classification level of the system.** *(2026-08-11)* **Level 2.**
+  `docs/security-and-compliance.md` proposed **level 3**, and the answer is one
+  level below that — recorded as given, and flagged here rather than quietly
+  applied, because classification is what selects the controls the system is held
+  to. Two consequences to settle when the docs are updated: which of the
+  level-3 controls the compliance mapping currently assumes are no longer
+  mandated, and whether any of them should be kept anyway because the system
+  holds personal data and the custody record for security tokens regardless of
+  what its level requires. The immutable audit trail and the encryption-at-rest
+  option are both in that category — cheap to keep, awkward to argue for
+  re-adding later.
+
+- **May the register live in a cloud-sync folder at all?** *(2026-08-11)*
+  **Yes.** The location is approved. What made it defensible had already landed:
+  one workstation at a time by lock file, a snapshot before the session can
+  write, conflict copies detected and reported — and, since this session, the
+  file can be **encrypted at rest**, which was the mitigation this question was
+  most waiting on. A sync folder holding an encrypted register with a
+  single-writer lock is a different proposition from the plain file that prompted
+  the question.
+
+  Still true and still the operator's to manage: the folder's sharing settings
+  are its access control, and the lock binds only workstations running this
+  tool.
+
+- **Where does the audit trail live?** *(2026-08-11)* **The same file.** The
+  register stays one file, with the audit table immutable by trigger inside it,
+  and `StoreConfig::with_audit_mirror` remains available for a deployment that
+  wants a second copy on storage the operator cannot rewrite. That mirror is the
+  answer to the norm's segregation requirement and is what catches a chain
+  rebuilt in the database; it is optional because the single-file deployment
+  model is the requirement it has to live with.
+
+- **Retention of audit entries and logs.** *(2026-08-11)* **One year by default,
+  and configurable in the application** — `AppSettings::retention`. The period is
+  the organisation's to set and may differ per deployment or change after an ESI
+  review, so it is a setting rather than a constant, in the same way the CA and
+  the certificate SAN are. Twelve months is what a fresh install starts at.
+
+  Recorded as decided, and with one consequence that needs deciding separately
+  rather than being assumed, because it cuts against two things already built:
+
+  1. **The audit table refuses `DELETE` by trigger.** That is deliberate — NRM
+     §5.3.1 wants immutability guaranteed by the database rather than promised by
+     the application — so enforcing retention means an archive-then-remove that
+     drops and recreates the trigger. Any code that can delete an audit row is
+     code that can be misused to delete an audit row, so it needs to be one
+     narrow, audited, exported-first path rather than a general capability.
+  2. **A key can be held for longer than a year.** Deleting the trail after
+     twelve months would remove the record of a hand-over while the holder still
+     carries the key — and "who was given serial 20423633, and when" is the
+     question this register exists to answer. So retention has to be measured
+     from when a record stops being live (the key is returned, retired or
+     re-issued), not from when the entry was written.
+
+  Both are implementation questions rather than reopenings of the decision:
+  entries are kept for a year, and `features/storage-sqlite-single-file.md`
+  phase 7 records how. Nothing is deleted until that phase is built.
+
+- **Which CA issues the signing certificate?** *(2026-08-11)* **None of them, and
+  all of them: the CA is a configured parameter.** The tool must be pointable at
+  whichever CA a deployment has — an internal one for a pilot, BastionVault's PKI
+  engine, an enterprise CA — without a rebuild, because the answer differs per
+  deployment and changes over a deployment's life.
+
+  What that settles, which is the part that was actually blocking: **we build the
+  CSR ourselves.** "Configurable" cannot mean "assume the CA injects the SAN",
+  because a CA that takes a plain CSR is one of the cases that must work. So the
+  PKCS#10 request with an `rfc822Name` SAN is required, not optional, and
+  `features/step-piv-signing-certificate.md` is unblocked.
+
+  The SAN half of this already landed: `crate::san::SanPolicy` renders the value
+  and `SanSource` records whether the request carries it, the CA's profile
+  injects it, or it travels out of band. The CA itself now needs the same
+  treatment — an issuer chosen by configuration, with **manual/offline** as the
+  one that always works: export the CSR, get it signed however the unit does
+  that, import the certificate. Every other issuer is an automation of that
+  path, not a replacement for it.
 
 - **"Adjust the SSK signing certificate" — which mechanism?** *(2026-08-10)*
   **PIV slot 9c**, X.509 with `rfc822Name` = the holder's e-mail. The OpenPGP
@@ -340,6 +418,12 @@ Decisions that change what gets built, and are not the implementer's to make.
 
 | Date | Decision | Rationale |
 |---|---|---|
+| 2026-08-11 | The consignment term's **wording is reviewed in service, not in development** | It is institutional text somebody else owns, and the Terms screen exists so that review costs an edit rather than a release: the wording is data keyed `(id, language, version)`, a review produces a new version, and every term already signed keeps pointing at the version that produced it. Until then the shipped text is a draft, and is described as one |
+| 2026-08-11 | System **classification: level 2** | The organisation's call. One level below the level 3 `docs/security-and-compliance.md` proposed, so the control mapping has to be revisited rather than assumed — and the controls already built that level 3 implied (immutable audit, encryption at rest) are kept regardless, because they are cheap to keep and awkward to argue for re-adding |
+| 2026-08-11 | A cloud-sync folder is an **approved** location for the register | The mitigations are in place and measurable: one workstation at a time by lock file, a snapshot before the first write of a session, conflict copies reported, and the file encryptable at rest. The last of those was the missing piece — the question was asked of a plain file in OneDrive, and that is no longer the only option |
+| 2026-08-11 | The audit trail stays **in the same file**, with the segregated mirror optional | The single file is the deployment: it is what an operator copies, backs up and puts on a share. Splitting the trail out would mean two things to keep, two things to move and two things to lose one of. The triggers make it immutable where it sits, and the mirror — verbatim, comparable, on storage the operator cannot rewrite — is what answers the norm's segregation requirement for a deployment that needs it |
+| 2026-08-11 | Audit and log **retention defaults to one year and is configurable**, measured from when a record stops being live | A period the norm does not set, so it is the organisation's to choose — and one that may differ per deployment or change after a review, which is why it is a setting rather than a constant. Measured from the record going cold rather than from the entry being written, because a key can be held for years and deleting the hand-over while the holder still has the key would remove the answer the register exists to give. Enforcing it needs a narrow archive-then-remove path: the audit table refuses DELETE by trigger, and that guarantee is not one to weaken generally |
+| 2026-08-11 | The CA is a **configured parameter**, not a compiled-in choice, and the tool therefore **builds its own CSR** | The answer differs per deployment and over time, so hard-coding one issuer makes the other two unreachable. And configurability forces the CSR question: a CA that takes a plain PKCS#10 is one of the cases that must work, so the `rfc822Name` SAN has to be something this tool can put in a request rather than something it hopes a profile will add. Manual/offline issuance is the baseline every other issuer automates — it needs no integration, no credential and no network, so it is the one that cannot be unavailable |
 | 2026-08-10 | Native Rust crates are the primary hardware transport; `ykman` is a fallback | Typed errors, no PATH dependency, no PIN on a command line, and the only way to create a FIDO2 credential or put a SAN in a CSR |
 | 2026-08-10 | One SQLite file, `bundled`, optional SQLCipher password | A shared file on a unit share is the deployment model; nothing to install, one file to back up |
 | 2026-08-10 | Rollback journal (not WAL) when the file is on a share | WAL needs shared memory and does not work over SMB/NFS |

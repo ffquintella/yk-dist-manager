@@ -118,15 +118,23 @@ impl SecretKind {
 
     /// Does the holder need to be told this value?
     ///
-    /// Under model B the answer decides what goes on the sealed slip. The
-    /// management key is `--protect`ed onto the key itself and the OTP access
-    /// code is generated and discarded, so neither is anybody's to carry — see
-    /// the sub-decisions in `features/secrets-custody.md`.
+    /// Under model B the answer decides what goes on the sealed slip, and both
+    /// sub-decisions in `features/secrets-custody.md` were settled on
+    /// 2026-08-11:
+    ///
+    /// * The **PUK** travels in the same envelope, and nothing is retained. A
+    ///   blocked PIN with a lost PUK costs an applet reset; retaining it would
+    ///   be escrow, with a store to protect.
+    /// * The **OTP access code** travels too — which *reverses* the default this
+    ///   was built with. Generate-and-discard froze the slot deliberately and
+    ///   made reprogramming cost an applet reset; putting the code in the
+    ///   envelope keeps that door open at the price of one more line on a slip
+    ///   the holder is told to destroy.
+    ///
+    /// The **management key** is the one that does not travel: it is
+    /// `--protect`ed onto the key under the PIN, so there is nothing to carry.
     pub fn goes_to_the_holder(&self) -> bool {
-        matches!(
-            self,
-            SecretKind::Fido2Pin | SecretKind::PivPin | SecretKind::PivPuk
-        )
+        !matches!(self, SecretKind::PivManagementKey)
     }
 
     /// Which step kinds set this secret.
@@ -503,8 +511,10 @@ mod tests {
 
     #[test]
     fn only_the_secrets_the_holder_carries_reach_the_slip() {
-        // The management key is protected onto the key and the OTP access code is
-        // discarded, so neither belongs on a sealed envelope.
+        // Everything travels except the management key, which is `--protect`ed
+        // onto the key itself and so has nothing to hand over. The OTP access
+        // code joined this list on 2026-08-11, when generate-and-discard was
+        // reversed in favour of keeping the slot reprogrammable.
         let panel = ShowOnce::new(vec![
             Secret::generate(SecretKind::Fido2Pin, 8).unwrap(),
             Secret::generate(SecretKind::PivPin, 8).unwrap(),
@@ -513,7 +523,10 @@ mod tests {
             Secret::generate(SecretKind::OtpAccessCode, 0).unwrap(),
         ]);
         let carried: Vec<&str> = panel.for_the_holder().map(|s| s.kind().slug()).collect();
-        assert_eq!(carried, vec!["fido2-pin", "piv-pin", "piv-puk"]);
+        assert_eq!(
+            carried,
+            vec!["fido2-pin", "piv-pin", "piv-puk", "otp-access-code"]
+        );
     }
 
     #[test]

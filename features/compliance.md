@@ -34,14 +34,20 @@ and — depending on the custody decision — potentially the credentials themse
 |---|---|
 | Ordinary personal data (name, e-mail, unit) | 2 |
 | Security-relevant data, strategically sensitive to the institution: the token↔person map and what is on each token | **3** |
-| If secrets are ever escrowed here | 3, arguably 4 |
+| If secrets are ever escrowed here | 3, arguably 4 — so we do not |
 
-**Proposed: level 3.** The map of who holds which credential is exactly the reconnaissance
-an attacker wants, which puts it above "ordinary personal data". Level 3 brings: a change
-request for every installed version, known security defects taking priority over feature
-work, and a prohibition on discontinued or unsupported components.
+**Set: level 2** *(2026-08-11, the owner's decision).* This feature proposed 3, arguing that
+the map of who holds which credential is the reconnaissance an attacker wants, and so sits
+above "ordinary personal data". The owner placed it at 2 instead: the directory fields are
+ordinary, and the map is protected by the controls rather than by the level.
 
-This is a **proposal**; the ESI validates.
+The table above is left as written, because it is the argument, not the outcome — and its
+last row still stands: **escrow would move the level**, which is one more reason model B
+retains nothing ([`secrets-custody.md`](secrets-custody.md)).
+
+The controls that level 3 would have implied — immutable hash-chained audit, encryption at
+rest — are built and kept regardless. They are cheap to keep and awkward to argue for
+re-adding later.
 
 ### Artefacts required
 

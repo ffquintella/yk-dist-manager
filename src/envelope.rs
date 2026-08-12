@@ -275,16 +275,21 @@ mod tests {
             assert!(text.contains(secret.kind().label()));
         }
 
-        // And nothing else. The management key is protected onto the key and the
-        // OTP access code is deliberately discarded, so neither is the holder's
-        // to carry — putting them on paper would create custody nobody wanted.
-        for kind in [SecretKind::PivManagementKey, SecretKind::OtpAccessCode] {
-            assert!(
-                !text.contains(kind.label()),
-                "{} must not appear on a slip",
-                kind.label()
-            );
-        }
+        // And not the management key. It is `--protect`ed onto the key under the
+        // PIN, so there is nothing to carry — putting it on paper would create
+        // custody nobody wanted, which is the whole argument of model B.
+        assert!(
+            !text.contains(SecretKind::PivManagementKey.label()),
+            "the management key must not appear on a slip"
+        );
+
+        // The OTP access code *does* travel, since 2026-08-11. It used to be
+        // generated and discarded; carrying it keeps the slot reprogrammable
+        // instead of frozen behind an applet reset.
+        assert!(
+            text.contains(SecretKind::OtpAccessCode.label()),
+            "the OTP access code belongs on the slip"
+        );
     }
 
     #[test]
@@ -361,12 +366,12 @@ mod tests {
 
     #[test]
     fn a_run_that_set_nothing_the_holder_carries_produces_no_slip() {
-        // A FIDO-only template with the PIN set by the holder at the desk hands
-        // over nothing, so there is nothing to seal — and a blank slip in an
-        // envelope is a worse outcome than no envelope.
+        // A PIV run where the PINs were set by the holder at the desk hands over
+        // nothing: the management key is `--protect`ed onto the key itself, so
+        // it is the one secret that never travels. There is nothing to seal —
+        // and a blank slip in an envelope is a worse outcome than no envelope.
         let panel = ShowOnce::new(vec![
             Secret::generate(SecretKind::PivManagementKey, 0).unwrap(),
-            Secret::generate(SecretKind::OtpAccessCode, 0).unwrap(),
         ]);
         assert!(matches!(
             render_text(&request(), &panel),

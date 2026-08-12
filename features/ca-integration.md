@@ -121,8 +121,14 @@ which is a requirement on the executor
 
 ## Open questions and gates
 
-- **Which issuer for production?** This is `roadmap.md` open question #2 and blocks
-  the certificate step going live.
+- ~~**Which issuer for production?**~~ **Answered 2026-08-11: none is hard-wired —
+  the CA is a configured parameter.** The tool must be able to point at any CA, so
+  what this feature owes is the *mechanism*, not a choice of issuer: the CSR
+  builder is therefore **required**, not optional, and
+  [`step-piv-signing-certificate.md`](step-piv-signing-certificate.md) is
+  unblocked. Whoever deploys picks the issuer and the endpoint in settings; the
+  SAN policy is already configurable
+  ([`src/san.rs`](../src/san.rs), [`src/settings.rs`](../src/settings.rs)).
 - **Certificate profile** — validity, EKUs, algorithms, revocation endpoints — is the
   PKI owner's decision, with ESI agreement on the integration mechanism (the norm
   requires ESI approval for every integration).
