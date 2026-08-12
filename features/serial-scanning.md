@@ -22,10 +22,11 @@ the two apart, so nothing downstream treats a scanned serial as a confirmed key.
 **Shipped; the camera is on by default.**
 
 > **`camera` is a default feature.** That was a deliberate choice — an operator
-> should not need a special build to point a webcam at a box label. It moves two
-> problems onto every build, and neither is solved: the macOS camera-usage
-> declaration, and the future-incompatible `block` 0.1.6 in `nokhwa`'s macOS
-> bindings. Both are release blockers now; see *Open questions and gates*.
+> should not need a special build to point a webcam at a box label. It moved two
+> problems onto every build, and **one is still open**: the future-incompatible
+> `block` 0.1.6 in `nokhwa`'s macOS bindings (phase 10, a release blocker; see
+> *Open questions and gates*). The macOS camera-usage declaration is closed —
+> phase 11 ships it in the bundle and `make verify-bundle` fails without it.
 > `--no-default-features --features file-dialog` builds without any camera code.
 
 - `SerialSource` (`Device` / `ScannedLabel` / `ManualEntry`) on every inventory
@@ -200,10 +201,14 @@ unusable.
   Recorded here rather than in a build log, because a default feature is the kind of
   decision that stops being visible once it works.
 
-- **Release blocker — macOS camera permission.** A bundled `.app` without
+- **Closed — macOS camera permission.** A bundled `.app` without
   `NSCameraUsageDescription` is terminated by the OS the first time it opens the
-  camera. It is a one-line `Info.plist` entry, but with `camera` on by default it
-  applies to every macOS build, not just a special one.
+  camera, and with `camera` on by default that applied to every macOS build rather
+  than a special one. Phase 11 ships the entry in `packaging/macos/`, and
+  `packaging/macos/verify-bundle.sh` fails the build when it is missing or too
+  vague to be useful — so it cannot quietly regress. Kept here, marked closed,
+  because a gate that simply disappears from a document reads as one nobody
+  checked.
 
 ## References
 

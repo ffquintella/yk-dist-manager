@@ -29,15 +29,22 @@ deployment.
 
 | State | Count |
 |---|---|
-| Done | 11 |
-| In progress | 16 |
-| Todo | 14 |
+| Done | 17 |
+| In progress | 11 |
+| Todo | 13 |
 | **Total tracked items** | **41** (across 38 specs — two items share a spec) |
 
-> The counts had drifted again — they read 10 / 13 / 18 against 10 `[x]`, 16 `[/]` and
-> 15 `[ ]` rows — and are counted from the tables here rather than adjusted by hand:
-> `grep -cE '^\| .\[x\].' roadmap.md` and its two siblings. The database password moving
-> to `[x]` is this change; the rest was drift.
+> Counted from the tables below rather than adjusted by hand, because they had drifted
+> twice:
+>
+> ```bash
+> for s in 'x' '/' ' '; do grep -cF "| \`[$s]\`" roadmap.md; done
+> ```
+>
+> Six rows moved to `[x]` when this section was re-derived from the phase tables: they
+> had every wave-0 phase done and were still `[/]` because of their **Wave 1** rows,
+> which the Wave column exists to stop counting. See
+> [What stands between here and a closed Wave 0](#what-stands-between-here-and-a-closed-wave-0).
 
 Released: **v0.8.0**. Current wave: **Wave 1 — native execution.**
 
@@ -134,63 +141,74 @@ intended state until the native transports land and are verified against hardwar
 
 ## What stands between here and a closed Wave 0
 
-Wave 0 cannot be marked done today, and the reasons are worth stating rather than
-leaving as unticked boxes. Every remaining item falls into one of four groups.
-
-**1. Blocked on Wave 1.** These need the executor, or the native FIDO/OTP
-transports, to exist at all:
-
-| Row | What is waiting |
-|---|---|
-| Bootstrap planner | the executor *is* Wave 1 |
-| Bootstrap wizard | phases 2–7: run view, secret prompts, confirmation, resume, post-run summary, pre-flight |
-| Native device transport | phases 2–4 are the Wave 1 step features |
-| Device detection | phases 4–6: per-applet reads, "already bootstrapped", attestation |
-| Audit trail | phase 3: one entry per executor step outcome |
-| Testing strategy | phase 7: mock write transports; phase 8: the secret-leak sweep has no generated secret to sweep for yet |
-
-**2. Blocked on a decision that is not the implementer's** (AGENTS.md §8):
-
-| Question | Owner | Blocks |
-|---|---|---|
-| Is a cloud-sync folder an acceptable location for this register? | **ESI** | open question 8 |
-| Segregated audit storage — is the mirror sufficient? | **ESI** | audit-trail phase 2 sign-off (the mechanism is built) |
-| Retention period for audit and logs | **ESI** | storage phase 7 |
-| The approved cipher and KDF parameter set | **ESI** | db-password phase 4 |
-| Is the UI English or pt-BR? | undecided | gui-shell phase 9 |
-| May an already-configured key be re-bootstrapped, and by whom? | operational | device-detection phase 5 |
-| The consignment term's wording, and its data-protection paragraph | **owner / DPO** | open question 5 |
-
-**3. Blocked on packaging that does not exist yet.** Application icon phases 5
-(Windows `.ico`) and 6 (Linux `hicolor`) have nothing to attach to until there is
-Windows and Linux packaging (`features/packaging-and-release.md`).
-
-**4. Buildable now, and not yet built.** The honest remainder — no external
-blocker, simply not done. Every row is a phase carrying **wave 0** in its own
-spec, which is what decides whether it gates this wave:
+Wave 0 cannot be marked done today. This is the whole of what is left, derived from
+the phase tables in [`features/`](features/) rather than written from memory — a
+phase gates this wave if and only if its **Wave** column says `0`:
 
 | Feature | Phase | What is missing |
 |---|---|---|
-| [Device detection](features/device-detection.md) | 2, 3 | background hot-plug polling; the picker when several keys are attached |
-| [Bootstrap templates](features/bootstrap-templates.md) | 4, 5, 6 | import/export as a file; template signing; diff between two versions |
+| [Bootstrap templates](features/bootstrap-templates.md) | 4, 5, 6 | import/export a template as a file; template signing and verification; a diff between two versions |
+| [Device detection](features/device-detection.md) | 2, 3 | background hot-plug polling; the picker for when several keys are attached |
 | [Receipts & terms](features/receipts-and-terms.md) | 4, 6 | the signature state machine with an age warning; the return receipt |
 | [SMB share hosting](features/smb-share-hosting.md) | 9 | reconnecting a share that drops mid-session |
 | [Application icon](features/application-icon.md) | 7 | the icon on the unlock screen and in an About box |
 | [Testing strategy](features/testing-strategy.md) | 9 | property tests for the audit chain and the RFC 4514 escaper |
 
-Two groups of rows left this list and are recorded here so nobody looks for them:
-the **database password** (re-key, encrypt-existing, throttling and the strength
-meter are built, wired and reachable from Settings — the row is `[x]` above, and
-only phase 4, the KDF parameter set, is left, in group 2 as the ESI's to decide),
-and the **GUI shell** (search, sorting, window-state persistence, keyboard flow,
-confirmation dialogs, the log panel and the accessibility pass are all done; the
-sealed-envelope slip landed with the custody decisions in 0.7.1).
+**Ten phases across six features, none of them blocked on anything.** No decision
+is outstanding for any of them, no hardware is needed, and nothing waits on Wave 1.
+It is work, not a queue.
+
+Regenerate this list rather than trusting it — the prose here drifted twice before
+it was derived:
+
+```bash
+awk -F'|' '$4 ~ /^ *0 *$/ && $5 !~ /[Dd]one/ {print FILENAME" phase"$2": "$3}' features/*.md
+```
+
+### What is *not* on that list, and why
+
+Three groups of unticked boxes exist elsewhere in the specs and none of them gates
+this wave. They are named here because they used to be listed as Wave 0 blockers,
+and looking for them is otherwise the obvious mistake.
+
+**Phases that gate a later wave.** The bootstrap engine's PIV and OTP steps, the
+PIV/OTP/management native transports, per-applet reads, the wizard's resume and
+post-run summary, template applicability rules and retry policy, unlocking with a
+YubiKey: all **Wave 1**, all in the Wave 1 table below. A Windows `.ico` and a Linux
+`hicolor` icon are **Wave 3**, with the packaging they attach to. Concurrency,
+batch mode, the signed audit export and the cross-check transport are **Wave 2**.
+
+**Phases marked `—`, which gate no wave by definition.** Some of them are marked
+that way because they are held by a decision that is not the implementer's
+(AGENTS.md §8). These three are every such decision left anywhere in the specs —
+[Open questions](#open-questions) is otherwise empty:
+
+| Question | Owner | Phase it holds |
+|---|---|---|
+| The approved cipher and KDF parameter set | **ESI** | [db-password](features/db-password-and-encryption.md) 4 (`—`) — explicit `kdf_iter` and cipher page size. The defaults are SQLCipher's until then |
+| Is the interface English or pt-BR? | undecided | [gui-shell](features/gui-shell.md) 9 (`—`) — localisation |
+| May an already-configured key be re-bootstrapped, and by whom? | operational | [device-detection](features/device-detection.md) 5, which is **Wave 1** rather than `—`, so it is not holding this wave either way |
+
+The rest of the `—` phases are optional by choice, not blocked: an external
+chain-head witness ([audit-trail](features/audit-trail.md) 5), Kerberos on macOS
+([SMB](features/smb-share-hosting.md) 10), Cucumber
+([testing](features/testing-strategy.md) 6), and archival and retention
+([storage](features/storage-sqlite-single-file.md) 7) — that last one now has its
+decision (one year, configurable, settled 2026-08-11) and needs an
+archive-then-remove path that can break and rebuild the audit trigger, which is
+deliberately not a general capability.
+
+**Rows that reached `[x]` for this wave while their specs still show Todo phases.**
+Six of them, and the Wave column is what makes that legitimate: native device
+transport, single-file SQLite storage, the audit trail, the bootstrap planner, the
+GUI shell and the bootstrap wizard have every wave-0 phase done and only Wave 1+
+work left. The database password joined them in 0.8.0.
 
 Camera scanning is a default feature, and on macOS it needs the bundled application:
-an unbundled build refuses with an explanation rather than aborting (v0.2.2). Two
-release blockers stand in front of any distributed artefact — the
-`NSCameraUsageDescription` bundle entry and the future-incompatible `block` 0.1.6 in
-`nokhwa`'s macOS bindings. See
+an unbundled build refuses with an explanation rather than aborting (v0.2.2). One
+release blocker stands in front of any distributed artefact — the future-incompatible
+`block` 0.1.6 in `nokhwa`'s macOS bindings. The `NSCameraUsageDescription` half is
+closed: `packaging/macos/verify-bundle.sh` fails the build without it. See
 [`features/serial-scanning.md`](features/serial-scanning.md).
 
 ## How to read this
@@ -203,9 +221,14 @@ release blockers stand in front of any distributed artefact — the
   That column exists because the previous rule — "Done only when every phase in
   its spec is done" — made Wave 0 unverifiable. Several Wave 0 rows have phase
   tables containing Wave 1 work by nature: device detection cannot read PIN
-  retries before the applet transports exist, and the bootstrap wizard cannot show
-  a live run before there is an executor. Under the old rule those rows could
-  never reach `[x]`, so "Wave 0 is finished" was a question with no answer.
+  retries before the applet transports exist, and the bootstrap wizard could not
+  show a live run before there was an executor. Under the old rule those rows
+  could never reach `[x]`, so "Wave 0 is finished" was a question with no answer.
+
+  The consequence to expect when reading a `[x]` row: it means **done for this
+  wave**, and its spec may still show Todo phases. Six rows are in exactly that
+  state today, and are named in the section below so the mismatch is never a
+  surprise.
 - A phase marked **—** in the Wave column gates *no* wave: it is optional, or it
   is blocked on a decision that is not the implementer's (`AGENTS.md` §8). Those
   are listed under [What stands between here and a closed Wave 0](#what-stands-between-here-and-a-closed-wave-0)
@@ -222,24 +245,24 @@ Everything needed before a single byte is written to a key.
 
 | Status | Feature | Notes |
 |---|---|---|
-| `[/]` | Native device transport | [spec](features/native-device-transport.md) — `yubikey` over PC/SC reads serial + firmware from a real key today (verified against 5 NFC / fw 5.4.3, agrees with `ykman`). FIDO2 and OTP transports are Wave 1. |
+| `[x]` | Native device transport | [spec](features/native-device-transport.md) — `yubikey` over PC/SC reads serial + firmware from a real key today (verified against 5 NFC / fw 5.4.3, agrees with `ykman`). FIDO2 and OTP transports are Wave 1. |
 | `[x]` | `ykman` fallback + parsers | [spec](features/ykman-fallback.md) — argv-only subprocess, typed errors, parsers unit-tested against recorded output of ykman 5.9.2. |
 | `[/]` | Device detection | [spec](features/device-detection.md) — read-on-demand works; hot-plug polling and multi-key selection pending. |
-| `[/]` | Single-file SQLite storage | [spec](features/storage-sqlite-single-file.md) — schema **v5** (per-step run rows), `user_version` migrations (v1→v5 tested), WAL locally / rollback journal on a share, `VACUUM INTO` backup **on a schedule with rotation**, `integrity_check`, and **CSV import** of the spreadsheet this replaces. Concurrency is Wave 2; retention is blocked on ESI. |
+| `[x]` | Single-file SQLite storage | [spec](features/storage-sqlite-single-file.md) — schema **v5** (per-step run rows), `user_version` migrations (v1→v5 tested), WAL locally / rollback journal on a share, `VACUUM INTO` backup **on a schedule with rotation**, `integrity_check`, **CSV import** of the spreadsheet this replaces, and the SMB share connected by the application itself. Every wave-0 phase done. Concurrency is Wave 2; archival and retention (phase 7, gating no wave) has its decision — one year, configurable — and needs the archive-then-remove path that may break and rebuild the audit trigger. |
 | `[/]` | SMB share hosting | [spec](features/smb-share-hosting.md) — the application connects the share itself: the signed-in user (the default, and the whole mechanism on Windows), guest, or a named account whose password is typed and never stored. `WNetAddConnection2W` / `NetFSMountURLSync`, never a command line. An already-mounted share is used and left alone; one this session made is released on close and on quit. Reconnecting a share that drops mid-session, and Kerberos on macOS, are Todo. |
 | `[x]` | Cloud-sync hosting (OneDrive) | [spec](features/cloud-sync-hosting.md) — `Location::CloudSync`: waits for the sync client, takes `<database>.lock`, refuses a second workstation by name, releases after the upload, reports sync conflict copies, **snapshots the register at open** before this session can write, and offers a **read-only** open so a second operator can look without taking the lock. Every phase done. Whether the location is *acceptable* is an ESI decision, not this feature's. |
 | `[x]` | Choosing / creating the database file | [spec](features/database-selection.md) — strict `open_existing` vs `create_new` (a typo can no longer create an empty database), recent-database list, native dialogs, switch from Settings. |
 | `[x]` | Optional database password | [spec](features/db-password-and-encryption.md) — `encrypted-db` wires `PRAGMA key`; the chooser prompts. **Settings → Password protection** sets, changes and removes the password by export-and-swap, never an in-place re-key, with the strength meter beside it and the floor enforced by the store rather than by the screen. The prompt slows down after three wrong passwords — a doubling delay counted down on screen, enforced in `handle_db_request` and deliberately not a lockout. Explicit KDF parameters are the one thing left, and they are **blocked on the ESI's approved cipher set**; unlocking with a YubiKey is Wave 1. |
 | `[x]` | Logging | [spec](features/logging.md) — one entry point, three levels, G-002 line format, no hand-built log lines. |
-| `[/]` | Audit trail | [spec](features/audit-trail.md) — SHA-256 chain, `UPDATE`/`DELETE` refused by trigger, **verification at open**, a **segregated mirror** whose divergence is an alert, and **filtering** by event, actor, target and date. Executor events wait on Wave 1; whether the mirror satisfies segregation is the ESI's call. |
+| `[x]` | Audit trail | [spec](features/audit-trail.md) — SHA-256 chain, `UPDATE`/`DELETE` refused by trigger, **verification at open**, a **segregated mirror** whose divergence is an alert, and **filtering** by event, actor, target and date, plus one entry per executor step outcome. Every wave-0 phase done, and the segregation question is answered: the trail lives in the register, and the optional mirror is what satisfies the norm (2026-08-11). An external chain-head witness (phase 5) gates no wave; the signed ESI export is Wave 2. |
 | `[x]` | Key inventory | [spec](features/key-inventory.md) — serial, model, firmware, form factor, FIPS flag, applications, lifecycle with guarded transitions, serial provenance (verified / scanned / typed), an editable **observation** per key, and confirmed **removal** of an intake mistake (refused once a hand-over or a run refers to the serial). |
 | `[x]` | Serial from a barcode | [spec](features/serial-scanning.md) — camera decoding via `rxing` + `nokhwa`, a USB-wedge/typed path that needs no features, and provenance that only ever improves. |
 | `[x]` | Holder registry | [spec](features/holder-registry.md) — minimal personal data, validated e-mail, RFC 4514 subject derivation, plus optional identification number, phone and address. |
 | `[x]` | Distribution records | [spec](features/distribution-records.md) — hand-over, operator, delivery method, receipt reference, linked bootstrap run, return without rewriting history. |
 | `[/]` | Bootstrap templates | [spec](features/bootstrap-templates.md) — versioned templates, `{{variable}}` rendering, two built-ins, validation, and a **Templates screen**: add, duplicate, edit (always as a new version), retire / reinstate, remove. A draft is refused unless it *plans* against sample data. Both built-ins now ship at **v2** with the corrected forced-change ordering: `fido-only` is cut from `org-standard`, so its version is derived from it and a correction cannot reach the code and stop at the database. Import/export, signing and per-key applicability rules are pending. |
-| `[/]` | Bootstrap planner | [spec](features/bootstrap-engine.md) — plan with per-step transport (native / ykman / manual) and secret placeholders; dry runs recorded. **The executor is Wave 1.** |
-| `[/]` | GUI shell | [spec](features/gui-shell.md) — eight screens, unlock screen, status bar, egui 0.36 `App::ui`, themed with `egui-elegance` (four palettes, the choice persisted) and laid out fluidly (one gutter, full-width cards, columns that split the page, tables that contain their own overflow). Search, keyboard flow and window-state persistence still open. |
-| `[/]` | Bootstrap wizard | [spec](features/gui-bootstrap-wizard.md) — selection (the newest version of each template in use), per-step opt-out, plan review, dry run, and a link to the Templates screen. Execution progress view pending. |
+| `[x]` | Bootstrap planner | [spec](features/bootstrap-engine.md) — plan with per-step transport (native / ykman / manual) and secret placeholders; dry runs recorded — both wave-0 phases. **The executor is Wave 1**, and is tracked as its own row there. |
+| `[x]` | GUI shell | [spec](features/gui-shell.md) — eight screens, unlock screen, status bar, egui 0.36 `App::ui`, themed with `egui-elegance` (four palettes, the choice persisted) and laid out fluidly (one gutter, full-width cards, columns that split the page, tables that contain their own overflow). Search, sortable columns, window-state persistence, keyboard flow, hardware-write confirmation, the log panel and the accessibility pass are all done — every wave-0 phase. Localisation (phase 9) waits on whether the interface is English or pt-BR, and gates no wave. |
+| `[x]` | Bootstrap wizard | [spec](features/gui-bootstrap-wizard.md) — selection (the newest version of each template in use), per-step opt-out, plan review, dry run, and a link to the Templates screen — the whole of wave 0. The live run view, the secret panels and the pre-flight checks landed with the executor in 0.7.1; resume and the post-run summary are Wave 1, batch mode Wave 2. |
 | `[/]` | Application icon | [spec](features/application-icon.md) — one SVG (a box truck carrying a YubiKey), `make icons` rendering the PNGs, the macOS `.icns` and the RGBA blob the binary embeds; window, dock and bundle icons done. A Windows `.ico` resource and a Linux `hicolor` install wait on there being Windows and Linux packaging. |
 | `[/]` | Testing strategy | [spec](features/testing-strategy.md) — **545 tests** across unit + behaviour suites, a mock device backend and a mock share connector, recorded fixtures, ignored hardware tests; **86.91%** core line coverage. **CI enforces the gate** on every push, with a macOS/Windows/Linux build matrix. Mock write transports and the secret-leak sweep wait on Wave 1. |
 
@@ -249,7 +272,7 @@ Everything needed before a single byte is written to a key.
 |---|---|---|
 | `[x]` | Consignment terms | [spec](features/consignment-terms.md) — multilingual templates keyed `(id, language, version)`, pt-BR + en built in, optional fields that omit their own line, generated from the record. A **Terms screen** edits the wording and adds languages: saving stores a new version, and terms are generated from the newest. The **wording needs its owner's review**, which the editor is what makes possible — and, since phase 7, an *Export as PDF…* that sends the reviewer the document rather than a template full of `{{variables}}`. The term now leaves as **text or PDF** from one rendering, so the copy reviewed on screen cannot disagree with the copy that is signed; `crate::pdf` writes the file with **no dependency and no TeX**, and every page names the template version that produced it. |
 | `[x]` | Signed-term upload | [spec](features/signed-term-documents.md) — the scan is filed in the database with a SHA-256, verified on export, with a per-hand-over "none filed" badge. |
-| `[ ]` | Receipts & terms (signature tracking) | [spec](features/receipts-and-terms.md) — what is left of the broader spec: the sealed-envelope slip, a signature state machine with an age warning, return receipts, batch generation. |
+| `[/]` | Receipts & terms (signature tracking) | [spec](features/receipts-and-terms.md) — the term, its PDF, the versioned template and the filed signature are done, and the sealed-envelope slip shipped in 0.7.1. Left for wave 0: a **signature state machine** with an age warning (phase 4) and the **return receipt** (phase 6). Batch generation is Wave 2. |
 
 ## Wave 1 — Execute the bootstrap, natively
 
@@ -308,8 +331,38 @@ Full text in [AGENTS.md](AGENTS.md). The short version:
 
 Decisions that change what gets built, and are not the implementer's to make.
 
-None. Every question below has an owner's answer; re-open one by moving it back
-up here with the date and the reason.
+Three, and **none of them holds Wave 0** — each one's phase is marked `—` (gating no
+wave) or belongs to a later wave. They were dropped from this list when the big
+questions were settled on 2026-08-11, which was an error: an unanswered question
+that blocks nothing today still blocks something eventually, and a list that says
+"None" invites nobody to answer it.
+
+1. **The approved cipher and KDF parameter set.** *Owner: ESI.* Holds
+   [`features/db-password-and-encryption.md`](features/db-password-and-encryption.md)
+   phase 4 — `PRAGMA kdf_iter` and the cipher page size, stated explicitly rather
+   than inherited. Until it is answered the defaults are SQLCipher's own, which are
+   reasonable and *not* the same thing as approved. Also listed as an approval gate
+   in `docs/security-and-compliance.md` §7. Everything else about the password is
+   built.
+
+2. **Is the interface English or pt-BR?** *Owner: undecided — it needs one.* Holds
+   [`features/gui-shell.md`](features/gui-shell.md) phase 9. The audience is
+   Brazilian and the log format is already pt, but the screens are English and the
+   *consignment term* is separately multilingual, so the two are not the same
+   decision. Whoever owns the tool in service should say; the cost of answering it
+   late is that every string written between now and then has to be revisited.
+
+3. **May an already-configured key be re-bootstrapped, and by whom?** *Owner:
+   operational.* Holds [`features/device-detection.md`](features/device-detection.md)
+   phase 5, which is Wave 1. Under custody model B the holder is *told* to change
+   the transport PIN, so a second run that silently set one would replace a PIN the
+   holder chose without their knowing — which is why the executor already treats
+   "already applied" as a skip. What needs deciding is whether an operator may
+   override that deliberately, and whether the record should distinguish a re-issue
+   from a first issue.
+
+Every question below has an owner's answer; re-open one by moving it back up here
+with the date and the reason.
 
 ### Answered
 

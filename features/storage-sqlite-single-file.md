@@ -166,7 +166,7 @@ Two operators on the same share will collide eventually. Planned policy:
 | 2 | Location-aware pragmas | 0 | Done | WAL vs rollback journal, tested |
 | 2b | Cloud-sync detection: safe pragmas plus a visible warning | 0 | Done | found by a `--diagnose` report from a real installation |
 | 2c | Cloud-sync hosting: `Location::CloudSync` + single-writer lock | 0 | Done | [spec](cloud-sync-hosting.md) — the installation that prompted 2b needed the folder to *work*, not just to be warned about |
-| 2d | Connect the SMB share from the application: anonymous, named account, or the signed-in user | 0 | In progress | [spec](smb-share-hosting.md) — the mechanism and all three platform backends are done and tested; the chooser card is Todo. This is what makes "use a real share" actionable rather than advice |
+| 2d | Connect the SMB share from the application: anonymous, named account, or the signed-in user | 0 | **Done** | [spec](smb-share-hosting.md) — mechanism, all three platform backends, and the chooser card with its remembered shares (that spec's phase 7, which is what this row was waiting for). What is left there is reconnecting a share that *drops* mid-session, which is its phase 9 and not this row |
 | 3 | Backup (`VACUUM INTO`) + `integrity_check` | 0 | Done | Settings screen |
 | 4 | Multi-operator concurrency policy | 2 | Todo | busy retry + optimistic `updated_at` — **Wave 2**, tracked in the roadmap under that wave |
 | 5 | Per-step run rows instead of a JSON blob | 0 | **Done** | schema **v5**: `bootstrap_run_steps`, backfilled in Rust, blob column dropped |

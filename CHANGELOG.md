@@ -17,6 +17,41 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+### Fixed
+
+- **The roadmap's account of what Wave 0 still needs is re-derived from the phase
+  tables instead of maintained by hand**, and it had drifted badly enough to be
+  misleading: it listed work as blocked on Wave 1 that shipped in 0.7.1 (the
+  executor's audit coverage, the mock write transports, the wizard's run view and
+  pre-flight), and listed six decisions as outstanding when five were answered on
+  2026-08-11. What is actually left is **ten phases across six features, none of
+  them blocked on anything** — templates import/export, signing and diff; hot-plug
+  polling and the multi-key picker; the signature state machine and return receipt;
+  reconnecting a dropped share; the icon's in-application use; and property tests.
+  The section now carries the one-liner that regenerates it.
+- **Six rows are `[x]` for Wave 0 that were held at `[/]` by their Wave 1 phases** —
+  native device transport, single-file storage, the audit trail, the bootstrap
+  planner, the GUI shell and the bootstrap wizard. The Wave column exists precisely
+  to stop counting later-wave work against this one, and it was not being applied.
+  The at-a-glance counts were wrong in both directions and are now counted from the
+  tables.
+- **Storage phase 2d is Done, not In progress**: it was waiting on the share
+  chooser card, which shipped as `smb-share-hosting` phase 7 in 0.7.0. Only
+  reconnecting a *dropped* share is left, and that is phase 9 of the other spec.
+- **Three open questions are back in the roadmap's *Open questions*, which said
+  "None".** The cipher and KDF parameter set (ESI), whether the interface is English
+  or pt-BR (nobody owns it yet), and whether an already-configured key may be
+  re-bootstrapped (operational). None of them holds Wave 0 — each is a `—` phase or
+  a later wave — but they were dropped from the list when the big questions were
+  answered on 2026-08-11, and a list that says "None" invites nobody to answer
+  anything. `docs/security-and-compliance.md` §7 had gone on listing the cipher
+  gate the whole time.
+- **`serial-scanning` no longer claims two release blockers.**
+  `NSCameraUsageDescription` has been in the bundle since the macOS packaging
+  landed, and `packaging/macos/verify-bundle.sh` fails the build without it. The
+  remaining blocker is the future-incompatible `block` 0.1.6 in `nokhwa`'s macOS
+  bindings.
+
 ## [0.8.0] - 2026-08-12
 
 ### Added
