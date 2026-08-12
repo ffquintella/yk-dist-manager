@@ -29,8 +29,8 @@ deployment.
 
 | State | Count |
 |---|---|
-| Done | 19 |
-| In progress | 9 |
+| Done | 20 |
+| In progress | 8 |
 | Todo | 13 |
 | **Total tracked items** | **41** (across 38 specs — two items share a spec) |
 
@@ -125,9 +125,9 @@ of the job: choosing or creating the database file, recording serials from a bar
 generating the consignment term in the holder's language, and filing the signed copy
 against the hand-over — and, from the Terms screen, editing that term's wording per
 language. The Templates screen now does the same for the bootstrap procedure itself.
-**672 tests** pass with the default features and **689** with `--all-features` (plus 4
-read-only hardware tests and one ignored `openssl` interop test), with **84.8%**
-(region 84.2%) line coverage of the headless core — enforced by CI against a floor of
+**692 tests** pass with the default features and **709** with `--all-features` (plus 4
+read-only hardware tests and one ignored `openssl` interop test), with **85.2%**
+(region 84.6%) line coverage of the headless core — enforced by CI against a floor of
 80% rather than reported. The register can also
 be opened from the unit's **SMB share**, connected by the application itself, and its
 password can be set, changed or removed from Settings.
@@ -149,18 +149,18 @@ phase gates this wave if and only if its **Wave** column says `0`:
 
 | Feature | Phase | What is missing |
 |---|---|---|
-| [Receipts & terms](features/receipts-and-terms.md) | 4, 6 | the signature state machine with an age warning; the return receipt |
 | [SMB share hosting](features/smb-share-hosting.md) | 9 | reconnecting a share that drops mid-session |
 | [Application icon](features/application-icon.md) | 7 | the icon on the unlock screen and in an About box |
 | [Testing strategy](features/testing-strategy.md) | 9 | property tests for the audit chain and the RFC 4514 escaper |
 
-**Five phases across four features, none of them blocked on anything.** No decision
+**Three phases across three features, none of them blocked on anything.** No decision
 is outstanding for any of them, no hardware is needed, and nothing waits on Wave 1.
 It is work, not a queue.
 
-Bootstrap templates left this list when phases 4, 5 and 6 landed, and device
-detection when the watch and the picker did: both rows are `[x]` above, and what
-remains in those specs is Wave 1.
+Bootstrap templates left this list when phases 4, 5 and 6 landed, device detection
+when the watch and the picker did, and receipts & terms when the signature state
+machine and the return receipt did. All three rows are `[x]` above; what remains in
+those specs is Wave 1 or Wave 2.
 
 Regenerate this list rather than trusting it — the prose here drifted twice before
 it was derived:
@@ -238,10 +238,11 @@ archive-then-remove path that can break and rebuild the audit trigger, which is
 deliberately not a general capability.
 
 **Rows that reached `[x]` for this wave while their specs still show Todo phases.**
-Eight of them, and the Wave column is what makes that legitimate — each has every
+Nine of them, and the Wave column is what makes that legitimate — each has every
 wave-0 phase done and only Wave 1+ work left: native device transport, device
 detection, single-file SQLite storage, the optional database password, the audit
-trail, bootstrap templates, the bootstrap planner and the bootstrap wizard.
+trail, bootstrap templates, the bootstrap planner, the bootstrap wizard and
+receipts & terms.
 
 Derive that list too, rather than trusting this paragraph:
 
@@ -318,7 +319,7 @@ Everything needed before a single byte is written to a key.
 | `[x]` | GUI shell | [spec](features/gui-shell.md) — eight screens, unlock screen, status bar, egui 0.36 `App::ui`, themed with `egui-elegance` (four palettes, the choice persisted) and laid out fluidly (one gutter, full-width cards, columns that split the page, tables that contain their own overflow). Search, sortable columns, window-state persistence, keyboard flow, hardware-write confirmation, the log panel and the accessibility pass are all done — every wave-0 phase. Localisation (phase 9) is closed as not needed: the interface is English (2026-08-12). |
 | `[x]` | Bootstrap wizard | [spec](features/gui-bootstrap-wizard.md) — selection (the newest version of each template in use), per-step opt-out, plan review, dry run, and a link to the Templates screen — the whole of wave 0. The live run view, the secret panels and the pre-flight checks landed with the executor in 0.7.1; resume and the post-run summary are Wave 1, batch mode Wave 2. |
 | `[/]` | Application icon | [spec](features/application-icon.md) — one SVG (a box truck carrying a YubiKey), `make icons` rendering the PNGs, the macOS `.icns` and the RGBA blob the binary embeds; window, dock and bundle icons done. A Windows `.ico` resource and a Linux `hicolor` install wait on there being Windows and Linux packaging. |
-| `[/]` | Testing strategy | [spec](features/testing-strategy.md) — **672 tests** (689 with `--all-features`) across unit + behaviour suites, a mock device backend and a mock share connector, recorded fixtures, and tests ignored by default for what needs hardware or `openssl`; **84.8%** core line coverage. **CI enforces the gate** on every push, with a macOS/Windows/Linux build matrix. Mock write transports and the secret-leak sweep wait on Wave 1. |
+| `[/]` | Testing strategy | [spec](features/testing-strategy.md) — **692 tests** (709 with `--all-features`) across unit + behaviour suites, a mock device backend and a mock share connector, recorded fixtures, and tests ignored by default for what needs hardware or `openssl`; **85.2%** core line coverage. **CI enforces the gate** on every push, with a macOS/Windows/Linux build matrix. Mock write transports and the secret-leak sweep wait on Wave 1. |
 
 ### Paperwork
 
@@ -326,7 +327,7 @@ Everything needed before a single byte is written to a key.
 |---|---|---|
 | `[x]` | Consignment terms | [spec](features/consignment-terms.md) — multilingual templates keyed `(id, language, version)`, pt-BR + en built in, optional fields that omit their own line, generated from the record. A **Terms screen** edits the wording and adds languages: saving stores a new version, and terms are generated from the newest. The **wording needs its owner's review**, which the editor is what makes possible — and, since phase 7, an *Export as PDF…* that sends the reviewer the document rather than a template full of `{{variables}}`. The term now leaves as **text or PDF** from one rendering, so the copy reviewed on screen cannot disagree with the copy that is signed; `crate::pdf` writes the file with **no dependency and no TeX**, and every page names the template version that produced it. |
 | `[x]` | Signed-term upload | [spec](features/signed-term-documents.md) — the scan is filed in the database with a SHA-256, verified on export, with a per-hand-over "none filed" badge. |
-| `[/]` | Receipts & terms (signature tracking) | [spec](features/receipts-and-terms.md) — the term, its PDF, the versioned template and the filed signature are done, and the sealed-envelope slip shipped in 0.7.1. Left for wave 0: a **signature state machine** with an age warning (phase 4) and the **return receipt** (phase 6). Batch generation is Wave 2. |
+| `[x]` | Receipts & terms (signature tracking) | [spec](features/receipts-and-terms.md) — the term, its PDF, the versioned wording, the filed signature and the sealed-envelope slip, plus a **signature state machine**: five states derived from the record and what is filed *per kind*, a threshold the unit sets, a banner where the hand-overs are, and `receipt.pending_overdue` written once per hand-over ever — using the immutable trail as its own marker. The unit's own reference can now be recorded *after* the hand-over. The **return receipt** is a second template id, so it is editable, versioned and multilingual for free. Batch generation is Wave 2. |
 
 ## Wave 1 — Execute the bootstrap, natively
 

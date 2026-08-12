@@ -24,6 +24,7 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
     }
 
     ui.add_space(18.0);
+    paperwork(app, ui);
     history(app, ui);
 
     if app.term_panel.open {
@@ -32,8 +33,36 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
     }
 }
 
-/// The consignment term: generate it in a language, review it, save it, and file
-/// the signed copy back against the hand-over.
+/// What paperwork is outstanding across the whole register
+/// (`features/receipts-and-terms.md` phase 4).
+///
+/// One line, and **only when there is something to say**: a banner that is always
+/// on screen is one nobody reads. It is at the top of this screen rather than in
+/// Settings because this is where the hand-overs are, and the action it asks for —
+/// file the scan, or record the unit's own reference — is a row away.
+fn paperwork(app: &mut YkDistApp, ui: &mut egui::Ui) {
+    let tally = app.outstanding_paperwork();
+    let Some(line) = tally.describe() else {
+        return;
+    };
+
+    super::notice(
+        ui,
+        if tally.needs_attention() {
+            CalloutTone::Warning
+        } else {
+            CalloutTone::Neutral
+        },
+        &format!(
+            "{line}. {} An unsigned term means the holder has not acknowledged the obligations              the loss procedure depends on, so it is a gap in the record rather than a missing              attachment.",
+            app.settings.signatures.describe()
+        ),
+    );
+    ui.add_space(12.0);
+}
+
+/// The consignment term or the return receipt: generate it in a language, review
+/// it, save it, and file the signed copy back against the hand-over.
 fn term(app: &mut YkDistApp, ui: &mut egui::Ui) {
     let Some(distribution_id) = app.term_panel.distribution else {
         return;
@@ -44,9 +73,18 @@ fn term(app: &mut YkDistApp, ui: &mut egui::Ui) {
         .find(|d| d.id == distribution_id)
         .map(|d| d.key_serial);
 
+    // One panel, two documents. The heading says which, because the two are
+    // legally different things and a reviewer must never be unsure which one is on
+    // screen.
+    let is_return = app.term_panel.document == crate::term::RETURN_ID;
+    let what = if is_return {
+        "Return receipt"
+    } else {
+        "Consignment term"
+    };
     let heading = match serial {
-        Some(serial) => format!("Consignment term — serial {serial}"),
-        None => "Consignment term".to_owned(),
+        Some(serial) => format!("{what} — serial {serial}"),
+        None => what.to_owned(),
     };
 
     super::titled_card(ui, heading, |ui| {
@@ -180,19 +218,87 @@ fn term(app: &mut YkDistApp, ui: &mut egui::Ui) {
                     app.save_term();
                 }
                 if ui
-                    .add(Button::new("Upload signed term…").accent(Accent::Green))
+                    .add(
+                        Button::new(if is_return {
+                            "Upload signed receipt…"
+                        } else {
+                            "Upload signed term…"
+                        })
+                        .accent(Accent::Green),
+                    )
                     .on_hover_text("file the scanned, signed document against this hand-over")
                     .clicked()
                 {
-                    app.attach_document(distribution_id, DocumentKind::SignedTerm);
+                    // The kind follows the document on screen: a signed return
+                    // receipt filed as a signed *term* would settle the signature
+                    // state of a hand-over nobody signed for.
+                    app.attach_document(
+                        distribution_id,
+                        if is_return {
+                            DocumentKind::ReturnReceipt
+                        } else {
+                            DocumentKind::SignedTerm
+                        },
+                    );
                 }
             });
+
+            // The other way a term gets settled, and the one a unit that files
+            // paper elsewhere needs: record *their* reference. It lives here
+            // because this is the moment it exists — a posted key's term comes back
+            // days after the hand-over was recorded, and until now there was
+            // nowhere to put the number.
+            if !is_return {
+                ui.add_space(10.0);
+                let mut record_reference = false;
+                super::form_columns(ui, |left, right, _width| {
+                    let response = super::capped_input(
+                        left,
+                        &mut app.term_panel.reference,
+                        MAX_TEXT,
+                        |input| {
+                            input
+                                .label("Or record your own reference")
+                                .hint("processo 2026/114 — where your unit filed the signed term")
+                                .id_salt("term-reference")
+                        },
+                    );
+                    if response.lost_focus() && left.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        record_reference = true;
+                    }
+                    right.add_space(16.0);
+                    if right
+                        .add(
+                            Button::new("Record reference")
+                                .outline()
+                                .enabled(!app.term_panel.reference.trim().is_empty()),
+                        )
+                        .on_hover_text(
+                            "marks this hand-over's term as signed, and records the reference in \
+                             the audit trail",
+                        )
+                        .clicked()
+                    {
+                        record_reference = true;
+                    }
+                });
+                if record_reference {
+                    let reference = app.term_panel.reference.clone();
+                    app.record_receipt_reference(distribution_id, &reference);
+                }
+            }
         }
 
         documents(app, ui, distribution_id);
 
         if regenerate {
-            app.generate_term(distribution_id);
+            // Whichever document is open — switching language must not silently
+            // swap a return receipt for a consignment term.
+            if is_return {
+                app.generate_return_receipt(distribution_id);
+            } else {
+                app.generate_term(distribution_id);
+            }
         }
     });
 }
@@ -332,6 +438,7 @@ fn history(app: &mut YkDistApp, ui: &mut egui::Ui) {
     let now = chrono::Utc::now();
     let mut to_return: Option<(uuid::Uuid, u32)> = None;
     let mut show_term: Option<uuid::Uuid> = None;
+    let mut show_receipt: Option<uuid::Uuid> = None;
     let mut upload_for: Option<uuid::Uuid> = None;
 
     let page = crate::browse::distributions(
@@ -433,8 +540,43 @@ fn history(app: &mut YkDistApp, ui: &mut egui::Ui) {
                         ));
                     }
 
-                    // Term column: how many documents are filed, and the actions.
+                    // Term column: where the signature stands, then the actions.
+                    // The state is derived (`crate::receipt`) rather than a count of
+                    // attachments — a generated term filed against a hand-over is
+                    // not evidence that anybody signed it.
+                    let signature = app.signature_state(record);
                     let filed = app.document_counts.get(&record.id).copied().unwrap_or(0);
+                    ui.horizontal(|ui| {
+                        use crate::receipt::SignatureState;
+                        let tone = match &signature {
+                            SignatureState::Signed { .. } => elegance::BadgeTone::Ok,
+                            SignatureState::NotRequired => elegance::BadgeTone::Neutral,
+                            SignatureState::Pending { .. } => elegance::BadgeTone::Info,
+                            SignatureState::Overdue { .. }
+                            | SignatureState::MissingOnReturn { .. } => {
+                                elegance::BadgeTone::Warning
+                            }
+                        };
+                        // Days on the badge, because "overdue" without a number is
+                        // not something an operator can prioritise.
+                        let label = match &signature {
+                            SignatureState::Pending { days }
+                            | SignatureState::Overdue { days, .. }
+                            | SignatureState::MissingOnReturn { days } => {
+                                format!("{} · {days}d", signature.label())
+                            }
+                            other => other.label().to_owned(),
+                        };
+                        ui.add(elegance::Badge::new(label, tone))
+                            .on_hover_text(signature.describe());
+                        if filed > 0 {
+                            ui.add(elegance::Badge::new(
+                                format!("{filed} filed"),
+                                elegance::BadgeTone::Neutral,
+                            ));
+                        }
+                    });
+
                     ui.horizontal(|ui| {
                         if super::row_button(ui, "term").clicked() {
                             show_term = Some(record.id);
@@ -442,22 +584,33 @@ fn history(app: &mut YkDistApp, ui: &mut egui::Ui) {
                         if super::row_button(ui, "upload").clicked() {
                             upload_for = Some(record.id);
                         }
-                        if filed == 0 {
-                            ui.add(elegance::Badge::new(
-                                "none filed",
-                                elegance::BadgeTone::Warning,
-                            ));
+                        if record.is_open() {
+                            if super::row_button(ui, "record return").clicked() {
+                                to_return = Some((record.id, record.key_serial));
+                            }
                         } else {
-                            ui.add(elegance::Badge::new(
-                                format!("{filed} filed"),
-                                elegance::BadgeTone::Ok,
-                            ));
-                        }
-                    });
-
-                    ui.horizontal(|ui| {
-                        if record.is_open() && super::row_button(ui, "record return").clicked() {
-                            to_return = Some((record.id, record.key_serial));
+                            // The other half of the custody loop: a returned key with
+                            // no receipt filed is a return only the unit is
+                            // asserting. Offered on returned rows only — a receipt
+                            // for a key still in somebody's pocket would be a
+                            // document contradicting the register.
+                            if super::row_button(ui, "return receipt")
+                                .on_hover_text(
+                                    "the document that closes the custody loop: both ends of the \
+                                     hand-over, and what happens to the credentials",
+                                )
+                                .clicked()
+                            {
+                                show_receipt = Some(record.id);
+                            }
+                            if app.return_state(record) == crate::receipt::ReturnState::Undocumented
+                            {
+                                ui.add(elegance::Badge::new(
+                                    "no receipt",
+                                    elegance::BadgeTone::Warning,
+                                ))
+                                .on_hover_text("the key is back and nothing is filed to say so");
+                            }
                         }
                     });
                     ui.end_row();
@@ -471,6 +624,9 @@ fn history(app: &mut YkDistApp, ui: &mut egui::Ui) {
     }
     if let Some(id) = show_term {
         app.generate_term(id);
+    }
+    if let Some(id) = show_receipt {
+        app.generate_return_receipt(id);
     }
     if let Some(id) = upload_for {
         app.attach_document(id, DocumentKind::SignedTerm);

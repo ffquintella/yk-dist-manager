@@ -27,6 +27,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::{DistributionRecord, Holder, YubiKeyRecord};
 
+/// The consignment term: the document a holder signs on receiving a key.
+pub const CONSIGNMENT_ID: &str = "consignment";
+
+/// The return receipt: the document that closes the custody loop when a key comes
+/// back. A second **id** rather than a second feature, so it inherits everything
+/// the consignment term already has — see [`TermTemplate::return_pt_br`].
+pub const RETURN_ID: &str = "return";
+
+/// Every document type this build ships wording for, for the editor's picker.
+pub const BUILTIN_IDS: [&str; 2] = [CONSIGNMENT_ID, RETURN_ID];
+
 /// Language tag of a term. Free-form (BCP 47) so a unit can add its own.
 pub const DEFAULT_LANGUAGE: &str = "pt-BR";
 
@@ -90,8 +101,42 @@ impl TermTemplate {
         }
     }
 
+    /// `return` in pt-BR — the mirror of the consignment term.
+    ///
+    /// `features/receipts-and-terms.md` phase 6, which is the same work as
+    /// `features/consignment-terms.md` phase 9: a second template **id**, so it
+    /// inherits everything the consignment term already has — versioning keyed
+    /// `(id, language, version)`, the editor, line omission, the PDF writer. A
+    /// separate document type would have duplicated all of it.
+    pub fn return_pt_br() -> Self {
+        Self {
+            id: RETURN_ID.into(),
+            language: "pt-BR".into(),
+            version: "1".into(),
+            title: "Termo de Devolução de Chave de Segurança".into(),
+            body: PT_BR_RETURN_BODY.into(),
+        }
+    }
+
+    /// `return` in English.
+    pub fn return_en() -> Self {
+        Self {
+            id: RETURN_ID.into(),
+            language: "en".into(),
+            version: "1".into(),
+            title: "Security Key Return Receipt".into(),
+            body: EN_RETURN_BODY.into(),
+        }
+    }
+
+    /// Every wording this build ships: two documents in two languages.
     pub fn builtin() -> Vec<Self> {
-        vec![Self::consignment_pt_br(), Self::consignment_en()]
+        vec![
+            Self::consignment_pt_br(),
+            Self::consignment_en(),
+            Self::return_pt_br(),
+            Self::return_en(),
+        ]
     }
 
     /// The wording shipped for a language, so the editor can offer *restore the
@@ -198,6 +243,16 @@ fn latest<'a>(candidates: impl Iterator<Item = &'a TermTemplate>) -> Option<&'a 
     candidates.max_by(|a, b| version_order(&a.version).cmp(&version_order(&b.version)))
 }
 
+/// `dd/mm/yyyy` in the operator's own timezone.
+///
+/// The same format the log line uses (G-002), and local rather than UTC because a
+/// hand-over at 21:00 in Brazil is not the next day's business.
+fn local_date(at: chrono::DateTime<chrono::Utc>) -> String {
+    at.with_timezone(&chrono::Local)
+        .format("%d/%m/%Y")
+        .to_string()
+}
+
 fn base_language(tag: &str) -> &str {
     tag.split('-').next().unwrap_or(tag)
 }
@@ -232,11 +287,23 @@ pub struct TermContext {
     pub date: String,
     pub delivery_method: String,
     pub receipt_ref: String,
+    /// When the key was handed over, `dd/mm/yyyy`.
+    ///
+    /// Distinct from `date`, which is *today*: on a consignment term the two are
+    /// the same, and on a **return receipt** they are not — that document is
+    /// written on the day the key comes back and has to name both ends of the
+    /// custody it is closing.
+    pub handover_date: String,
+    /// When the key came back, `dd/mm/yyyy`. Empty while it is still held, which
+    /// is what drops the line from a term that is not about a return.
+    pub return_date: String,
+    /// Who received the key back. Empty while it is still held.
+    pub return_to: String,
 }
 
 impl TermContext {
     /// Every name a term template may use.
-    pub const VARIABLES: [&'static str; 18] = [
+    pub const VARIABLES: [&'static str; 21] = [
         "holder.name",
         "holder.identification",
         "holder.email",
@@ -255,6 +322,9 @@ impl TermContext {
         "date",
         "delivery.method",
         "receipt.ref",
+        "handover.date",
+        "return.date",
+        "return.to",
     ];
 
     /// Build a context from the records. `applied` and `custody` come from the
@@ -291,6 +361,18 @@ impl TermContext {
             receipt_ref: distribution
                 .map(|d| d.receipt_ref.clone())
                 .unwrap_or_default(),
+            handover_date: distribution
+                .map(|d| local_date(d.distributed_at))
+                .unwrap_or_default(),
+            // Empty while the key is held, which is what keeps the return lines out
+            // of a consignment term without the template needing a conditional.
+            return_date: distribution
+                .and_then(|d| d.returned_at)
+                .map(local_date)
+                .unwrap_or_default(),
+            return_to: distribution
+                .and_then(|d| d.returned_to.clone())
+                .unwrap_or_default(),
         }
     }
 
@@ -322,6 +404,9 @@ impl TermContext {
             date: chrono::Local::now().format("%d/%m/%Y").to_string(),
             delivery_method: crate::domain::DeliveryMethod::InPerson.label().to_owned(),
             receipt_ref: "EXEMPLO-0000".into(),
+            handover_date: "01/01/2026".into(),
+            return_date: chrono::Local::now().format("%d/%m/%Y").to_string(),
+            return_to: "operador.exemplo".into(),
         }
     }
 
@@ -345,6 +430,9 @@ impl TermContext {
             "date" => &self.date,
             "delivery.method" => &self.delivery_method,
             "receipt.ref" => &self.receipt_ref,
+            "handover.date" => &self.handover_date,
+            "return.date" => &self.return_date,
+            "return.to" => &self.return_to,
             _ => return None,
         })
     }
@@ -794,4 +882,115 @@ Handed over by: {{operator}}
 _______________________________          _______________________________
 {{holder.name}}                          {{operator}}
 Holder                                   Issuing operator
+"#;
+
+/// The return receipt, pt-BR.
+///
+/// The mirror of the consignment term, and shorter on purpose: this document is
+/// not where obligations are agreed — that already happened — it is where the unit
+/// and the holder record that the custody **ended**, on what date, and what the
+/// unit undertakes to do next. Three things it has to carry, because each one is a
+/// question somebody asks months later:
+///
+/// * **Both ends of the custody**, so the receipt is legible on its own: the
+///   hand-over date and the return date, not just "today".
+/// * **What happens to the credentials**, because a returned key whose certificate
+///   is still valid is a credential in a drawer. Saying so on the receipt is what
+///   makes the revocation somebody's job rather than an assumption.
+/// * **Signatures on both sides.** A return the holder did not sign for is a return
+///   only the unit is asserting.
+const PT_BR_RETURN_BODY: &str = r#"{{org}} — {{org.unit}}
+Data: {{date}}
+
+1. IDENTIFICAÇÃO DO PORTADOR
+
+Nome: {{holder.name}}
+Número de identificação: {{holder.identification}}
+E-mail: {{holder.email}}
+Lotação: {{holder.unit}}
+Matrícula: {{holder.registration}}
+
+2. IDENTIFICAÇÃO DA CHAVE DEVOLVIDA
+
+Número de série: {{key.serial}}
+Modelo: {{key.model}}
+Versão de firmware: {{key.firmware}}
+
+3. CUSTÓDIA ENCERRADA
+
+Data da entrega: {{handover.date}}
+Data da devolução: {{return.date}}
+Recebida por: {{return.to}}
+Forma de entrega original: {{delivery.method}}
+Referência do termo de consignação: {{receipt.ref}}
+
+4. DECLARAÇÕES
+
+4.1. O portador declara ter devolvido a chave de segurança identificada acima e
+     não manter consigo qualquer cópia, credencial ou meio de acesso derivado
+     dela.
+4.2. A unidade responsável declara ter recebido a chave e assume, a partir desta
+     data, a guarda do dispositivo.
+4.3. A unidade responsável providenciará a revogação dos certificados e a remoção
+     das credenciais associadas a esta chave. Enquanto isso não ocorrer, a chave
+     permanece um dispositivo de identificação válido e deve ser guardada como tal.
+4.4. A reutilização desta chave por outro portador exige a reinicialização das
+     aplicações e a emissão de novas credenciais.
+
+5. ASSINATURAS
+
+Recebida por: {{return.to}}
+
+
+_______________________________          _______________________________
+{{holder.name}}                          {{return.to}}
+Portador                                 Responsável pelo recebimento
+"#;
+
+/// The return receipt, English. See [`PT_BR_RETURN_BODY`] for the reasoning.
+const EN_RETURN_BODY: &str = r#"{{org}} — {{org.unit}}
+Date: {{date}}
+
+1. HOLDER
+
+Name: {{holder.name}}
+Identification number: {{holder.identification}}
+E-mail: {{holder.email}}
+Unit: {{holder.unit}}
+Registration: {{holder.registration}}
+
+2. RETURNED KEY
+
+Serial number: {{key.serial}}
+Model: {{key.model}}
+Firmware version: {{key.firmware}}
+
+3. CUSTODY CLOSED
+
+Handed over on: {{handover.date}}
+Returned on: {{return.date}}
+Received by: {{return.to}}
+Original delivery method: {{delivery.method}}
+Consignment term reference: {{receipt.ref}}
+
+4. DECLARATIONS
+
+4.1. The holder confirms having returned the security key identified above, and
+     retains no copy, credential or derived means of access.
+4.2. The responsible unit confirms receipt of the key and takes custody of the
+     device from this date.
+4.3. The responsible unit will arrange revocation of the certificates and removal
+     of the credentials associated with this key. Until that is done the key
+     remains a valid identification device and must be stored as one.
+4.4. Re-issuing this key to another holder requires resetting its applications and
+     issuing new credentials.
+
+5. SIGNATURES
+
+Received by: {{return.to}}
+
+
+_______________________________          _______________________________
+{{holder.name}}                          {{return.to}}
+Holder                                   Receiving operator
 "#;

@@ -419,8 +419,13 @@ fn a_v1_database_migrates_forward_keeping_its_rows() {
     assert_eq!(holders.len(), 1);
     assert_eq!(holders[0].identification_number, "", "new optional field");
 
-    // The new tables exist and are usable.
-    assert_eq!(store.seed_builtin_terms().unwrap(), 2);
+    // The new tables exist and are usable: every wording this build ships seeds
+    // into a register migrated from v1, which is the point of the assertion — not
+    // the number, which follows from how many documents the build has.
+    assert_eq!(
+        store.seed_builtin_terms().unwrap(),
+        yk_dist_manager::term::TermTemplate::builtin().len()
+    );
 
     // v4's column arrived: a template can be retired, which the old shape could
     // not express.

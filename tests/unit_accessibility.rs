@@ -231,6 +231,43 @@ fn what_is_attached_reads_as_a_sentence_and_not_as_an_indicator_colour() {
 }
 
 #[test]
+fn every_signature_state_has_its_own_words() {
+    // The Distribution table paints this as a badge, and two pairs must never be
+    // told apart by hue: *awaiting signature* against *overdue* (one is normal, the
+    // other is a gap), and *overdue* against *returned unsigned* (one is a chase,
+    // the other is permanent and nobody should waste an afternoon on it).
+    use yk_dist_manager::receipt::{ReturnState, SignatureState};
+
+    let states = [
+        SignatureState::NotRequired,
+        SignatureState::Signed {
+            reference: String::new(),
+        },
+        SignatureState::Pending { days: 1 },
+        SignatureState::Overdue {
+            days: 20,
+            threshold: 14,
+        },
+        SignatureState::MissingOnReturn { days: 5 },
+    ];
+    let labels: Vec<&str> = states.iter().map(|s| s.label()).collect();
+    distinct("SignatureState", &labels);
+    assert_eq!(
+        states.iter().filter(|s| s.needs_chasing()).count(),
+        2,
+        "only the two live states are worth chasing"
+    );
+
+    let returns = [
+        ReturnState::Held,
+        ReturnState::Documented,
+        ReturnState::Undocumented,
+    ];
+    let labels: Vec<&str> = returns.iter().map(|s| s.label()).collect();
+    distinct("ReturnState", &labels);
+}
+
+#[test]
 fn the_status_line_severity_is_derived_from_the_text_not_from_the_caller() {
     // `status::classify` reads the message, so the words and the colour cannot
     // disagree — the colour is a function of the text rather than a second,

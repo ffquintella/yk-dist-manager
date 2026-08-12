@@ -1466,6 +1466,29 @@ impl Store {
         Ok(())
     }
 
+    /// Record the unit's own reference for a hand-over's signed term.
+    ///
+    /// `features/receipts-and-terms.md` phase 4. The reference could only be typed
+    /// while *recording* the hand-over, which is the wrong moment for the case that
+    /// matters: a posted key's term comes back days later, and the operator had
+    /// nowhere to put its reference. An operator who cannot record what they have in
+    /// their hand writes it in a spreadsheet, and the register stops being the
+    /// answer.
+    ///
+    /// Deliberately allowed on a **returned** hand-over too: a term that arrives
+    /// after the key came back still closes the gap in the record for the period it
+    /// was held.
+    pub fn set_receipt_ref(&self, id: Uuid, reference: &str) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE distributions SET receipt_ref = ?1 WHERE id = ?2",
+            params![reference.trim(), id.to_string()],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::NotFound(format!("distribution {id}")));
+        }
+        Ok(())
+    }
+
     // ---------------------------------------------------------- bootstrap runs
 
     /// Write a run and its steps.
@@ -1999,6 +2022,42 @@ impl Store {
         rows.collect::<rusqlite::Result<Vec<_>>>()?
             .into_iter()
             .collect::<Result<Vec<_>>>()
+    }
+
+    /// What is on file against each hand-over, **counted per kind**.
+    ///
+    /// The signature state needs to know about *signed* terms specifically
+    /// (`crate::receipt`): a generated term filed against a hand-over is not
+    /// evidence that anybody signed it, and a total would let one stand in for the
+    /// other. One query, grouped by both columns, because two queries would be two
+    /// answers that could disagree.
+    pub fn filed_documents(
+        &self,
+    ) -> Result<std::collections::BTreeMap<Uuid, crate::receipt::Filed>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT distribution_id, kind, count(*) FROM documents GROUP BY distribution_id, kind",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?;
+        let mut out: std::collections::BTreeMap<Uuid, crate::receipt::Filed> =
+            std::collections::BTreeMap::new();
+        for row in rows {
+            let (id, kind, count) = row?;
+            let Ok(id) = Uuid::parse_str(&id) else {
+                continue;
+            };
+            // An unknown kind still counts towards the total: a row this build does
+            // not recognise is a document somebody filed, and reporting "no
+            // documents" for it would be worse than not knowing what it is.
+            let kind = document_kind_from(&kind).unwrap_or(DocumentKind::Other);
+            out.entry(id).or_default().add(kind, count.max(0) as usize);
+        }
+        Ok(out)
     }
 
     /// How many documents each distribution has, for the table badge.

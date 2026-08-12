@@ -17,6 +17,47 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+### Added
+
+- **A signature state machine for responsibility terms**
+  ([`features/receipts-and-terms.md`](features/receipts-and-terms.md) phase 4). The term
+  is where the holder acknowledges that the key is a credential, that the PIN is theirs
+  alone and that a loss must be reported immediately — so an unsigned term is not
+  paperwork outstanding, it is a hand-over whose obligations nobody has agreed to. Five
+  states, derived from the record and what is filed rather than stored in a column that
+  would need updating when a day passes:
+
+  - *awaiting signature* and **overdue** are separate, because every hand-over is
+    unsigned for a while and only some are unsigned for too long. The threshold is the
+    unit's (14 days by default, or terms turned off entirely) — one threshold, not one
+    per delivery method, because two would mean working out which applies to the row in
+    front of you.
+  - **returned unsigned** is separate again: a key back in the drawer is not something
+    to chase, and saying so stops an operator wasting an afternoon. It is still counted,
+    because the term was evidence of custody *while the key was held* and hiding the gap
+    once the key returned would be the tool tidying away its own history.
+  - **A document on file is not a signature.** What is filed is read *per kind*: a term
+    this tool generated and attached says nothing about whether anybody signed it.
+
+  `receipt.pending_overdue` is written **once per hand-over, ever**, using the immutable
+  audit trail as its own marker — a term going overdue has no click behind it, so from
+  the paint pass it would write an entry per frame and on every open it would rewrite
+  the same fact every session. The entry stays after the term is signed: the situation
+  improved, it still happened.
+- **The unit's own reference for a signed term can be recorded after the hand-over**,
+  which is the case that matters and was impossible: a posted key's term comes back days
+  later and there was nowhere to put the number. Audited as `receipt.signed`, the event
+  the spec defined and nothing wrote.
+- **The return receipt** (phase 6) — the mirror document that closes the custody loop. A
+  second term template **id** rather than a second feature, so it is editable, versioned,
+  multilingual and printable for free; the Terms screen gained a document picker. It
+  carries both ends of the custody (the hand-over date *and* the return date, which is
+  why the term context gained `handover.date`, `return.date` and `return.to`), and it
+  says the certificates will be revoked — a returned key whose certificate is still valid
+  is a credential in a drawer. Offered on returned rows only, tracked separately from the
+  term, and a `no receipt` badge until the signed copy is filed: a return the holder did
+  not sign for is a return only the unit is asserting.
+
 ### Fixed
 
 - **Four phases were marked Todo in specs that had already shipped them elsewhere**,

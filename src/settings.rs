@@ -232,6 +232,15 @@ pub struct AppSettings {
     /// being run: every template on a given deployment wants the same answer.
     /// See [`crate::san`].
     pub san: crate::san::SanPolicy,
+    /// Whether a responsibility term is expected for every hand-over, and how long
+    /// one may sit unsigned before it is called overdue
+    /// (`features/receipts-and-terms.md` phase 4).
+    ///
+    /// A setting rather than a constant for the same reason the retention period is:
+    /// the answer is the unit's, it differs between a unit that hands keys across a
+    /// desk and one that posts them, and a unit running an internal pilot may not use
+    /// terms at all.
+    pub signatures: crate::receipt::SignaturePolicy,
     /// Public keys this deployment accepts on a bootstrap template
     /// (`features/bootstrap-templates.md` phase 5).
     ///
@@ -303,6 +312,7 @@ impl AppSettings {
             retention: RetentionPolicy::default(),
             window: WindowState::default(),
             san: crate::san::SanPolicy::default(),
+            signatures: crate::receipt::SignaturePolicy::default(),
             template_keys: Vec::new(),
             templates_must_be_signed: false,
             theme: DEFAULT_THEME.to_owned(),

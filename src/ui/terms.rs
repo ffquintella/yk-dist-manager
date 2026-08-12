@@ -42,6 +42,8 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
         app.load_term_template(&language);
     }
 
+    document_bar(app, ui);
+    ui.add_space(14.0);
     language_bar(app, ui);
     ui.add_space(14.0);
     editor(app, ui);
@@ -55,6 +57,72 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
 
     ui.add_space(14.0);
     versions(app, ui);
+}
+
+/// Which **document** is being edited: the consignment term or the return receipt.
+///
+/// A picker rather than two screens, because everything below it is identical —
+/// the wording is versioned `(id, language, version)` either way, rendered by the
+/// same code, exported by the same PDF writer. The return receipt
+/// (`features/receipts-and-terms.md` phase 6) is a second template id and nothing
+/// more, which is why it cost a picker rather than a feature.
+fn document_bar(app: &mut YkDistApp, ui: &mut egui::Ui) {
+    let ids: Vec<String> = {
+        // Everything on record, plus what this build ships, so a unit that added
+        // its own document type still finds it here.
+        let mut ids: Vec<String> = app
+            .term_templates
+            .iter()
+            .map(|template| template.id.clone())
+            .collect();
+        for builtin in term::BUILTIN_IDS {
+            if !ids.iter().any(|id| id == builtin) {
+                ids.push(builtin.to_owned());
+            }
+        }
+        ids.sort();
+        ids.dedup();
+        ids
+    };
+
+    let mut chosen = app.term_editor.id.clone();
+    let mut switch_to: Option<String> = None;
+
+    super::card(ui, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .add(
+                    Select::strings("term-editor-document", &mut chosen, ids)
+                        .label("Document")
+                        .width(200.0),
+                )
+                .changed()
+                && chosen != app.term_editor.id
+            {
+                switch_to = Some(chosen.clone());
+            }
+            ui.add_space(12.0);
+            ui.vertical(|ui| {
+                ui.add_space(16.0);
+                super::faint(
+                    ui,
+                    match app.term_editor.id.as_str() {
+                        term::RETURN_ID => {
+                            "the receipt that closes the custody loop when a key comes back"
+                        }
+                        term::CONSIGNMENT_ID => {
+                            "what the holder signs on receiving a key — the obligations the loss                              procedure rests on"
+                        }
+                        _ => "a document type this unit added",
+                    },
+                );
+            });
+        });
+    });
+
+    if let Some(id) = switch_to {
+        app.load_term_document(&id);
+    }
 }
 
 /// Which language is being edited, what state it is in, and how to add another.

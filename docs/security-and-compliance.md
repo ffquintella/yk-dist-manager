@@ -270,6 +270,17 @@ Beyond the norm, because this tool writes to security hardware:
   wants. Until a deployment turns the requirement on it runs in *pilot mode*, which is
   stated on screen and recorded per run as `template.unsigned_used` rather than being
   silent.
+- **An unsigned responsibility term is visible, and its age is recorded**
+  (`../features/receipts-and-terms.md` phase 4). The term is where the holder acknowledges
+  that the key is a credential and that a loss must be reported — the acknowledgement the
+  loss procedure rests on — so a hand-over without one is a gap in the record rather than
+  a missing attachment. The state is derived from the record and what is filed *per kind*
+  (a term the tool generated is not a signed one), the threshold is the unit's, and
+  `receipt.pending_overdue` is written once per hand-over using the immutable trail as its
+  own marker. A key returned without a signed term stays counted: the gap is permanent and
+  the register does not tidy away its own history. The **return receipt** closes the loop
+  at the other end, and states that the certificates will be revoked — a returned key
+  whose certificate is still valid is a credential in a drawer.
 - **A procedure crossing between installations is a file, not retyping** (phase 4).
   Export and import are both audited, with the procedure's fingerprint and — on import —
   the signature verdict and the file it came from. An imported procedure goes through the

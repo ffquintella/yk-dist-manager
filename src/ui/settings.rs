@@ -21,6 +21,8 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
     ui.add_space(16.0);
     template_signing(app, ui);
     ui.add_space(16.0);
+    signature_tracking(app, ui);
+    ui.add_space(16.0);
     maintenance(app, ui);
 
     ui.add_space(16.0);
@@ -499,6 +501,79 @@ fn password_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
     }
     if let Some(request) = request {
         app.db_request = Some(request);
+    }
+}
+
+/// Whether a responsibility term is expected, and how long one may sit unsigned
+/// (`features/receipts-and-terms.md` phase 4).
+fn signature_tracking(app: &mut YkDistApp, ui: &mut egui::Ui) {
+    let mut policy = app.settings.signatures.clone();
+    let mut changed = false;
+
+    super::titled_card(ui, "Responsibility terms", |ui| {
+        if ui
+            .add(elegance::Checkbox::new(
+                &mut policy.required,
+                "This unit hands over a responsibility term with every key",
+            ))
+            .changed()
+        {
+            changed = true;
+        }
+
+        if !policy.required {
+            ui.add_space(6.0);
+            super::hint(
+                ui,
+                "Off: no hand-over is reported as missing a term, and the Distribution screen                  stops asking. A real case for an internal pilot or a batch of test keys — and                  worth turning back on before the first real hand-over, because the term is where                  the holder acknowledges the obligations the loss procedure depends on.",
+            );
+            return;
+        }
+
+        ui.add_space(10.0);
+        let mut days = policy.overdue_after_days as f32;
+        if ui
+            .add(
+                elegance::Slider::new(
+                    &mut days,
+                    crate::receipt::SignaturePolicy::MIN_DAYS as f32..=60.0,
+                )
+                .label("Overdue after")
+                .suffix(" days"),
+            )
+            .changed()
+        {
+            policy.overdue_after_days = days.round() as u32;
+            changed = true;
+        }
+
+        ui.add_space(6.0);
+        super::hint(
+            ui,
+            "One threshold, not one per delivery method: set it to what the slowest channel this              unit actually uses takes to come back signed. Two thresholds would mean working out              which one applies to the row in front of you, which is how a warning stops being              read.",
+        );
+
+        if let Err(refusal) = policy.check() {
+            ui.add_space(8.0);
+            super::error_label(ui, &refusal);
+            changed = false;
+        }
+
+        ui.add_space(10.0);
+        let tally = app.outstanding_paperwork();
+        match tally.describe() {
+            Some(line) => super::faint(ui, &format!("Right now: {line}.")),
+            None => super::faint(ui, "Right now: nothing outstanding."),
+        }
+    });
+
+    if changed && policy.check().is_ok() {
+        app.settings.signatures = policy;
+        app.settings.save_quietly();
+        // A threshold that just moved can make terms overdue that were not, and the
+        // trail records that once each — so the check runs here rather than waiting
+        // for the next time the register is opened.
+        app.check_overdue_signatures();
     }
 }
 

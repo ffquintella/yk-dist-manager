@@ -203,6 +203,19 @@ pub struct TermPanel {
     pub open: bool,
     /// Which hand-over the term is for.
     pub distribution: Option<uuid::Uuid>,
+    /// The unit's own reference for the signed term, being typed.
+    ///
+    /// Here rather than in the record form because this is the moment it exists: a
+    /// posted key's term comes back days after the hand-over was recorded.
+    pub reference: String,
+    /// Which document is on screen: [`crate::term::CONSIGNMENT_ID`] or
+    /// [`crate::term::RETURN_ID`].
+    ///
+    /// One panel for both, because everything around the wording is identical —
+    /// language selection, the text and PDF outputs, filing the signed copy. What
+    /// differs is which template id is rendered and which `DocumentKind` the signed
+    /// copy is filed as, and both follow from this field.
+    pub document: String,
     /// Language the operator asked for.
     pub language: String,
     /// The rendered term, awaiting review before it is saved or printed.
@@ -226,6 +239,8 @@ impl Default for TermPanel {
         Self {
             open: false,
             distribution: None,
+            document: crate::term::CONSIGNMENT_ID.to_owned(),
+            reference: String::new(),
             language: crate::term::DEFAULT_LANGUAGE.to_owned(),
             rendered: None,
             pdf: None,
@@ -690,6 +705,9 @@ pub struct YkDistApp {
     pub term_templates: Vec<crate::term::TermTemplate>,
     /// How many documents each distribution has.
     pub document_counts: std::collections::BTreeMap<uuid::Uuid, usize>,
+    /// What is on file against each hand-over, per kind — what the signature state
+    /// is computed from (`features/receipts-and-terms.md` phase 4).
+    pub filed_documents: std::collections::BTreeMap<uuid::Uuid, crate::receipt::Filed>,
 
     /// Search, sort and page state for the three tables (`gui-shell` 3, 4).
     pub browse_keys: Browse<crate::browse::KeySort>,
@@ -771,6 +789,7 @@ impl YkDistApp {
             term_editor: TermEditor::default(),
             term_templates: Vec::new(),
             document_counts: std::collections::BTreeMap::new(),
+            filed_documents: std::collections::BTreeMap::new(),
             browse_keys: Browse::default(),
             browse_holders: Browse::default(),
             browse_distributions: Browse::default(),
@@ -1131,6 +1150,10 @@ impl YkDistApp {
                 );
                 self.note_unlock_success();
                 self.refresh();
+                // The register is open and the clock has moved since it was last
+                // looked at: a term that went overdue while nobody had this file
+                // open is recorded now, once (`crate::receipt`).
+                self.check_overdue_signatures();
             }
             Err(e) => self.report_open_failure(path, e),
         }
@@ -1830,6 +1853,7 @@ impl YkDistApp {
                 self.record("app.opened", "database", "");
                 self.note_unlock_success();
                 self.refresh();
+                self.check_overdue_signatures();
             }
             Err(e) => {
                 tracing::error!(event = "db.open.failed", reason = %e);
@@ -1900,6 +1924,10 @@ impl YkDistApp {
                 tracing::error!(event = "term.read.failed", reason = %e);
                 self.term_templates = crate::term::TermTemplate::builtin();
             }
+        }
+        match store.filed_documents() {
+            Ok(filed) => self.filed_documents = filed,
+            Err(e) => tracing::error!(event = "document.read.failed", reason = %e),
         }
         match store.document_counts() {
             Ok(counts) => self.document_counts = counts,
@@ -2631,6 +2659,279 @@ impl YkDistApp {
         }
     }
 
+    // ------------------------------------- signature tracking (receipts, ph 4)
+
+    /// What is on file against one hand-over.
+    pub fn filed_for(&self, distribution_id: uuid::Uuid) -> crate::receipt::Filed {
+        self.filed_documents
+            .get(&distribution_id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Where the term for one hand-over stands.
+    ///
+    /// Derived every time it is asked for, from the record, what is filed and the
+    /// clock. Nothing is stored: a `signature_state` column would need updating when
+    /// a document is filed, when a reference is typed, and — impossibly — when a day
+    /// passes.
+    pub fn signature_state(&self, record: &DistributionRecord) -> crate::receipt::SignatureState {
+        crate::receipt::state_of(
+            record,
+            self.filed_for(record.id),
+            &self.settings.signatures,
+            chrono::Utc::now(),
+        )
+    }
+
+    /// Has the return been documented? Only meaningful once a key is back.
+    pub fn return_state(&self, record: &DistributionRecord) -> crate::receipt::ReturnState {
+        crate::receipt::return_state_of(record, self.filed_for(record.id))
+    }
+
+    /// How the register's paperwork stands, for the line at the top of the screen.
+    pub fn outstanding_paperwork(&self) -> crate::receipt::Outstanding {
+        crate::receipt::outstanding(
+            &self.distributions,
+            |record| self.filed_for(record.id),
+            &self.settings.signatures,
+            chrono::Utc::now(),
+        )
+    }
+
+    /// Record `receipt.pending_overdue` for terms that have passed the threshold,
+    /// **once each, ever**.
+    ///
+    /// Called when the register is opened and after anything that could change the
+    /// answer. Two problems to avoid, and one of them is the reason this looks the
+    /// way it does:
+    ///
+    /// * A time-based transition has no click behind it. Nobody *does* anything to
+    ///   make a term overdue, so there is no natural moment to audit — and auditing
+    ///   from the paint pass would write an entry per frame.
+    /// * "Once each" has to survive restarts, or every session re-records the same
+    ///   hand-overs and the trail fills with duplicates of a fact it already holds.
+    ///
+    /// So the trail itself is the record of what has been recorded: the existing
+    /// `receipt.pending_overdue` entries are read, and only a hand-over not among
+    /// them is written. No new column, and idempotent for the life of the register —
+    /// the audit table cannot be rewritten, which is exactly the property that makes
+    /// it usable as this marker.
+    pub fn check_overdue_signatures(&mut self) {
+        if !self.settings.signatures.required {
+            return;
+        }
+        let Some(store) = &self.store else { return };
+
+        let already: std::collections::BTreeSet<String> = match store.audit_entries_matching(
+            &crate::audit::AuditFilter {
+                event: "receipt.pending_overdue".into(),
+                ..Default::default()
+            },
+            usize::MAX,
+        ) {
+            Ok(entries) => entries.into_iter().map(|entry| entry.target).collect(),
+            Err(e) => {
+                // Without the check the entries would duplicate, so this stops
+                // rather than writing possibly-repeated history.
+                tracing::error!(event = "receipt.overdue.check_failed", reason = %e);
+                return;
+            }
+        };
+
+        let now = chrono::Utc::now();
+        let newly: Vec<(String, String)> = self
+            .distributions
+            .iter()
+            .filter_map(|record| {
+                let state = crate::receipt::state_of(
+                    record,
+                    self.filed_for(record.id),
+                    &self.settings.signatures,
+                    now,
+                );
+                if !state.is_overdue() {
+                    return None;
+                }
+                let target = format!("distribution:{}", record.id);
+                if already.contains(&target) {
+                    return None;
+                }
+                Some((target, state.audit_detail()))
+            })
+            .collect();
+
+        for (target, detail) in newly {
+            self.record("receipt.pending_overdue", &target, &detail);
+        }
+    }
+
+    /// Record the unit's own reference for a signed term, after the hand-over.
+    ///
+    /// The other way a term gets settled, for a unit that files paper elsewhere:
+    /// `receipt.signed` is the event the spec defines for it, and this is what
+    /// writes it. Audited with the serial and the reference — the reference is a
+    /// document number, not personal data, and it is the thing somebody will search
+    /// the trail for.
+    pub fn record_receipt_reference(&mut self, distribution_id: uuid::Uuid, reference: &str) {
+        self.term_panel.error = None;
+        let reference = reference.trim().to_owned();
+        if reference.is_empty() {
+            self.term_panel.error = Some(
+                "type the reference your unit filed the signed term under, or upload the scan \
+                 instead"
+                    .into(),
+            );
+            return;
+        }
+        if reference.chars().count() > crate::domain::MAX_TEXT {
+            self.term_panel.error = Some(format!(
+                "a reference is at most {} characters",
+                crate::domain::MAX_TEXT
+            ));
+            return;
+        }
+
+        let serial = self
+            .distributions
+            .iter()
+            .find(|d| d.id == distribution_id)
+            .map(|d| d.key_serial);
+        let Some(serial) = serial else {
+            self.term_panel.error = Some("hand-over not found".into());
+            return;
+        };
+
+        let result = {
+            let Some(store) = &self.store else {
+                self.term_panel.error = Some("no database open".into());
+                return;
+            };
+            store.set_receipt_ref(distribution_id, &reference)
+        };
+        match result {
+            Ok(()) => {
+                self.record(
+                    "receipt.signed",
+                    &format!("serial:{serial}"),
+                    &format!("reference={reference}"),
+                );
+                self.status = format!("signed term recorded for serial {serial}: {reference}");
+                self.term_panel.reference.clear();
+                self.refresh();
+            }
+            Err(e) => self.term_panel.error = Some(e.to_string()),
+        }
+    }
+
+    // --------------------------------- the return receipt (receipts, phase 6)
+
+    /// Render the receipt that closes the custody loop for a returned key.
+    ///
+    /// The mirror of [`Self::generate_term`], and deliberately the same panel: the
+    /// operator reviews it, exports it as text or PDF, and files the signed copy
+    /// against the hand-over as a `ReturnReceipt`. The wording is a term template
+    /// like any other (`term::RETURN_ID`), so a unit edits it in the Terms screen
+    /// and it is versioned the same way.
+    ///
+    /// Refused for a key that has not come back. A receipt saying a key was returned
+    /// on a date nobody recorded would be a document contradicting the register.
+    pub fn generate_return_receipt(&mut self, distribution_id: uuid::Uuid) {
+        use crate::term::{RETURN_ID, TermContext, choose_template, render_term};
+
+        self.term_panel.open = true;
+        self.term_panel.distribution = Some(distribution_id);
+        self.term_panel.document = crate::term::RETURN_ID.to_owned();
+        self.term_panel.rendered = None;
+        self.term_panel.pdf = None;
+        self.term_panel.pdf_note = None;
+        self.term_panel.language_used = None;
+        self.term_panel.template_used = None;
+        self.term_panel.error = None;
+
+        let Some(record) = self
+            .distributions
+            .iter()
+            .find(|d| d.id == distribution_id)
+            .cloned()
+        else {
+            self.term_panel.error = Some("hand-over not found".into());
+            return;
+        };
+        if record.returned_at.is_none() {
+            self.term_panel.error = Some(
+                "this key has not been returned yet — record the return first, and the receipt \
+                 will carry its date"
+                    .into(),
+            );
+            return;
+        }
+
+        let Some(holder) = self
+            .holders
+            .iter()
+            .find(|h| h.id == record.holder_id)
+            .cloned()
+        else {
+            self.term_panel.error = Some("the holder of this hand-over is not on record".into());
+            return;
+        };
+        let key = self
+            .keys
+            .iter()
+            .find(|k| k.serial == record.key_serial)
+            .cloned()
+            .unwrap_or_else(|| {
+                YubiKeyRecord::from_serial(record.key_serial, SerialSource::ManualEntry)
+            });
+
+        // A return receipt says nothing about what was applied — that belongs to the
+        // consignment term — so `applied` and `custody` are left out rather than
+        // repeated. The template does not reference them.
+        let ctx = TermContext::from_records(
+            &holder,
+            &key,
+            Some(&record),
+            "",
+            "",
+            &self.operator,
+            &self.org,
+        );
+
+        let language = self.term_panel.language.clone();
+        let Some(template) = choose_template(&self.term_templates, RETURN_ID, &language).cloned()
+        else {
+            self.term_panel.error = Some(format!(
+                "no return receipt wording for `{language}` — add it in the Terms screen"
+            ));
+            return;
+        };
+        if !template.language.eq_ignore_ascii_case(&language) {
+            self.term_panel.language_used = Some(template.language.clone());
+        }
+        self.term_panel.template_used = Some(format!(
+            "{}@{} ({})",
+            template.id, template.version, template.language
+        ));
+
+        match render_term(&template, &ctx) {
+            Ok(text) => {
+                self.term_panel.pdf_note = Self::pdf_note(&text);
+                self.term_panel.pdf = self.term_pdf(&template, &ctx);
+                self.term_panel.rendered = Some(text);
+                self.record(
+                    "receipt.generated",
+                    &format!("serial:{}", record.key_serial),
+                    &format!(
+                        "kind=return holder={} language={} template={}@{}",
+                        holder.email, template.language, template.id, template.version
+                    ),
+                );
+            }
+            Err(e) => self.term_panel.error = Some(e.to_string()),
+        }
+    }
+
     /// The term as a PDF, or `None` with the reason in the status bar.
     ///
     /// A failure here is not fatal: the text output is still on screen and still
@@ -2673,6 +2974,27 @@ impl YkDistApp {
     /// Reads the cached templates, never the database, so it is safe to call from
     /// a click. A language with nothing stored opens on the built-in wording when
     /// the build ships one, and blank otherwise.
+    /// Switch the Terms editor to another document type, keeping the language.
+    ///
+    /// Refuses to discard an unsaved edit, the same way switching language does: a
+    /// legal text somebody has just typed is not something to lose to a click on a
+    /// dropdown.
+    pub fn load_term_document(&mut self, id: &str) {
+        self.term_editor.error = None;
+        self.term_editor.notice = None;
+        if self.term_editor.is_dirty(&self.term_templates) {
+            self.term_editor.error = Some(format!(
+                "there are unsaved changes to the {} wording in {} — save them, or discard them \
+                 with “Reload stored version”, before switching document",
+                self.term_editor.id, self.term_editor.language
+            ));
+            return;
+        }
+        self.term_editor.id = id.trim().to_owned();
+        let language = self.term_editor.language.clone();
+        self.load_term_template(&language);
+    }
+
     pub fn load_term_template(&mut self, language: &str) {
         use crate::term::{TermTemplate, latest_in_language};
 
@@ -3724,6 +4046,21 @@ impl YkDistApp {
         }
         self.record("key.returned", &format!("serial:{serial}"), "");
         self.refresh();
+        // The return closes the chase for this hand-over's term and opens a
+        // different question — whether the return itself is documented — so the
+        // outstanding tally is worth recomputing now rather than at the next open.
+        self.check_overdue_signatures();
+        if self.settings.signatures.required
+            && let Some(record) = self.distributions.iter().find(|d| d.id == id).cloned()
+            && !self.signature_state(&record).is_settled()
+        {
+            // Said once, where the operator is looking: the key is back and the
+            // record of who was responsible for it while it was out never arrived.
+            // Not an error — nothing failed — but not silence either.
+            self.status = format!(
+                "serial {serial} returned. Note: no signed term was ever filed for this                  hand-over, and that gap is now permanent"
+            );
+        }
     }
 
     /// Verify the audit chain and report the result in the status bar.

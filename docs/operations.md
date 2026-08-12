@@ -469,8 +469,63 @@ bootstrapped — that is the guard working, not a bug.
 5. When the signed copy comes back: **Upload signed term…** (or *upload* on the row).
    PDF, PNG, JPEG or TIFF, up to 8 MiB. It is stored **in the database** with a SHA-256,
    so copying the database copies the evidence.
-6. The row's badge turns from `none filed` (amber) to `n filed` (green). *export* writes a
-   filed document back out, verifying the digest first and refusing on a mismatch.
+   - **Or record your own reference** instead, in the same panel: a unit that files paper
+     in a process system types the number there (`processo 2026/114`) and the hand-over
+     counts as signed. Either answers "where is the signed term"; nothing demands both.
+6. The row's badge in the **Term** column says where the signature stands, with the age:
+   `awaiting signature · 3d`, `overdue · 30d`, `signed`, `returned unsigned · 50d`.
+   *export* writes a filed document back out, verifying the digest first and refusing on
+   a mismatch.
+
+## Runbook: chasing the terms that never came back
+
+The **Distribution** screen carries one line at the top when there is something
+outstanding, and nothing at all when there is not. What the states mean:
+
+| Badge | What it means | What to do |
+|---|---|---|
+| `awaiting signature · Nd` | handed over, not signed, inside your limit | nothing yet — a posted key is normally here |
+| `overdue · Nd` | unsigned past your limit | file the scan, or record your reference |
+| `signed` | the scan is filed, or a reference was recorded | nothing |
+| `returned unsigned · Nd` | the key came back and no term was ever signed | nothing to chase; the gap stays on record |
+| `term not used` | your unit has terms turned off | nothing |
+
+**Set the limit to what your slowest channel takes.** *Settings → Responsibility terms*:
+14 days by default. A unit that hands keys across a desk can drop it to two; one that
+posts them internationally should raise it. There is deliberately **one** limit rather
+than one per delivery method — two would mean deciding which applies to the row in front
+of you, which is how a warning stops being read. The same card turns terms off entirely,
+for an internal pilot or a batch of test keys.
+
+Two things worth knowing:
+
+- **An overdue term is recorded in the audit trail once, and only once.** Not once per
+  session, not once per screen paint — the trail is checked before anything is written.
+  The entry stays after the term is signed, because it happened.
+- **A returned key with no signed term is a permanent gap**, and stays counted. The term
+  was evidence of custody while the key was held; that window has closed, so nobody
+  should chase it, and the register does not tidy it away either.
+
+## Runbook: a key comes back
+
+1. **Distribution** → the row → **record return**. The key's status becomes *Returned*
+   and the hand-over closes.
+   - If no signed term was ever filed for it, the status line says so once. That gap is
+     now permanent — worth knowing, not worth chasing.
+2. **return receipt** on the same row produces the mirror document: the holder's details,
+   the key, **both** dates (handed over on…, returned on…), who received it, and the
+   undertaking to revoke the certificates and remove the credentials. Export it as a PDF
+   the same way as the term.
+3. Have it signed, then **Upload signed receipt…**. Until you do, the row shows
+   `no receipt` — a return the holder did not sign for is a return only the unit is
+   asserting.
+4. **Then actually revoke.** The receipt says the credentials will be revoked; the
+   document is not the revocation. A returned key whose certificate is still valid is a
+   credential in a drawer.
+
+The receipt's wording is editable like the term's: **Terms** → *Document* → *return* →
+the language. Saving stores a new version, and the receipts already issued keep pointing
+at the version that produced them.
 
 The built-in term wording is a **draft**: it needs review by whoever owns the term at your
 institution, and the data-protection paragraph needs the DPO. Templates are data, so that

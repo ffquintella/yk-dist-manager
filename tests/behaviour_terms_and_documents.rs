@@ -126,7 +126,12 @@ fn scenario_the_same_hand_over_in_english() {
 #[test]
 fn scenario_term_templates_are_seeded_once_and_survive_an_edit() {
     let world = World::new();
-    assert_eq!(world.store.seed_builtin_terms().unwrap(), 2);
+    // Every wording this build ships: the consignment term and the return receipt
+    // that closes the custody loop, in both languages. Counted from `builtin()` so
+    // that adding a document type does not need this number edited — and so a
+    // seeding that silently skipped one still fails here.
+    let shipped = TermTemplate::builtin().len();
+    assert_eq!(world.store.seed_builtin_terms().unwrap(), shipped);
     // Seeding again must not duplicate or overwrite.
     assert_eq!(world.store.seed_builtin_terms().unwrap(), 0);
 
@@ -139,9 +144,21 @@ fn scenario_term_templates_are_seeded_once_and_survive_an_edit() {
     let stored = world.store.term_templates().unwrap();
     let pt = stored
         .iter()
-        .find(|t| t.language == "pt-BR")
+        .find(|t| t.id == "consignment" && t.language == "pt-BR")
         .expect("stored");
     assert_eq!(pt.body, "Nome: {{holder.name}}\n");
+
+    // And the return receipt is there beside it, untouched by that edit.
+    assert!(
+        stored
+            .iter()
+            .any(|t| t.id == yk_dist_manager::term::RETURN_ID && t.language == "pt-BR"),
+        "the return receipt is seeded too: {:?}",
+        stored
+            .iter()
+            .map(|t| (&t.id, &t.language))
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -162,7 +179,18 @@ fn scenario_a_unit_adds_its_own_language() {
     let templates = world.store.term_templates().unwrap();
     let chosen = choose_template(&templates, "consignment", "es").unwrap();
     assert_eq!(chosen.language, "es");
-    assert_eq!(templates.len(), 3);
+    assert_eq!(
+        templates.len(),
+        TermTemplate::builtin().len() + 1,
+        "the unit's own language sits beside everything shipped, not instead of it"
+    );
+    // Adding a language to one document does not add it to the other: a unit that
+    // hands over a Spanish term has not thereby written a Spanish return receipt.
+    assert!(
+        choose_template(&templates, yk_dist_manager::term::RETURN_ID, "es")
+            .is_some_and(|t| t.language != "es"),
+        "the return receipt falls back rather than pretending to have Spanish"
+    );
 }
 
 #[test]
@@ -187,11 +215,16 @@ fn scenario_the_operator_edits_the_wording_and_the_next_term_uses_it() {
     // generated next carries the new wording.
     assert_eq!(stored.version, "2");
     let after = world.store.term_templates().unwrap();
-    assert_eq!(after.len(), 3, "version 1 is kept, not overwritten");
+    assert_eq!(
+        after.len(),
+        TermTemplate::builtin().len() + 1,
+        "version 1 is kept, not overwritten — the edit adds a row"
+    );
     assert!(
-        after
-            .iter()
-            .any(|t| t.language == "pt-BR" && t.version == "1" && t.body.contains("orientação")),
+        after.iter().any(|t| t.id == "consignment"
+            && t.language == "pt-BR"
+            && t.version == "1"
+            && t.body.contains("orientação")),
         "the version somebody may have signed stays readable"
     );
 
@@ -670,4 +703,271 @@ fn scenario_a_term_in_a_language_the_pdf_font_cannot_set_is_reported_not_silentl
     let file = String::from_utf8_lossy(&bytes).to_string();
     assert!(file.contains("Ana Silva"));
     assert!(file.contains("20423633"));
+}
+
+// ------------------------------------------- the signature state machine (4)
+
+/// A second hand-over of the same key and holder, `days` ago and with **no**
+/// reference recorded, so the signature state has something to be late about.
+///
+/// A record of its own rather than an edit of the one `handed_over` inserted:
+/// `insert_distribution` is an insert, and a test that re-inserted the same id
+/// would be testing SQLite's uniqueness rather than the state machine.
+fn unsigned_handover(world: &World, days: i64) -> DistributionRecord {
+    let (key, holder, first) = world.handed_over();
+    let record = DistributionRecord {
+        id: uuid::Uuid::new_v4(),
+        key_id: key.id,
+        key_serial: key.serial,
+        holder_id: holder.id,
+        holder_display: holder.display(),
+        distributed_at: chrono::Utc::now() - chrono::Duration::days(days),
+        distributed_by: "felipe".into(),
+        method: DeliveryMethod::InPerson,
+        // The point of the fixture: nothing recorded, nothing filed.
+        receipt_ref: String::new(),
+        bootstrap_run_id: first.bootstrap_run_id,
+        returned_at: None,
+        returned_to: None,
+        notes: String::new(),
+    };
+    world.store.insert_distribution(&record).unwrap();
+    record
+}
+
+#[test]
+fn scenario_an_unsigned_term_becomes_overdue_and_is_recorded_once() {
+    use yk_dist_manager::receipt::{SignaturePolicy, state_of};
+
+    // Given a hand-over from a month ago whose signed term never arrived
+    let world = World::new();
+    let record = unsigned_handover(&world, 30);
+    let policy = SignaturePolicy::default();
+    let filed = world.store.filed_documents().unwrap();
+    let on_file = filed.get(&record.id).copied().unwrap_or_default();
+
+    // Then it is overdue, and the state carries what an operator needs to act:
+    // how long, and against what limit
+    let state = state_of(&record, on_file, &policy, chrono::Utc::now());
+    assert!(state.is_overdue(), "{state:?}");
+    assert!(state.needs_chasing());
+    assert_eq!(state.audit_detail(), "unsigned_days=30 threshold=14");
+
+    // When the operator files the signed scan against the hand-over
+    let scan = AttachedDocument::new(
+        record.id,
+        DocumentKind::SignedTerm,
+        "termo-assinado.pdf",
+        b"%PDF-1.4 signed".to_vec(),
+        "felipe",
+    )
+    .unwrap();
+    world.store.insert_document(&scan).unwrap();
+
+    // Then it is settled — and settled by the *signed* term specifically
+    let filed = world.store.filed_documents().unwrap();
+    let on_file = filed.get(&record.id).copied().unwrap();
+    assert_eq!(on_file.signed_terms, 1);
+    let state = state_of(&record, on_file, &policy, chrono::Utc::now());
+    assert!(state.is_settled(), "{state:?}");
+    assert!(!state.needs_chasing());
+}
+
+#[test]
+fn scenario_a_generated_term_on_file_does_not_settle_the_signature() {
+    // The failure this guards: counting attachments instead of reading their kind.
+    // A term this tool generated and filed says nothing about whether anybody
+    // signed it, and treating it as evidence would be the tool marking its own
+    // homework.
+    use yk_dist_manager::receipt::{SignaturePolicy, state_of};
+
+    let world = World::new();
+    let record = unsigned_handover(&world, 40);
+
+    let generated = AttachedDocument::new(
+        record.id,
+        DocumentKind::GeneratedTerm,
+        "termo.pdf",
+        b"%PDF-1.4 unsigned".to_vec(),
+        "felipe",
+    )
+    .unwrap();
+    world.store.insert_document(&generated).unwrap();
+
+    let filed = world.store.filed_documents().unwrap();
+    let on_file = filed.get(&record.id).copied().unwrap();
+    assert_eq!(on_file.total, 1, "a document is on file");
+    assert_eq!(on_file.signed_terms, 0, "but not a signed term");
+
+    let state = state_of(
+        &record,
+        on_file,
+        &SignaturePolicy::default(),
+        chrono::Utc::now(),
+    );
+    assert!(state.is_overdue(), "{state:?}");
+}
+
+#[test]
+fn scenario_a_returned_key_with_no_signed_term_leaves_a_permanent_gap() {
+    use yk_dist_manager::receipt::{SignaturePolicy, SignatureState, state_of};
+
+    // Given a key handed over two months ago with no signed term, now returned
+    let world = World::new();
+    let record = unsigned_handover(&world, 60);
+    world.store.mark_returned(record.id, "felipe").unwrap();
+
+    let record = world
+        .store
+        .distributions()
+        .unwrap()
+        .into_iter()
+        .find(|d| d.id == record.id)
+        .unwrap();
+
+    // Then the state says so without asking anybody to chase it: the term was
+    // evidence of custody *while the key was held*, and that window has closed
+    let state = state_of(
+        &record,
+        Default::default(),
+        &SignaturePolicy::default(),
+        chrono::Utc::now(),
+    );
+    assert!(
+        matches!(state, SignatureState::MissingOnReturn { .. }),
+        "{state:?}"
+    );
+    assert!(!state.needs_chasing());
+    assert!(!state.is_settled(), "it is still a gap in the record");
+    assert!(
+        state.describe().contains("permanent"),
+        "{}",
+        state.describe()
+    );
+}
+
+// ------------------------------------------------ the return receipt (6)
+
+#[test]
+fn scenario_the_return_receipt_closes_the_custody_loop() {
+    use yk_dist_manager::receipt::{ReturnState, return_state_of};
+    use yk_dist_manager::term::RETURN_ID;
+
+    // Given a key that was handed over in February and came back in August
+    let world = World::new();
+    world.store.seed_builtin_terms().unwrap();
+    let (key, holder, _first) = world.handed_over();
+    let record = DistributionRecord {
+        id: uuid::Uuid::new_v4(),
+        key_id: key.id,
+        key_serial: key.serial,
+        holder_id: holder.id,
+        holder_display: holder.display(),
+        distributed_at: chrono::DateTime::parse_from_rfc3339("2026-02-03T14:00:00Z")
+            .unwrap()
+            .into(),
+        distributed_by: "felipe".into(),
+        method: DeliveryMethod::InPerson,
+        receipt_ref: "TERM-2026-001".into(),
+        bootstrap_run_id: None,
+        returned_at: Some(
+            chrono::DateTime::parse_from_rfc3339("2026-08-11T09:00:00Z")
+                .unwrap()
+                .into(),
+        ),
+        returned_to: Some("felipe".into()),
+        notes: String::new(),
+    };
+    world.store.insert_distribution(&record).unwrap();
+
+    // Then the receipt renders with both ends of the custody, not just today
+    let templates = world.store.term_templates().unwrap();
+    let template = choose_template(&templates, RETURN_ID, "pt-BR").expect("a return receipt");
+    let ctx = TermContext::from_records(&holder, &key, Some(&record), "", "", "felipe", "FGV");
+    let text = render_term(template, &ctx).expect("it renders");
+
+    assert!(text.contains("03/02/2026"), "the hand-over date: {text}");
+    assert!(text.contains("11/08/2026"), "the return date: {text}");
+    assert!(text.contains("Ana Silva"), "{text}");
+    assert!(text.contains("20423633"), "{text}");
+    assert!(
+        text.to_lowercase().contains("revoga"),
+        "the receipt has to say the credentials get revoked — a returned key whose \
+         certificate is still valid is a credential in a drawer: {text}"
+    );
+    assert!(!text.contains("{{"), "no placeholder survives: {text}");
+
+    // And it is a PDF like the term, from the same writer
+    let pdf = render_term_pdf(template, &ctx, "D:20260811090000Z").expect("a PDF");
+    assert!(pdf.starts_with(b"%PDF-"), "a PDF is produced");
+
+    // Until the signed receipt is filed, the return is only the unit's assertion
+    assert_eq!(
+        return_state_of(&record, Default::default()),
+        ReturnState::Undocumented
+    );
+
+    let signed = AttachedDocument::new(
+        record.id,
+        DocumentKind::ReturnReceipt,
+        "recibo-devolucao.pdf",
+        pdf,
+        "felipe",
+    )
+    .unwrap();
+    world.store.insert_document(&signed).unwrap();
+
+    let filed = world.store.filed_documents().unwrap();
+    let on_file = filed.get(&record.id).copied().unwrap();
+    assert_eq!(on_file.return_receipts, 1);
+    assert_eq!(
+        return_state_of(&record, on_file),
+        ReturnState::Documented,
+        "both ends of the hand-over are now documented"
+    );
+
+    // And a signed *receipt* does not settle the *term*: they are different
+    // documents answering different questions, and conflating them would mark a
+    // hand-over as acknowledged because the return was.
+    assert_eq!(on_file.signed_terms, 0);
+}
+
+#[test]
+fn scenario_the_return_wording_is_edited_like_any_other_term() {
+    // Phase 6 is a second template id and nothing more, which is what makes it
+    // editable, versioned and multilingual for free. This is the proof: the unit
+    // changes the wording and the next receipt uses it, with the old version kept
+    // for the receipts already issued against it.
+    use yk_dist_manager::term::RETURN_ID;
+
+    let world = World::new();
+    world.store.seed_builtin_terms().unwrap();
+
+    let before = world.store.term_templates().unwrap();
+    let original = choose_template(&before, RETURN_ID, "pt-BR").unwrap();
+    assert_eq!(original.version, "1");
+
+    let mut draft = original.clone();
+    draft.body = draft
+        .body
+        .replace("4.4. A reutilização", "4.4. A reutilização interna");
+    let stored = world.store.save_term_template_version(&draft).unwrap();
+    assert_eq!(stored.version, "2");
+
+    let after = world.store.term_templates().unwrap();
+    let chosen = choose_template(&after, RETURN_ID, "pt-BR").unwrap();
+    assert_eq!(chosen.version, "2");
+    assert!(chosen.body.contains("reutilização interna"));
+    assert!(
+        after.iter().any(|t| t.id == RETURN_ID && t.version == "1"),
+        "the version a receipt was issued under stays readable"
+    );
+
+    // And the consignment term is untouched by an edit to the receipt.
+    assert_eq!(
+        choose_template(&after, "consignment", "pt-BR")
+            .unwrap()
+            .version,
+        "1"
+    );
 }

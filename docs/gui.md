@@ -156,13 +156,27 @@ The hand-over form (key, holder, delivery method, receipt reference, notes, and 
 attach the latest bootstrap run) above the history table. The table shows what was applied —
 the run summary — and offers "record return" on open records only.
 
-Each row also carries the **term** column: *term* opens the consignment-term panel,
-*upload* files a signed scan, and a badge says `none filed` (amber) or `n filed`
-(green) so an unsigned hand-over is visible at a glance.
+Each row carries the **Term** column, which is the *signature state* rather than a count
+of attachments (`features/receipts-and-terms.md` phase 4): `awaiting signature · 3d`,
+`overdue · 30d`, `signed`, `returned unsigned · 50d`, or `term not used`. The days are on
+the badge because "overdue" without a number is not something an operator can prioritise,
+and the whole sentence — including what an unsigned term costs — is on hover. A generated
+term filed against a hand-over deliberately does **not** make it read as signed.
 
-The **term panel** picks a language (falling back with a visible notice when the
-requested one has no template), renders the term from the record, and offers *Export as
-PDF…*, *Save as text…*, *Upload signed term…* and *Edit wording…* — which opens the Terms
+One line at the top of the screen says what is outstanding across the register, and
+**nothing at all when there is nothing** — a banner that is always on screen is one
+nobody reads.
+
+Row actions: *term* opens the panel, *upload* files a signed scan, *record return* closes
+an open hand-over, and on a returned row *return receipt* produces the mirror document
+with a `no receipt` badge until the signed copy is filed.
+
+The **term panel** serves both documents — the consignment term and the return receipt —
+and says which in its heading, because the two are legally different things and a
+reviewer must never be unsure which is on screen. It picks a language (falling back with
+a visible notice when the requested one has no template), renders from the record, and
+offers *Export as PDF…*, *Save as text…*, *Upload signed term…* (or *…receipt…*, filed as
+the matching kind) and *Edit wording…* — which opens the Terms
 screen on the same language. The PDF is the sheet to print and have signed; the text is
 the same document for a ticket, and both come from one rendering so they cannot disagree.
 When the term uses a character the PDF font cannot set, an amber notice says which ones
@@ -249,9 +263,13 @@ count and run count, and never the procedure text.
 
 ### Terms
 
-Where the wording of the consignment term is edited — the term is institutional text
-somebody else owns, which is why it is data and not a constant in the source.
+Where the wording of the holder-facing documents is edited — institutional text somebody
+else owns, which is why it is data and not a constant in the source.
 
+- **Document** selects which one: the *consignment term* the holder signs on receiving a
+  key, or the *return receipt* that closes the custody loop when it comes back. A picker
+  rather than two screens, because the return receipt is a second template id and nothing
+  more — everything below it is identical.
 - **Language** selects which translation is being edited; badges say `version N` (or
   `not stored yet`), `unsaved changes`, and whether the build ships this language.
   *Add a language* takes a BCP 47 tag and starts a term for it.

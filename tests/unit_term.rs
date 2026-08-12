@@ -59,16 +59,89 @@ fn ctx(holder: &Holder) -> TermContext {
 }
 
 #[test]
-fn the_builtin_terms_are_valid_and_cover_both_languages() {
+fn the_builtin_terms_cover_every_document_in_every_language() {
+    // Two documents — the consignment term and the return receipt that closes the
+    // custody loop — in both shipped languages. The count is asserted as a product
+    // so that adding one and forgetting the other fails here rather than being
+    // found by a holder who is handed a receipt in the wrong language.
+    use yk_dist_manager::term::BUILTIN_IDS;
+
     let templates = TermTemplate::builtin();
-    assert_eq!(templates.len(), BUILTIN_LANGUAGES.len());
+    assert_eq!(templates.len(), BUILTIN_IDS.len() * BUILTIN_LANGUAGES.len());
+
     for template in &templates {
         template
             .validate()
-            .unwrap_or_else(|e| panic!("{} is invalid: {e}", template.language));
+            .unwrap_or_else(|e| panic!("{} {} is invalid: {e}", template.id, template.language));
         assert!(BUILTIN_LANGUAGES.contains(&template.language.as_str()));
-        assert_eq!(template.id, "consignment");
+        assert!(
+            BUILTIN_IDS.contains(&template.id.as_str()),
+            "unexpected id {}",
+            template.id
+        );
     }
+
+    for id in BUILTIN_IDS {
+        for language in BUILTIN_LANGUAGES {
+            assert!(
+                templates
+                    .iter()
+                    .any(|t| t.id == id && t.language == language),
+                "no built-in {id} in {language}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_return_receipt_names_both_ends_of_the_custody_and_what_happens_next() {
+    // The document exists to close the loop, so three things have to survive
+    // rendering: when the key went out, when it came back, and that the credentials
+    // on it are somebody's job to revoke. A returned key whose certificate is still
+    // valid is a credential in a drawer.
+    use yk_dist_manager::term::{RETURN_ID, TermContext, choose_template, render_term};
+
+    let templates = TermTemplate::builtin();
+    let mut ctx = TermContext::sample();
+    ctx.handover_date = "03/02/2026".into();
+    ctx.return_date = "11/08/2026".into();
+    ctx.return_to = "felipe".into();
+
+    for language in BUILTIN_LANGUAGES {
+        let template = choose_template(&templates, RETURN_ID, language).expect("a return receipt");
+        let text = render_term(template, &ctx).expect("it renders");
+
+        assert!(text.contains("03/02/2026"), "{language}: {text}");
+        assert!(text.contains("11/08/2026"), "{language}: {text}");
+        assert!(text.contains("felipe"), "{language}: {text}");
+        assert!(text.contains(&ctx.key_serial), "{language}: {text}");
+        // The revocation sentence, in either language.
+        let revocation = text.to_lowercase();
+        assert!(
+            revocation.contains("revoga") || revocation.contains("revocation"),
+            "{language}: the receipt must say the credentials get revoked: {text}"
+        );
+        // And no leftover placeholder.
+        assert!(!text.contains("{{"), "{language}: {text}");
+    }
+}
+
+#[test]
+fn a_consignment_term_carries_no_return_lines_while_the_key_is_held() {
+    // The lines that name a return resolve to empty for a key that has not come
+    // back, and `render_term` drops a line whose variable is empty — which is how
+    // one context serves both documents without a conditional in the template.
+    use yk_dist_manager::term::{CONSIGNMENT_ID, TermContext, choose_template, render_term};
+
+    let templates = TermTemplate::builtin();
+    let mut ctx = TermContext::sample();
+    ctx.return_date = String::new();
+    ctx.return_to = String::new();
+
+    let template = choose_template(&templates, CONSIGNMENT_ID, "pt-BR").unwrap();
+    let text = render_term(template, &ctx).unwrap();
+    assert!(!text.to_lowercase().contains("devolução"), "{text}");
+    assert!(!text.contains("{{"), "{text}");
 }
 
 #[test]
