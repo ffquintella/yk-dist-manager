@@ -110,6 +110,12 @@ pub enum StoreError {
     Lease(#[from] LeaseError),
     #[error("the term template was refused: {0}")]
     Term(#[from] crate::term::TermError),
+    #[error("that password is not usable: {0}")]
+    WeakPassword(String),
+    #[error(
+        "the password change failed while {stage}, and the register was left as it was: {reason}"
+    )]
+    Rekey { stage: &'static str, reason: String },
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;
@@ -836,6 +842,151 @@ impl Store {
             ])?;
         }
         Ok(())
+    }
+
+    /// Change the database password, or set one on a plain file.
+    ///
+    /// `features/db-password-and-encryption.md` phases 2 and 5 — one operation,
+    /// because they are the same one: **export the whole database into a new file
+    /// under a different key, prove the copy is good, and only then swap.**
+    ///
+    /// ## Why not `PRAGMA rekey`
+    ///
+    /// SQLCipher can re-encrypt in place, and on a share that is the riskiest
+    /// operation this tool could perform: it rewrites every page of a file that a
+    /// sync client may be copying and another workstation may be about to open,
+    /// with no intermediate state that is a valid database. An interruption
+    /// half-way leaves a file that is neither the old key nor the new one. The
+    /// spec calls this out and this method is the alternative it names.
+    ///
+    /// ## The order, and why each step is where it is
+    ///
+    /// 1. **Check the new password** against the policy, before anything moves.
+    /// 2. **Take a backup.** The one operation that rewrites the whole register
+    ///    is the one that most needs a copy of what it started from.
+    /// 3. **Audit the change into the *source*.** It has to be written before the
+    ///    export, so the export carries it: an entry written afterwards would go
+    ///    into a file that is about to be replaced.
+    /// 4. **Export** via `sqlcipher_export` into a new file opened with the new
+    ///    key, then carry `user_version` across by hand — `sqlcipher_export`
+    ///    copies schema and rows, not pragmas, and a database that arrived with
+    ///    `user_version = 0` would be migrated from scratch on the next open.
+    /// 5. **Verify the copy**: it opens under the new password, its integrity
+    ///    check passes, its schema version matches, and its audit chain verifies.
+    ///    A copy that fails any of these is deleted and the original is untouched.
+    /// 6. **Swap**, keeping the original under a `.replaced` name until the new
+    ///    file is in place.
+    ///
+    /// Consumes the `Store`, because after the swap this handle points at a file
+    /// that is no longer the register. The caller reopens at the returned path
+    /// with the new password.
+    pub fn change_password(
+        self,
+        operator: &str,
+        new_password: Option<&str>,
+    ) -> Result<std::path::PathBuf> {
+        if !cfg!(feature = "encrypted-db") {
+            return Err(StoreError::EncryptionUnavailable);
+        }
+        if self.read_only {
+            return Err(StoreError::ReadOnly);
+        }
+
+        // 1. Policy first: refusing after the backup and the export would be
+        //    doing all the work to arrive at "no".
+        if let Some(password) = new_password {
+            let assessment = crate::password::assess(password);
+            if !assessment.is_acceptable() {
+                return Err(StoreError::WeakPassword(assessment.summary()));
+            }
+        }
+
+        let path = self.path.clone();
+        let was_encrypted = self.encrypted;
+        let schema: i64 = self
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))?;
+
+        // 2. A copy of what we started from.
+        let backup = self.backup_now(Utc::now())?;
+
+        // 3. Audited into the source, so the export carries the entry.
+        let detail = format!(
+            "from={} to={} schema={schema}",
+            if was_encrypted { "encrypted" } else { "plain" },
+            if new_password.is_some() {
+                "encrypted"
+            } else {
+                "plain"
+            }
+        );
+        let event = if was_encrypted {
+            "db.password.changed"
+        } else {
+            "db.encrypted"
+        };
+        self.append_audit(operator, event, &path.display().to_string(), &detail)?;
+
+        // 4. Export into a new file under the new key.
+        let target = path.with_file_name(format!(
+            "{}.rekey-in-progress.sqlite3",
+            path.file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "database".into())
+        ));
+        let _ = std::fs::remove_file(&target);
+
+        if let Err(e) = export_to(&self.conn, &target, new_password, schema) {
+            let _ = std::fs::remove_file(&target);
+            return Err(e);
+        }
+
+        // 5. Prove the copy before trusting it. Done on a *separate* connection,
+        //    so what is checked is the file as it will be reopened rather than
+        //    the handle that wrote it.
+        if let Err(e) = verify_rekeyed(&target, new_password, schema) {
+            let _ = std::fs::remove_file(&target);
+            return Err(e);
+        }
+
+        // 6. Swap. The connection closes first — on Windows a file cannot be
+        //    replaced while it is open, and everywhere else a stale handle
+        //    writing into a replaced file is a way to lose the swap.
+        let sync = self.sync;
+        let lease = self.lease;
+        if let Err((_, e)) = self.conn.close() {
+            let _ = std::fs::remove_file(&target);
+            return Err(StoreError::Sqlite(e));
+        }
+
+        let replaced = path.with_extension("replaced");
+        std::fs::rename(&path, &replaced).map_err(|e| StoreError::Rekey {
+            stage: "moving the original aside",
+            reason: e.to_string(),
+        })?;
+        if let Err(e) = std::fs::rename(&target, &path) {
+            // Put the original back. Failing here would leave no register at
+            // all, which is worse than a failed password change.
+            let _ = std::fs::rename(&replaced, &path);
+            return Err(StoreError::Rekey {
+                stage: "moving the new file into place",
+                reason: e.to_string(),
+            });
+        }
+        let _ = std::fs::remove_file(&replaced);
+
+        // The lock is released last, after the file it guards is the new one.
+        if let Some(lease) = lease {
+            lease.release(&sync);
+        }
+
+        tracing::info!(
+            event = "db.rekeyed",
+            path = %path.display(),
+            encrypted = new_password.is_some(),
+            backup = ?backup.taken,
+        );
+        Ok(path)
     }
 
     /// `PRAGMA integrity_check` — offered in Settings, and worth running after
@@ -1964,6 +2115,137 @@ impl Store {
 }
 
 /// Apply `PRAGMA key`. Only meaningful in a SQLCipher build.
+/// `sqlcipher_export` the whole database into `target`, under `key`.
+///
+/// `ATTACH … KEY ''` is how SQLCipher writes a *plain* file, which is what makes
+/// removing a password the same operation as changing one.
+fn export_to(conn: &Connection, target: &Path, key: Option<&str>, schema: i64) -> Result<()> {
+    // The path is bound as a parameter and the key is applied with a pragma on
+    // the attached handle, so neither is formatted into SQL. `AGENTS.md` §2: no
+    // user value is ever concatenated into a statement, and a password least of
+    // all.
+    conn.execute(
+        "ATTACH DATABASE ?1 AS rekeyed KEY ?2",
+        params![target.to_string_lossy(), key.unwrap_or("")],
+    )
+    .map_err(|e| StoreError::Rekey {
+        stage: "opening the new file",
+        reason: e.to_string(),
+    })?;
+
+    let exported = conn
+        .query_row("SELECT sqlcipher_export('rekeyed')", [], |_| Ok(()))
+        .map_err(|e| StoreError::Rekey {
+            stage: "copying the database",
+            reason: e.to_string(),
+        });
+
+    // `user_version` is a pragma, and `sqlcipher_export` copies schema and rows
+    // but not pragmas. Without this the copy arrives claiming version 0 and the
+    // next open would run every migration again over a fully-migrated database.
+    let versioned = exported.and_then(|()| {
+        conn.execute_batch(&format!("PRAGMA rekeyed.user_version = {schema};"))
+            .map_err(|e| StoreError::Rekey {
+                stage: "carrying the schema version across",
+                reason: e.to_string(),
+            })
+    });
+
+    // Detached whatever happened: leaving it attached would keep a handle on a
+    // file the caller is about to delete.
+    let detached = conn
+        .execute_batch("DETACH DATABASE rekeyed")
+        .map_err(|e| StoreError::Rekey {
+            stage: "closing the new file",
+            reason: e.to_string(),
+        });
+
+    versioned.and(detached)
+}
+
+/// Prove a re-encrypted copy before anything is swapped.
+///
+/// On its own connection on purpose: this has to answer "will the file open when
+/// it is reopened", and the handle that wrote it is not that question.
+fn verify_rekeyed(target: &Path, key: Option<&str>, schema: i64) -> Result<()> {
+    let conn = Connection::open(target).map_err(|e| StoreError::Rekey {
+        stage: "reopening the new file",
+        reason: e.to_string(),
+    })?;
+    if let Some(key) = key {
+        apply_key(&conn, key)?;
+    }
+
+    let store = RekeyedCopy { conn };
+    store.check(schema)
+}
+
+/// The questions asked of a re-encrypted copy before it replaces anything.
+struct RekeyedCopy {
+    conn: Connection,
+}
+
+impl RekeyedCopy {
+    fn check(&self, schema: i64) -> Result<()> {
+        // Reading anything is what surfaces a wrong key, so this is first.
+        let version: i64 = self
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .map_err(|e| StoreError::Rekey {
+                stage: "reading the new file",
+                reason: e.to_string(),
+            })?;
+        if version != schema {
+            return Err(StoreError::Rekey {
+                stage: "checking the new file",
+                reason: format!("schema version {version} in the copy, {schema} in the original"),
+            });
+        }
+
+        let integrity: String = self
+            .conn
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .map_err(|e| StoreError::Rekey {
+                stage: "checking the new file",
+                reason: e.to_string(),
+            })?;
+        if integrity != "ok" {
+            return Err(StoreError::Rekey {
+                stage: "checking the new file",
+                reason: format!("integrity check said `{integrity}`"),
+            });
+        }
+
+        // The audit chain is the thing that makes this register evidence, so a
+        // copy whose chain does not verify is not a copy worth swapping in.
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT seq, at, actor, event, target, details, prev_hash, hash
+                 FROM audit ORDER BY seq ASC",
+            )
+            .map_err(|e| StoreError::Rekey {
+                stage: "reading the audit trail in the new file",
+                reason: e.to_string(),
+            })?;
+        let entries = stmt
+            .query_map([], row_to_audit)
+            .and_then(|rows| rows.collect::<rusqlite::Result<Vec<_>>>())
+            .map_err(|e| StoreError::Rekey {
+                stage: "reading the audit trail in the new file",
+                reason: e.to_string(),
+            })?
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
+
+        crate::audit::verify(&entries).map_err(|e| StoreError::Rekey {
+            stage: "verifying the audit chain in the new file",
+            reason: e.to_string(),
+        })?;
+        Ok(())
+    }
+}
+
 #[cfg(feature = "encrypted-db")]
 fn apply_key(conn: &Connection, password: &str) -> Result<()> {
     conn.pragma_update(None, "key", password)?;

@@ -82,10 +82,10 @@ the new key, verify it opens and its audit chain verifies, then swap — never
 | # | Phase | Wave | State | Notes |
 |---|---|---|---|---|
 | 1 | Feature flag, `PRAGMA key`, unlock screen, typed errors | 0 | Done | plain files still open with no prompt |
-| 2 | Password change via re-encrypt-and-swap (not in-place `rekey`) | 0 | Todo | verify before swap; audit the event |
+| 2 | Password change via re-encrypt-and-swap (not in-place `rekey`) | 0 | **Done** | `Store::change_password` — backup, audit into the source, `sqlcipher_export`, verify the copy on its own connection, then swap. Never `PRAGMA rekey` |
 | 3 | Unlock attempt throttling + audit of failures | 0 | **Core done** | [`password::Throttle`](../src/password.rs) — three free attempts then a doubling delay capped at 30s. Deliberately **not** a lockout: there is no administrator to unlock a shared register, so one would be a denial of service anybody with the file could trigger. Wiring into the unlock screen is pending |
 | 4 | Explicit KDF parameters (`PRAGMA kdf_iter`, cipher page size) | — | Todo | needs the ESI-approved cipher/parameter set |
-| 5 | "Encrypt an existing plain database" migration | 0 | Todo | one-way, confirmed, backup taken first |
+| 5 | "Encrypt an existing plain database" migration | 0 | **Done** | the same operation as phase 2 — a plain source is just one with no key. Backup taken first, audited as `db.encrypted` |
 | 6 | Password strength meter + policy | 0 | **Core done** | [`password::assess`](../src/password.rs) — a 12-character floor with advice rather than mandatory character classes, because the threat is an offline attack on a copied file and composition rules push people towards `Password1!`. Meter wiring is pending |
 | 7 | Optional: unlock with a YubiKey instead of a typed password | 1 | Todo | HMAC-SHA1 challenge-response (OTP slot 2) as the KDF input — depends on `native-otp` |
 
@@ -161,3 +161,41 @@ capped at thirty seconds so a mistyped password never looks like a hung
 application. It is **not** a lockout, and the message never implies one — there
 is no administrator to lift it, so a lockout on a shared register would be a
 denial of service anybody holding the file could trigger.
+
+## Changing the password is an export-and-swap, never an in-place re-key
+
+`Store::change_password` covers phases 2 and 5 with one operation, because they
+*are* one: export the whole database into a new file under a different key, prove
+the copy is good, and only then swap. A plain source is simply one with no key,
+and removing a password is an export with an empty one.
+
+SQLCipher's `PRAGMA rekey` re-encrypts in place, and on a share that is the
+riskiest thing this tool could do: it rewrites every page of a file a sync client
+may be copying and another workstation may be about to open, with no intermediate
+state that is a valid database. An interruption half-way leaves a file that is
+neither the old key nor the new one.
+
+The order is load-bearing:
+
+1. **Check the policy first.** Doing the backup and the export only to refuse
+   would be a lot of work to arrive at "no", and would leave a stray file.
+2. **Back up.** The one operation that rewrites the whole register is the one
+   that most needs a copy of where it started. The copy is readable with the
+   *old* password.
+3. **Audit into the source**, before the export, so the export carries the entry.
+   Written afterwards it would land in a file about to be replaced.
+4. **Export**, then carry `user_version` across by hand — `sqlcipher_export`
+   copies schema and rows but not pragmas, and a copy arriving at version 0
+   would be re-migrated from scratch on the next open.
+5. **Verify on a separate connection**: it opens under the new password, schema
+   version matches, `integrity_check` passes, and the audit chain verifies. The
+   question is "will this open when it is reopened", and the handle that wrote it
+   cannot answer that. A copy failing any check is deleted; the original is
+   untouched.
+6. **Swap**, closing the connection first (Windows will not replace an open
+   file), keeping the original under `.replaced` until the new file is in place,
+   and putting it back if the second rename fails — no register at all is worse
+   than a failed password change.
+
+The method consumes the `Store`, because afterwards the handle points at a file
+that is no longer the register.

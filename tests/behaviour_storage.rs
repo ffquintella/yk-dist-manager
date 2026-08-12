@@ -876,3 +876,180 @@ fn scenario_a_local_register_is_not_copied_just_for_being_opened() {
         .count();
     assert_eq!(copies, 0);
 }
+
+/// A passphrase that meets the policy. Not a credential: it protects nothing,
+/// exists only inside this test, and the databases it opens are in a temp
+/// directory that is deleted when the test ends.
+#[cfg(feature = "encrypted-db")]
+const A_GOOD_PASSPHRASE: &str = "correct horse battery staple";
+#[cfg(feature = "encrypted-db")]
+const ANOTHER_GOOD_PASSPHRASE: &str = "seven green bicycles waiting";
+
+#[cfg(feature = "encrypted-db")]
+#[test]
+fn scenario_a_plain_register_can_be_encrypted_without_losing_anything() {
+    use yk_dist_manager::store::StoreError;
+
+    // Given a plain register with real content in it
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("keys.sqlite3");
+    {
+        let store = Store::create_new(&StoreConfig::new(&path)).unwrap();
+        store.upsert_key(&sample_key(20_423_633)).unwrap();
+        store
+            .insert_holder(&Holder::new("Ana", "ana@example.org", "ESI", "").unwrap())
+            .unwrap();
+        store
+            .append_audit("felipe", "key.added", "serial:20423633", "")
+            .unwrap();
+
+        // When it is encrypted
+        let returned = store
+            .change_password("felipe", Some(A_GOOD_PASSPHRASE))
+            .unwrap();
+        assert_eq!(returned, path, "the register keeps its path");
+    }
+
+    // Then it needs the password
+    match Store::open_existing(&StoreConfig::new(&path)) {
+        Err(StoreError::PasswordRequired) => {}
+        Err(other) => panic!("expected PasswordRequired, got {other}"),
+        Ok(_) => panic!("the file must no longer open without a password"),
+    }
+
+    // And with it, everything is still there and the chain still verifies
+    let store = Store::open_existing(
+        &StoreConfig::new(&path).with_password(Some(A_GOOD_PASSPHRASE.into())),
+    )
+    .unwrap();
+    assert_eq!(store.keys().unwrap().len(), 1);
+    assert_eq!(store.holders().unwrap().len(), 1);
+    assert!(!store.chain_status().is_broken());
+
+    // And the change is on the record, inside the encrypted file — written
+    // before the export precisely so the export would carry it
+    let events: Vec<String> = store
+        .audit_entries(50)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.event)
+        .collect();
+    assert!(events.contains(&"db.encrypted".to_string()), "{events:?}");
+}
+
+#[cfg(feature = "encrypted-db")]
+#[test]
+fn scenario_the_password_can_be_changed_and_the_old_one_stops_working() {
+    use yk_dist_manager::store::StoreError;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("keys.sqlite3");
+    let with = |password: &str| StoreConfig::new(&path).with_password(Some(password.to_owned()));
+
+    {
+        let store = Store::create_new(&with(A_GOOD_PASSPHRASE)).unwrap();
+        store.upsert_key(&sample_key(20_423_633)).unwrap();
+        store
+            .change_password("felipe", Some(ANOTHER_GOOD_PASSPHRASE))
+            .unwrap();
+    }
+
+    // The old password no longer opens it…
+    match Store::open_existing(&with(A_GOOD_PASSPHRASE)) {
+        Err(StoreError::PasswordRequired) => {}
+        Err(other) => panic!("expected PasswordRequired, got {other}"),
+        Ok(_) => panic!("the old password must stop working"),
+    }
+
+    // …the new one does, with the data intact…
+    let store = Store::open_existing(&with(ANOTHER_GOOD_PASSPHRASE)).unwrap();
+    assert_eq!(store.keys().unwrap().len(), 1);
+    // …the schema version came across, so the next open does not re-migrate…
+    assert!(!store.chain_status().is_broken());
+    // …and the change is audited.
+    let events: Vec<String> = store
+        .audit_entries(50)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.event)
+        .collect();
+    assert!(
+        events.contains(&"db.password.changed".to_string()),
+        "{events:?}"
+    );
+}
+
+#[cfg(feature = "encrypted-db")]
+#[test]
+fn scenario_a_weak_password_is_refused_before_anything_is_touched() {
+    // The order matters: doing the backup and the whole export only to refuse
+    // would be a lot of work to arrive at "no", and would leave a stray file.
+    use yk_dist_manager::store::StoreError;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("keys.sqlite3");
+    let store = Store::create_new(&StoreConfig::new(&path)).unwrap();
+    store.upsert_key(&sample_key(20_423_633)).unwrap();
+
+    match store.change_password("felipe", Some("short")) {
+        Err(StoreError::WeakPassword(_)) => {}
+        Err(other) => panic!("expected WeakPassword, got {other}"),
+        Ok(_) => panic!("a five-character password must be refused"),
+    }
+
+    // The register is untouched and still opens with no password.
+    let store = Store::open_existing(&StoreConfig::new(&path)).unwrap();
+    assert_eq!(store.keys().unwrap().len(), 1);
+
+    let strays: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains("rekey") || n.contains("replaced"))
+        .collect();
+    assert!(strays.is_empty(), "no half-finished files left: {strays:?}");
+}
+
+#[cfg(feature = "encrypted-db")]
+#[test]
+fn scenario_encrypting_takes_a_backup_first_because_it_rewrites_everything() {
+    // The one operation that rewrites the whole register is the one that most
+    // needs a copy of what it started from — and that copy is readable with the
+    // *old* password, which for a plain file means none.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("keys.sqlite3");
+    {
+        let store = Store::create_new(&StoreConfig::new(&path)).unwrap();
+        store.upsert_key(&sample_key(20_423_633)).unwrap();
+        store
+            .change_password("felipe", Some(A_GOOD_PASSPHRASE))
+            .unwrap();
+    }
+
+    let backups: Vec<std::path::PathBuf> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.to_string_lossy().contains(".backup."))
+        .collect();
+    assert_eq!(backups.len(), 1, "exactly one backup: {backups:?}");
+
+    // It is the register as it stood before the change: still plain, still
+    // complete.
+    let before = Store::open_existing(&StoreConfig::new(&backups[0])).unwrap();
+    assert_eq!(before.keys().unwrap().len(), 1);
+}
+
+#[cfg(not(feature = "encrypted-db"))]
+#[test]
+fn scenario_changing_the_password_without_encryption_support_says_which_build_is_needed() {
+    use yk_dist_manager::store::StoreError;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::create_new(&StoreConfig::new(dir.path().join("keys.sqlite3"))).unwrap();
+    match store.change_password("felipe", Some("correct horse battery staple")) {
+        Err(StoreError::EncryptionUnavailable) => {}
+        Err(other) => panic!("expected EncryptionUnavailable, got {other}"),
+        Ok(_) => panic!("a build without SQLCipher cannot encrypt anything"),
+    }
+}
