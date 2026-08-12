@@ -26,12 +26,14 @@ pub mod native_fido;
 pub mod native_piv;
 #[cfg(feature = "native-piv")]
 pub mod piv_mgm;
+pub mod watch;
 pub mod write;
 pub mod ykman;
 
 pub use mock::MockBackend;
 #[cfg(feature = "native-piv")]
 pub use native::NativeBackend;
+pub use watch::{Attached, DeviceWatch};
 pub use ykman::YkmanBackend;
 
 use serde::{Deserialize, Serialize};

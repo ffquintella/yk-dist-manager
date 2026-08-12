@@ -19,6 +19,42 @@ Maintenance instructions (see AGENTS.md §5):
 
 ### Added
 
+- **Keys are noticed as they are plugged in and pulled out**
+  ([`features/device-detection.md`](features/device-detection.md) phase 2). A
+  background thread enumerates on a tick and publishes a snapshot the GUI clones;
+  the status bar carries it, so "which key is this application about to act on" is
+  answerable from any screen that is watching. Four properties, each of them a test:
+
+  - **Identification runs only when the set of serials changes.** A key sitting in a
+    port costs one enumeration per tick and nothing else — which is what keeps the
+    `ykman` transport tolerable: one fork per tick, not one per key per tick.
+  - **The interval follows the transport.** 1.5s natively, as the design said; 4s
+    when every poll forks a Python process, because at 1.5s that is 40 processes a
+    minute for as long as a screen is open and nobody can tell the difference while
+    walking a key from a box to a port.
+  - **It runs only on the screens that show attached keys**, and stops on the way
+    out. Polling for a screen nobody is looking at is pure cost.
+  - **It never overlaps a run.** `execute_run` stops the watch first, and stopping
+    joins the thread, so no enumeration is in flight when the first write goes out —
+    enumerating readers while another handle holds an exclusive transaction is not
+    something to discover halfway through setting a PIN.
+
+  What it deliberately does **not** do is write to the register: plugging a key in
+  fills a list and the wizard's serial field, and recording it stays a click. A tool
+  that added inventory rows because somebody plugged something in would be making
+  records nobody asked for.
+- **A picker for when several keys are attached** (phase 3) — serial, model, firmware
+  and applications per row, on the Inventory screen and above the wizard's serial
+  field. **Nothing is chosen for the operator**: writing a PIN to whichever key a
+  transport happened to list first is the worst outcome this feature has, and every
+  operation stays refused until one is picked. The list is ordered by serial rather
+  than by enumeration order, because a list that reshuffles between polls is one
+  where somebody clicks the wrong row; a key that enumerates but will not describe
+  itself is shown as itself rather than counted as absent; and a selection dies with
+  its key, so the wizard is never left aimed at a serial nobody can see. `device.selected`
+  records which key was picked out of how many, and `device.ambiguous` records that
+  the operator was shown a choice.
+
 - **A bootstrap procedure exports and imports as a file**
   ([`features/bootstrap-templates.md`](features/bootstrap-templates.md) phase 4).
   Until now a procedure crossed between two installations by somebody retyping it,

@@ -37,6 +37,9 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
         scanner(app, ui);
     }
 
+    ui.add_space(12.0);
+    attached(app, ui);
+
     if !app.detected.is_empty() {
         ui.add_space(12.0);
         for info in &app.detected {
@@ -328,6 +331,136 @@ fn removal_confirmation(app: &mut YkDistApp, ui: &mut egui::Ui, serial: u32) {
             }
         });
     });
+}
+
+/// What is plugged in right now, and — when it is more than one thing — which one
+/// the operator has chosen (`features/device-detection.md` phases 2 and 3).
+///
+/// The list comes from the background watch, so this paints a snapshot and never
+/// talks to the hardware itself. Three states worth distinguishing, because they
+/// call for different things from the operator:
+///
+/// * **One key.** Named, and adopted as the target. Nothing to decide.
+/// * **Several.** A row each with *Use this one*. Nothing is chosen for them: this
+///   application will not write a PIN to whichever key a transport happened to list
+///   first, and every operation stays refused until a choice is made.
+/// * **Something that enumerated but would not answer.** Shown as itself, because
+///   reporting it as "no key attached" sends the operator after a cable when the
+///   answer is a driver or a permission.
+fn attached(app: &mut YkDistApp, ui: &mut egui::Ui) {
+    use elegance::{Badge, BadgeTone};
+
+    let snapshot = app.attached.clone();
+    let mut choose: Option<u32> = None;
+
+    // Nothing to say before the first poll lands, and nothing to say on a screen
+    // where the watch is not running.
+    if app.watch.is_none() {
+        return;
+    }
+
+    super::titled_card(ui, "Attached now", |ui| {
+        if let Some(reason) = &snapshot.stopped {
+            super::notice(
+                ui,
+                CalloutTone::Neutral,
+                &format!(
+                    "Not watching for keys: {reason}. *Read attached key* still works whenever a \
+                     key is in a port."
+                ),
+            );
+            return;
+        }
+        if let Some(error) = &snapshot.last_error {
+            super::error_label(ui, error);
+            ui.add_space(8.0);
+        }
+
+        if snapshot.keys.is_empty() && snapshot.unreadable.is_empty() {
+            super::faint(ui, &snapshot.describe());
+            super::hint(
+                ui,
+                "Plug a key in and it appears here — nothing is recorded until you ask for it.",
+            );
+            return;
+        }
+
+        if snapshot.is_ambiguous() {
+            super::notice(
+                ui,
+                CalloutTone::Warning,
+                "More than one key is attached. Choose the one you mean: this application will \
+                 not pick for you, because writing a PIN to the wrong key is not something an \
+                 operator can undo.",
+            );
+            ui.add_space(10.0);
+        }
+
+        super::table(
+            ui,
+            "attached-keys",
+            &["Serial", "Model", "Firmware", "Applications", ""],
+            |ui| {
+                for key in &snapshot.keys {
+                    let chosen = app.target_serial() == Some(key.serial);
+                    super::mono(ui, &key.serial.to_string());
+                    ui.label(&key.model);
+                    super::faint(ui, &key.firmware);
+                    super::faint(
+                        ui,
+                        &if key.usb_applications.is_empty() {
+                            "—".to_owned()
+                        } else {
+                            key.usb_applications.join(", ")
+                        },
+                    );
+                    ui.horizontal(|ui| {
+                        // The chosen key says so in a word as well as by tone.
+                        if chosen {
+                            ui.add(Badge::new("in use", BadgeTone::Ok));
+                        } else if super::row_button(ui, "Use this one")
+                            .on_hover_text(
+                                "every operation on this screen and in the wizard \
+                                            will act on this serial",
+                            )
+                            .clicked()
+                        {
+                            choose = Some(key.serial);
+                        }
+                    });
+                    ui.end_row();
+                }
+
+                for (serial, reason) in &snapshot.unreadable {
+                    super::mono(ui, &serial.to_string());
+                    ui.add(Badge::new("could not be read", BadgeTone::Warning))
+                        .on_hover_text(reason.clone());
+                    super::faint(ui, "—");
+                    super::faint(ui, reason);
+                    ui.label("");
+                    ui.end_row();
+                }
+            },
+        );
+
+        ui.add_space(8.0);
+        super::hint(
+            ui,
+            &format!(
+                "Checked every {} second(s) while this screen is open, and never while a \
+                 bootstrap is writing to a key.",
+                app.watch
+                    .as_ref()
+                    .map(|w| w.interval().as_secs_f32())
+                    .unwrap_or_default()
+            ),
+        );
+    });
+
+    // Deferred out of the table, like every other row action.
+    if let Some(serial) = choose {
+        app.select_key(serial);
+    }
 }
 
 /// Panel for recording keys by serial: a typed number, a USB barcode wedge, or

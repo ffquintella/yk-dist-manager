@@ -647,6 +647,25 @@ pub struct YkDistApp {
     pub org: String,
     pub backend: Box<dyn YubiKeyBackend>,
     pub detected: Vec<DeviceInfo>,
+    /// The background watch, while a screen that shows attached keys is open
+    /// (`features/device-detection.md` phase 2). `None` means nothing is polling.
+    pub watch: Option<crate::device::DeviceWatch>,
+    /// The latest snapshot from the watch, read once per frame.
+    ///
+    /// Copied onto the app rather than read from the watch inside the paint code,
+    /// so a screen paints one consistent picture: two reads in one frame could
+    /// otherwise straddle a poll and show a key in one card and not in another.
+    pub attached: crate::device::Attached,
+    /// Which attached key the operator chose, when more than one is attached
+    /// (phase 3).
+    ///
+    /// `None` is not "the first one": with several attached, every operation that
+    /// needs a key is refused until one is chosen. Picking one for the operator and
+    /// writing a PIN to it is the worst outcome this feature has.
+    pub selected_serial: Option<u32>,
+    /// The generation the operator has already been shown, so the arrival of a key
+    /// can change the screen once instead of on every frame.
+    pub seen_generation: u64,
     pub status: String,
 
     pub keys: Vec<YubiKeyRecord>,
@@ -730,6 +749,10 @@ impl YkDistApp {
             operator,
             org,
             backend: Box::new(YkmanBackend::default()),
+            watch: None,
+            attached: crate::device::Attached::default(),
+            selected_serial: None,
+            seen_generation: 0,
             detected: Vec::new(),
             status: String::new(),
             keys: Vec::new(),
@@ -3068,7 +3091,11 @@ impl YkDistApp {
 
     /// Read the attached key(s) and add or refresh the inventory record.
     pub fn detect_keys(&mut self) {
-        match self.backend.info(None) {
+        // The chosen key, when the operator has chosen one — `None` still means "the
+        // only attached key", and still refuses when several are attached. That
+        // refusal is the whole reason the picker exists, so this must not become
+        // "whichever one is first".
+        match self.backend.info(self.selected_serial) {
             Ok(info) => {
                 self.detected = vec![info.clone()];
                 let Some(store) = &self.store else { return };
@@ -3096,8 +3123,156 @@ impl YkDistApp {
                 self.detected.clear();
                 self.status = format!("detection failed: {e}");
                 tracing::warn!(event = "device.detect.failed", reason = %e);
+                // Ambiguity is not a fault to log and forget: it is the situation
+                // the picker answers, and the trail records that nothing was chosen.
+                if let crate::device::DeviceError::Ambiguous(n) = e {
+                    self.record(
+                        "device.ambiguous",
+                        "device",
+                        &format!("attached={n} — nothing was chosen"),
+                    );
+                }
             }
         }
+    }
+
+    // ------------------------------------------------- watching for hardware
+
+    /// Which screens want to know what is plugged in.
+    ///
+    /// Not every screen: the watch costs a `ykman` subprocess per tick in the
+    /// default build, and paying that while somebody reads the audit trail buys
+    /// nothing. Inventory is where keys are taken in, and Bootstrap is where one is
+    /// prepared — those two.
+    fn tab_watches_hardware(tab: Tab) -> bool {
+        matches!(tab, Tab::Inventory | Tab::Bootstrap)
+    }
+
+    /// Start or stop the watch to match the screen the operator is on.
+    ///
+    /// Called once per frame. Idempotent by construction: it compares what should
+    /// be running against what is, so the frame after a tab change does the work
+    /// and every frame after that does nothing.
+    pub fn sync_device_watch(&mut self) {
+        let wanted = Self::tab_watches_hardware(self.tab) && self.store.is_some();
+        match (wanted, self.watch.is_some()) {
+            (true, false) => self.start_device_watch(),
+            (false, true) => self.stop_device_watch("the screen that needed it was closed"),
+            _ => {}
+        }
+    }
+
+    /// Begin watching, with a backend of its own.
+    pub fn start_device_watch(&mut self) {
+        let native = crate::device::composite::NativeBackend::is_available();
+        let interval = crate::device::watch::interval_for(native);
+        // A second backend, not the one the GUI holds: read-on-demand and the watch
+        // must not be two callers of one handle. Today both are `ykman`; when the
+        // transport becomes selectable (`features/native-device-transport.md`
+        // phase 6) this is the one place that has to learn about it.
+        let backend: Box<dyn YubiKeyBackend> = Box::new(YkmanBackend::default());
+        tracing::debug!(
+            event = "device.watch.started",
+            interval_ms = interval.as_millis() as i64
+        );
+        self.watch = Some(crate::device::DeviceWatch::start(backend, interval));
+    }
+
+    /// Stop watching and forget what was attached.
+    ///
+    /// `why` is logged rather than shown: stopping is normal (leaving a screen,
+    /// starting a run) and a status line about it would be noise.
+    pub fn stop_device_watch(&mut self, why: &str) {
+        if self.watch.take().is_some() {
+            tracing::debug!(event = "device.watch.stopped", reason = why);
+        }
+        // The list is cleared with it. Leaving a stale "2 keys attached" on screen
+        // after the watch has gone is worse than showing nothing, because it invites
+        // a choice that is no longer based on anything.
+        self.attached = crate::device::Attached::default();
+    }
+
+    /// Read the watch's latest snapshot, once per frame.
+    ///
+    /// Returns whether this is a new arrangement of keys — which is the moment the
+    /// screen may act on it: fill a serial, or drop a selection that has been
+    /// unplugged.
+    pub fn poll_device_watch(&mut self) -> bool {
+        let Some(watch) = &self.watch else {
+            return false;
+        };
+        self.attached = watch.snapshot();
+        if self.attached.generation == self.seen_generation {
+            return false;
+        }
+        self.seen_generation = self.attached.generation;
+
+        // A selection only survives while the key it names is still there. Silently
+        // keeping it would leave the wizard aimed at a serial nobody can see.
+        if let Some(serial) = self.selected_serial
+            && !self.attached.serials().contains(&serial)
+        {
+            self.selected_serial = None;
+            self.status = format!("serial {serial} was unplugged — choose a key again");
+        }
+
+        // Exactly one key, unambiguous: adopt it as the selection so the wizard and
+        // the inventory screen have something to work with. This fills a *field*,
+        // and records nothing — see the module documentation on `device::watch`.
+        if let Some(only) = self.attached.only_key() {
+            self.selected_serial = Some(only.serial);
+            if self.wizard.serial.trim().is_empty() {
+                self.wizard.serial = only.serial.to_string();
+            }
+        }
+
+        // Two or more, and nothing chosen: audited, because the spec lists it and
+        // because "the operator was shown two keys and had to choose" is part of the
+        // story of whichever key was then written to.
+        if self.attached.is_ambiguous() && self.selected_serial.is_none() {
+            self.record(
+                "device.ambiguous",
+                "device",
+                &format!(
+                    "attached={} unreadable={} — nothing was chosen",
+                    self.attached.keys.len(),
+                    self.attached.unreadable.len()
+                ),
+            );
+        }
+
+        true
+    }
+
+    /// The key an operation should act on: the chosen one, or the only one.
+    ///
+    /// `None` when there is nothing attached, or when several are and none has been
+    /// chosen. Every caller that would touch hardware goes through this rather than
+    /// reaching for `attached.keys[0]`.
+    pub fn target_serial(&self) -> Option<u32> {
+        self.selected_serial
+            .or_else(|| self.attached.only_key().map(|key| key.serial))
+    }
+
+    /// Choose one of several attached keys (phase 3).
+    pub fn select_key(&mut self, serial: u32) {
+        self.selected_serial = Some(serial);
+        self.wizard.serial = serial.to_string();
+        let model = self
+            .attached
+            .keys
+            .iter()
+            .find(|k| k.serial == serial)
+            .map(|k| k.model.clone())
+            .unwrap_or_default();
+        self.status = format!("{model} {serial} selected");
+        // Audited: with several keys attached, *which one* the operator picked is
+        // the fact that explains everything written afterwards.
+        self.record(
+            "device.selected",
+            &format!("serial:{serial}"),
+            &format!("model={model} of={} attached", self.attached.keys.len()),
+        );
     }
 
     /// Selected template, if any.
@@ -3160,6 +3335,17 @@ impl YkDistApp {
             self.wizard.error = Some("invalid serial".into());
             return;
         };
+
+        // **Nothing else touches the key while this runs.** The watch is stopped
+        // first, and stopping it joins its thread, so no enumeration is in flight
+        // when the first write goes out. Enumerating PC/SC readers while another
+        // handle holds an exclusive transaction is not a thing to discover halfway
+        // through setting a PIN — and on the subprocess transport it would mean a
+        // `ykman` process competing with the executor for the same reader.
+        //
+        // The next frame restarts it, because `sync_device_watch` compares what
+        // should be running against what is.
+        self.stop_device_watch("a bootstrap run is about to write to a key");
         let Some(template) = self.selected_template().cloned() else {
             self.wizard.error = Some("no template selected".into());
             return;
@@ -3610,6 +3796,26 @@ impl eframe::App for YkDistApp {
         // Says "this workstation still has the register" to the other operators
         // sharing a sync folder, and notices when one of them took it anyway.
         self.tick_lease();
+        // Start or stop the hardware watch for the screen we are on, then take one
+        // snapshot for this frame. Both are cheap and neither touches the hardware:
+        // the looking happens on the watch's own thread.
+        self.sync_device_watch();
+        if self.poll_device_watch() {
+            // Something was plugged in or pulled out. Repaint now rather than
+            // waiting for the next mouse move, or a key inserted while nobody
+            // touches the machine appears only when they do.
+            ui.ctx().request_repaint();
+        }
+        if self.watch.is_some() {
+            // egui sleeps when idle, so without this the watch would publish into a
+            // window nobody repaints. One repaint per interval, not per frame.
+            ui.ctx().request_repaint_after(
+                self.watch
+                    .as_ref()
+                    .map(|w| w.interval())
+                    .unwrap_or(std::time::Duration::from_secs(1)),
+            );
+        }
         #[cfg(feature = "camera")]
         if self.scan.open {
             let ctx = ui.ctx().clone();
@@ -3884,6 +4090,26 @@ impl YkDistApp {
                                 Location::CloudSync => "db: cloud-sync (UNLOCKED)",
                             },
                             IndicatorState::On,
+                        );
+                    }
+                    // What is plugged in, while something is watching for it. In the
+                    // status bar rather than only on the screen that owns the list,
+                    // because "which key is this application about to act on" is the
+                    // question a wrong answer to is most expensive — and the wizard
+                    // is two clicks from writing to it.
+                    if self.watch.is_some() {
+                        pill = pill.item(
+                            self.attached.describe(),
+                            if self.attached.is_ambiguous() && self.selected_serial.is_none() {
+                                // Amber, not green: something is attached and the
+                                // application is waiting to be told which one. The
+                                // words say it too — `Attached::describe` ends in
+                                // "choose one" — because a coloured dot is not a
+                                // message (`gui-shell` phase 10).
+                                IndicatorState::Connecting
+                            } else {
+                                IndicatorState::On
+                            },
                         );
                     }
                     ui.add(pill);

@@ -406,6 +406,30 @@ downgraded by a later scan.
 If the tool refuses a scan: two different serials in shot are rejected rather than guessed
 (scan one label at a time), and a barcode that is not a serial says so.
 
+## Runbook: two keys are plugged in
+
+The Inventory and Bootstrap screens watch for keys while they are open, so plugging one in
+shows it without pressing anything. With **one** attached, it is named and every operation
+acts on it. With **more than one**, nothing is chosen for you — deliberately:
+
+1. **Choose one** — *Use this one* on the Inventory row, or the button per key above the
+   wizard's serial field. The status bar carries the choice from then on, and *which* key
+   was picked out of how many goes into the audit trail.
+2. Until you do, operations that need a key are refused. Reading on demand refuses too,
+   with "more than one YubiKey is connected". That refusal is the feature: writing a PIN to
+   whichever key the reader happened to list first is not something anybody can undo.
+3. **Unplugging the chosen key drops the choice**, with a line saying so. Choose again
+   rather than assuming the wizard is still aimed where you left it.
+
+A device that appears in the list as **could not be read** enumerated but would not describe
+itself. That is a driver or a permission, not a missing key — on Linux check the udev rules,
+on macOS and Windows check that nothing else has the reader open.
+
+Two things worth knowing about the watching itself: it runs only while one of those two
+screens is open (each poll is a `ykman` subprocess in the default build, so polling for a
+screen nobody is looking at is pure cost), and it is **stopped for the duration of a
+bootstrap run** — nothing else touches the key while a run is writing to it.
+
 ## Runbook: distribute a key
 
 1. **Inventory → Read attached key.** Confirm the serial matches the engraving.

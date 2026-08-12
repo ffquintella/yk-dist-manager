@@ -25,7 +25,7 @@ The API differs from older tutorials in two ways that matter:
 │      │ card — always the page width                   │      │
 │      └────────────────────────────────────────────────┘      │
 ├──────────────────────────────────────────────────────────────┤
-│ ⇤18⇥ operator: felipe | db: network share | <last outcome>    │  Panel::bottom
+│ ⇤18⇥ operator: felipe | db: share | 5 NFC 20423633 attached | … │  Panel::bottom
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -112,6 +112,18 @@ refreshes its row. Columns: serial, model, firmware, form factor, status, applic
 observation, actions. Per-row actions advance the lifecycle, and a refused transition is
 shown verbatim in the status bar.
 
+**Attached now** is what the background watch can see, refreshed on its own while this
+screen is open (`features/device-detection.md` phases 2 and 3): a row per key with its
+serial, model, firmware and applications. With one key attached it is named and becomes
+what every operation acts on. With **several**, a warning says so and each row offers *Use
+this one* — nothing is chosen for the operator, because writing a PIN to whichever key a
+transport happened to list first is not something an operator can undo. A key that
+enumerates but will not describe itself is shown as itself, with the reason, rather than
+being counted as absent: that is usually a driver or a permission, and "no key attached"
+would send somebody after a cable. Plugging a key in fills this list and the wizard's
+serial field and **records nothing** — recording stays a click. The card says how often it
+looks, and that it never looks while a bootstrap is writing to a key.
+
 **Add by serial / scan…** opens the intake panel: a text field (which is what a USB
 barcode scanner types into — Enter submits), an *Observation (optional)* field, camera
 controls with a preview when the build has the `camera` feature, and confirm/discard for
@@ -163,7 +175,15 @@ digest and refuses on a mismatch.
 ### Bootstrap
 
 Selection (key serial, holder, template), per-step checkboxes with required steps marked,
-then the plan table:
+then the plan table.
+
+Above the serial field is what is attached: one key is named and its serial fills the field
+by itself, and **several** produce a warning and a button per key, because the next thing
+this screen does is write to one of them and nothing may be assumed about which. The watch
+that feeds it is stopped — and its thread joined — before the first write, so nothing else
+is touching the hardware during a run.
+
+The plan table:
 
 | Step | Transport | Operation | Note |
 

@@ -29,8 +29,8 @@ deployment.
 
 | State | Count |
 |---|---|
-| Done | 18 |
-| In progress | 10 |
+| Done | 19 |
+| In progress | 9 |
 | Todo | 13 |
 | **Total tracked items** | **41** (across 38 specs — two items share a spec) |
 
@@ -125,9 +125,9 @@ of the job: choosing or creating the database file, recording serials from a bar
 generating the consignment term in the holder's language, and filing the signed copy
 against the hand-over — and, from the Terms screen, editing that term's wording per
 language. The Templates screen now does the same for the bootstrap procedure itself.
-**662 tests** pass with the default features and **679** with `--all-features` (plus 4
-read-only hardware tests and one ignored `openssl` interop test), with **84.5%**
-(region 83.9%) line coverage of the headless core — enforced by CI against a floor of
+**672 tests** pass with the default features and **689** with `--all-features` (plus 4
+read-only hardware tests and one ignored `openssl` interop test), with **84.8%**
+(region 84.2%) line coverage of the headless core — enforced by CI against a floor of
 80% rather than reported. The register can also
 be opened from the unit's **SMB share**, connected by the application itself, and its
 password can be set, changed or removed from Settings.
@@ -149,19 +149,18 @@ phase gates this wave if and only if its **Wave** column says `0`:
 
 | Feature | Phase | What is missing |
 |---|---|---|
-| [Device detection](features/device-detection.md) | 2, 3 | background hot-plug polling; the picker for when several keys are attached |
 | [Receipts & terms](features/receipts-and-terms.md) | 4, 6 | the signature state machine with an age warning; the return receipt |
 | [SMB share hosting](features/smb-share-hosting.md) | 9 | reconnecting a share that drops mid-session |
 | [Application icon](features/application-icon.md) | 7 | the icon on the unlock screen and in an About box |
 | [Testing strategy](features/testing-strategy.md) | 9 | property tests for the audit chain and the RFC 4514 escaper |
 
-**Seven phases across five features, none of them blocked on anything.** No decision
+**Five phases across four features, none of them blocked on anything.** No decision
 is outstanding for any of them, no hardware is needed, and nothing waits on Wave 1.
 It is work, not a queue.
 
-Bootstrap templates left this list when phases 4, 5 and 6 landed: files, signatures
-and the diff are built, so its row is `[x]` above and what remains in that spec is
-Wave 1.
+Bootstrap templates left this list when phases 4, 5 and 6 landed, and device
+detection when the watch and the picker did: both rows are `[x]` above, and what
+remains in those specs is Wave 1.
 
 Regenerate this list rather than trusting it — the prose here drifted twice before
 it was derived:
@@ -208,9 +207,9 @@ archive-then-remove path that can break and rebuild the audit trigger, which is
 deliberately not a general capability.
 
 **Rows that reached `[x]` for this wave while their specs still show Todo phases.**
-Seven of them, and the Wave column is what makes that legitimate: native device
+Eight of them, and the Wave column is what makes that legitimate: native device
 transport, single-file SQLite storage, the audit trail, the bootstrap planner, the
-GUI shell, the bootstrap wizard and bootstrap templates have every
+GUI shell, the bootstrap wizard, bootstrap templates and device detection have every
 wave-0 phase done and only Wave 1+ work left. The database password joined them in
 0.8.0.
 
@@ -257,7 +256,7 @@ Everything needed before a single byte is written to a key.
 |---|---|---|
 | `[x]` | Native device transport | [spec](features/native-device-transport.md) — `yubikey` over PC/SC reads serial + firmware from a real key today (verified against 5 NFC / fw 5.4.3, agrees with `ykman`). FIDO2 and OTP transports are Wave 1. |
 | `[x]` | `ykman` fallback + parsers | [spec](features/ykman-fallback.md) — argv-only subprocess, typed errors, parsers unit-tested against recorded output of ykman 5.9.2. |
-| `[/]` | Device detection | [spec](features/device-detection.md) — read-on-demand works; hot-plug polling and multi-key selection pending. |
+| `[x]` | Device detection | [spec](features/device-detection.md) — read-on-demand, plus a **background watch** that notices a key being plugged in or pulled out (identifying only when the set of serials changes; 1.5s natively, 4s when every poll is a subprocess, and only while a screen that needs it is open) and a **picker** for when several are attached. Nothing is ever chosen for the operator, and the watch is stopped — thread joined — before a run writes to a key. Per-applet reads, the "already bootstrapped" warning and attestation are Wave 1. |
 | `[x]` | Single-file SQLite storage | [spec](features/storage-sqlite-single-file.md) — schema **v5** (per-step run rows), `user_version` migrations (v1→v5 tested), WAL locally / rollback journal on a share, `VACUUM INTO` backup **on a schedule with rotation**, `integrity_check`, **CSV import** of the spreadsheet this replaces, and the SMB share connected by the application itself. Every wave-0 phase done. Concurrency is Wave 2; archival and retention (phase 7, gating no wave) has its decision — one year, configurable — and needs the archive-then-remove path that may break and rebuild the audit trigger. |
 | `[/]` | SMB share hosting | [spec](features/smb-share-hosting.md) — the application connects the share itself: the signed-in user (the default, and the whole mechanism on Windows), guest, or a named account whose password is typed and never stored. `WNetAddConnection2W` / `NetFSMountURLSync`, never a command line. An already-mounted share is used and left alone; one this session made is released on close and on quit. Reconnecting a share that drops mid-session, and Kerberos on macOS, are Todo. |
 | `[x]` | Cloud-sync hosting (OneDrive) | [spec](features/cloud-sync-hosting.md) — `Location::CloudSync`: waits for the sync client, takes `<database>.lock`, refuses a second workstation by name, releases after the upload, reports sync conflict copies, **snapshots the register at open** before this session can write, and offers a **read-only** open so a second operator can look without taking the lock. Every phase done. Whether the location is *acceptable* is an ESI decision, not this feature's. |
@@ -274,7 +273,7 @@ Everything needed before a single byte is written to a key.
 | `[x]` | GUI shell | [spec](features/gui-shell.md) — eight screens, unlock screen, status bar, egui 0.36 `App::ui`, themed with `egui-elegance` (four palettes, the choice persisted) and laid out fluidly (one gutter, full-width cards, columns that split the page, tables that contain their own overflow). Search, sortable columns, window-state persistence, keyboard flow, hardware-write confirmation, the log panel and the accessibility pass are all done — every wave-0 phase. Localisation (phase 9) is closed as not needed: the interface is English (2026-08-12). |
 | `[x]` | Bootstrap wizard | [spec](features/gui-bootstrap-wizard.md) — selection (the newest version of each template in use), per-step opt-out, plan review, dry run, and a link to the Templates screen — the whole of wave 0. The live run view, the secret panels and the pre-flight checks landed with the executor in 0.7.1; resume and the post-run summary are Wave 1, batch mode Wave 2. |
 | `[/]` | Application icon | [spec](features/application-icon.md) — one SVG (a box truck carrying a YubiKey), `make icons` rendering the PNGs, the macOS `.icns` and the RGBA blob the binary embeds; window, dock and bundle icons done. A Windows `.ico` resource and a Linux `hicolor` install wait on there being Windows and Linux packaging. |
-| `[/]` | Testing strategy | [spec](features/testing-strategy.md) — **662 tests** (679 with `--all-features`) across unit + behaviour suites, a mock device backend and a mock share connector, recorded fixtures, and tests ignored by default for what needs hardware or `openssl`; **84.5%** core line coverage. **CI enforces the gate** on every push, with a macOS/Windows/Linux build matrix. Mock write transports and the secret-leak sweep wait on Wave 1. |
+| `[/]` | Testing strategy | [spec](features/testing-strategy.md) — **672 tests** (689 with `--all-features`) across unit + behaviour suites, a mock device backend and a mock share connector, recorded fixtures, and tests ignored by default for what needs hardware or `openssl`; **84.8%** core line coverage. **CI enforces the gate** on every push, with a macOS/Windows/Linux build matrix. Mock write transports and the secret-leak sweep wait on Wave 1. |
 
 ### Paperwork
 

@@ -179,6 +179,58 @@ fn every_kind_of_template_change_has_its_own_words() {
 }
 
 #[test]
+fn what_is_attached_reads_as_a_sentence_and_not_as_an_indicator_colour() {
+    // The status bar shows this beside an amber-or-green dot, and the amber one
+    // means "something is attached and the application is waiting to be told which".
+    // A dot cannot say that, so the words have to — and the two states an operator
+    // must never confuse are "one key, get on with it" and "several, choose one".
+    use yk_dist_manager::device::{Attached, DeviceInfo};
+
+    let key = |serial: u32| DeviceInfo {
+        serial,
+        model: "YubiKey 5 NFC".into(),
+        ..DeviceInfo::default()
+    };
+
+    let watching = |keys: Vec<DeviceInfo>| Attached {
+        keys,
+        polls: 1,
+        ..Attached::default()
+    };
+
+    let none = watching(Vec::new());
+    let one = watching(vec![key(20_423_633)]);
+    let two = watching(vec![key(1), key(2)]);
+
+    let sentences = [none.describe(), one.describe(), two.describe()];
+    distinct(
+        "Attached",
+        &sentences.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    assert!(one.describe().contains("20423633"), "{}", one.describe());
+    assert!(
+        two.describe().contains("choose one"),
+        "the ambiguous case has to ask for the choice in words: {}",
+        two.describe()
+    );
+
+    // Before the first poll, and after the watch gives up, are their own answers —
+    // reporting either as "no key attached" would be a lie the operator acts on.
+    let mut looking = Attached::default();
+    assert!(
+        looking.describe().contains("looking"),
+        "{}",
+        looking.describe()
+    );
+    looking.stopped = Some("`ykman` was not found".into());
+    assert!(
+        looking.describe().contains("not watching"),
+        "{}",
+        looking.describe()
+    );
+}
+
+#[test]
 fn the_status_line_severity_is_derived_from_the_text_not_from_the_caller() {
     // `status::classify` reads the message, so the words and the colour cannot
     // disagree — the colour is a function of the text rather than a second,

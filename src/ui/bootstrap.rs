@@ -82,6 +82,70 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
 
 /// What will be written, and the one confirmation that authorises it.
 ///
+/// What is plugged in, above the serial field
+/// (`features/device-detection.md` phases 2 and 3).
+///
+/// The wizard is the screen where getting the key wrong is most expensive — the
+/// next thing it does is write to one — so the serial field is not left as a number
+/// somebody typed while a key sits in a port. With one key attached the field fills
+/// itself; with several, the choice is explicit and this says so where the operator
+/// is looking.
+fn attached_keys(app: &mut YkDistApp, ui: &mut egui::Ui) {
+    let snapshot = app.attached.clone();
+    if app.watch.is_none() || snapshot.stopped.is_some() {
+        return;
+    }
+
+    let mut choose: Option<u32> = None;
+    if snapshot.is_ambiguous() {
+        super::notice(
+            ui,
+            CalloutTone::Warning,
+            "More than one key is attached, so nothing has been assumed. Choose the one this run \
+             is for — the serial below is what gets written to.",
+        );
+        ui.add_space(8.0);
+        ui.horizontal_wrapped(|ui| {
+            for key in &snapshot.keys {
+                let chosen = app.target_serial() == Some(key.serial);
+                let label = format!("{} · {}", key.serial, key.model);
+                if chosen {
+                    ui.add(elegance::Badge::new(
+                        format!("{label} — in use"),
+                        elegance::BadgeTone::Ok,
+                    ));
+                } else if ui
+                    .add(
+                        Button::new(label)
+                            .outline()
+                            .size(elegance::ButtonSize::Small),
+                    )
+                    .clicked()
+                {
+                    choose = Some(key.serial);
+                }
+            }
+        });
+        ui.add_space(12.0);
+    } else if let Some(only) = snapshot.only_key() {
+        super::faint(
+            ui,
+            &format!(
+                "attached: {} {} (firmware {})",
+                only.model, only.serial, only.firmware
+            ),
+        );
+        ui.add_space(8.0);
+    } else if snapshot.polls > 0 && snapshot.keys.is_empty() {
+        super::faint(ui, "no key attached — plug one in, or type a serial");
+        ui.add_space(8.0);
+    }
+
+    if let Some(serial) = choose {
+        app.select_key(serial);
+    }
+}
+
 /// Deliberately **one** confirmation for the whole run rather than one per step:
 /// a per-step prompt trains an operator to click through, and the thing they
 /// need to read is the list of what cannot be undone.
@@ -314,6 +378,8 @@ fn run_view(app: &mut YkDistApp, ui: &mut egui::Ui) {
 }
 
 fn selection(app: &mut YkDistApp, ui: &mut egui::Ui) {
+    attached_keys(app, ui);
+
     let holder_labels: Vec<String> = app.holders.iter().map(|h| h.display()).collect();
     let template_labels: Vec<String> = app
         .templates

@@ -18,7 +18,7 @@ whole even though every part passes.
 
 **Suites in place, and CI now enforces the gate.**
 
-- **662 tests** pass on the default features (`cargo test`), **679** with
+- **672 tests** pass on the default features (`cargo test`), **689** with
   `--all-features` — the encrypted-database paths account for the difference, minus
   the one test that exists only when `encrypted-db` is *off*. Plus tests ignored by
   default for what a build machine need not have: 4 read-only hardware tests, and
