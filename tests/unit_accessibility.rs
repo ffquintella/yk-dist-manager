@@ -117,6 +117,22 @@ fn every_custody_model_has_its_own_words() {
 }
 
 #[test]
+fn every_password_strength_has_its_own_words() {
+    // The meter is a coloured bar, which is the shape most likely to be read by
+    // hue alone — so every step it can paint has to say what it is, and "too
+    // weak" has to be distinguishable from "weak" in words rather than in shade.
+    use yk_dist_manager::password::Strength;
+
+    let labels: Vec<&str> = Strength::ALL.iter().map(|s| s.label()).collect();
+    distinct("Strength", &labels);
+    assert!(
+        Strength::TooWeak.label().contains("refused"),
+        "the refused step must say it is refused, not merely look redder: {}",
+        Strength::TooWeak.label()
+    );
+}
+
+#[test]
 fn the_status_line_severity_is_derived_from_the_text_not_from_the_caller() {
     // `status::classify` reads the message, so the words and the colour cannot
     // disagree — the colour is a function of the text rather than a second,

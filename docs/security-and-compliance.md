@@ -68,6 +68,20 @@ a panic message.
   alternative is a credentials file — the temporary file this section forbids. The settings
   file remembers the share and the user name; it has no field a password could occupy, and a
   test asserts the serialised form.
+- **The database password is handled the same way**, and is the other secret this tool
+  touches: typed, used for one `PRAGMA key`, and cleared from the form in the same call.
+  It is in no setting, no column, no log line and no audit entry — a *failed* unlock is
+  recorded as `consecutive_failures=N` and nothing else, not even a length, and a
+  successful one as `db.unlocked` with no detail. Changing it never re-keys the file in
+  place: the register is exported under the new key, the copy is verified, and only then
+  swapped (`../features/db-password-and-encryption.md`). The policy is a **12-character
+  floor with advice**, enforced by the store where a password is chosen rather than by
+  the screen that suggests it, because the threat this password answers is an offline
+  attack on a copied file — where length is what buys time and a composition rule
+  reliably produces `Password1!`. The prompt itself is throttled after three wrong
+  attempts, and deliberately never locks: there is no administrator to lift a lockout on
+  a register a whole unit shares, so one would be a denial of service anybody holding the
+  file could trigger.
 
 ### Custody — decided
 

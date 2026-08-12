@@ -52,6 +52,7 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
                         ui.add_space(10.0);
                     }
 
+                    throttled(app, ui);
                     locked(app, ui);
                     recent(app, ui);
                     chooser(app, ui);
@@ -64,6 +65,43 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
             ui.add_space(40.0);
         });
     });
+}
+
+/// The wait a run of wrong passwords has earned
+/// (`features/db-password-and-encryption.md` phase 3).
+///
+/// Three things this is careful about:
+///
+/// * It **counts down**. The number is repainted while it runs, because a figure
+///   that sits still is how an operator concludes the application has hung.
+/// * It never says "attempts remaining". There is no lockout and no
+///   administrator to lift one, so a limit would be a lie —
+///   [`crate::password::Throttle::message`] is the single place that wording
+///   lives.
+/// * The buttons that submit a password are disabled while it runs, and the app
+///   refuses those requests anyway ([`YkDistApp::handle_db_request`]) — the
+///   disabled button is the courtesy, not the control.
+fn throttled(app: &mut YkDistApp, ui: &mut egui::Ui) {
+    let Some(message) = app.throttle.message() else {
+        return;
+    };
+    super::notice(
+        ui,
+        CalloutTone::Warning,
+        &format!(
+            "{message}. This is not a lockout — nothing has to be unlocked by anybody, the \
+             prompt is only slowed down so that guessing at it is pointless. A copied database \
+             file is attacked offline, where no delay applies; the password's length is what \
+             protects it there."
+        ),
+    );
+    ui.add_space(10.0);
+    // Four times a second, not once: the counter is in whole seconds, and a repaint
+    // on the same period as the value it shows makes the last second look stuck.
+    // This is the only thing on the chooser that changes on its own, so the frames
+    // cost nothing anybody will notice.
+    ui.ctx()
+        .request_repaint_after(std::time::Duration::from_millis(250));
 }
 
 /// The refusal an operator gets when another workstation has the register.
@@ -81,6 +119,7 @@ fn locked(app: &mut YkDistApp, ui: &mut egui::Ui) {
     let holder = locked.holder.clone();
     let stale = locked.stale;
     let same_host = locked.same_host;
+    let waiting = app.throttle.must_wait();
     let mut request = None;
 
     super::titled_card(ui, "In use by another workstation", |ui| {
@@ -107,7 +146,11 @@ fn locked(app: &mut YkDistApp, ui: &mut egui::Ui) {
             );
             ui.add_space(10.0);
             if ui
-                .add(Button::new("Take the lock over").accent(Accent::Red))
+                .add(
+                    Button::new("Take the lock over")
+                        .accent(Accent::Red)
+                        .enabled(!waiting),
+                )
                 .on_hover_text("records who was holding it, in the audit trail")
                 .clicked()
             {
@@ -122,7 +165,7 @@ fn locked(app: &mut YkDistApp, ui: &mut egui::Ui) {
             );
             ui.add_space(10.0);
             if ui
-                .add(Button::new("Try again").outline())
+                .add(Button::new("Try again").outline().enabled(!waiting))
                 .on_hover_text("check whether the lock has been released")
                 .clicked()
             {
@@ -147,6 +190,7 @@ fn recent(app: &mut YkDistApp, ui: &mut egui::Ui) {
     // happens after the grid closure.
     let mut request: Option<DbRequest> = None;
     let mut fill_path: Option<String> = None;
+    let waiting = app.throttle.must_wait();
 
     super::titled_card(ui, "Recent databases", |ui| {
         egui::Grid::new("recent-databases")
@@ -180,7 +224,7 @@ fn recent(app: &mut YkDistApp, ui: &mut egui::Ui) {
                             .add(
                                 Button::new("open")
                                     .size(elegance::ButtonSize::Small)
-                                    .enabled(*available),
+                                    .enabled(*available && !waiting),
                             )
                             .clicked()
                         {
@@ -242,14 +286,33 @@ fn chooser(app: &mut YkDistApp, ui: &mut egui::Ui) {
             },
         );
 
-        ui.add_space(14.0);
-
         let typed = PathBuf::from(app.db_form.path.trim());
         let has_path = !app.db_form.path.trim().is_empty();
 
+        // The meter belongs to a password being *chosen*, not to one being typed
+        // to unlock a file that already has one — grading somebody's existing
+        // password tells them nothing they can act on here. So it appears exactly
+        // when this field would become a new register's key: a path that is not a
+        // file yet, which is also the only case in which *Create* can succeed.
+        if has_path && !app.db_form.password.is_empty() && !typed.is_file() {
+            ui.add_space(8.0);
+            super::hint(
+                ui,
+                "This would be the password of a new database — there is no file at that path \
+                 yet. There is no way to recover it, so keep it wherever the unit keeps its \
+                 passwords before creating the register.",
+            );
+            ui.add_space(6.0);
+            super::password_meter(ui, &app.db_form.password);
+        }
+
+        ui.add_space(14.0);
+
+        let waiting = app.throttle.must_wait();
+
         ui.horizontal_wrapped(|ui| {
             if ui
-                .add(Button::new("Open").enabled(has_path))
+                .add(Button::new("Open").enabled(has_path && !waiting))
                 .on_hover_text("open the database at this path; it must already exist")
                 .clicked()
             {
@@ -269,7 +332,10 @@ fn chooser(app: &mut YkDistApp, ui: &mut egui::Ui) {
 
             ui.add_space(8.0);
 
-            if ui.add(Button::new("Choose file…").outline()).clicked() {
+            if ui
+                .add(Button::new("Choose file…").outline().enabled(!waiting))
+                .clicked()
+            {
                 app.db_request = Some(DbRequest::PickExisting);
             }
             if ui.add(Button::new("New file…").outline()).clicked() {
@@ -381,9 +447,10 @@ fn share(app: &mut YkDistApp, ui: &mut egui::Ui) {
         ui.add_space(14.0);
 
         let has_location = !app.share_form.location.trim().is_empty();
+        let waiting = app.throttle.must_wait();
         ui.horizontal_wrapped(|ui| {
             if ui
-                .add(Button::new("Connect and open").enabled(has_location))
+                .add(Button::new("Connect and open").enabled(has_location && !waiting))
                 .on_hover_text("reach the share, then open the database on it; it must exist")
                 .clicked()
             {

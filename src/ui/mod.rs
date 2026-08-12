@@ -230,6 +230,46 @@ pub fn error_label(ui: &mut egui::Ui, message: &str) {
         });
 }
 
+/// The database-password strength meter
+/// (`features/db-password-and-encryption.md` phase 6).
+///
+/// Shared by the chooser and by Settings, so the two places a password can be
+/// *chosen* grade it identically — and grade it with
+/// [`crate::password::assess`], which is also what the store enforces. A meter
+/// that disagreed with the refusal would be worse than no meter.
+///
+/// Never a bar of colour on its own: the bar carries the word
+/// ([`crate::password::Strength::label`]), a refusal is printed as a refusal, and
+/// the advice is printed underneath. That is the `gui-shell` phase 10 rule, and
+/// here it is also the useful behaviour — "weak" tells an operator nothing about
+/// what to do, "several unrelated words work well" does.
+pub fn password_meter(ui: &mut egui::Ui, password: &str) -> crate::password::Assessment {
+    use crate::password::Strength;
+
+    let assessment = crate::password::assess(password);
+    let accent = match assessment.strength {
+        Strength::TooWeak => Accent::Red,
+        Strength::Weak => Accent::Amber,
+        Strength::Fair => Accent::Sky,
+        Strength::Strong => Accent::Green,
+    };
+
+    ui.add(
+        elegance::ProgressBar::new(assessment.strength.fraction())
+            .accent(accent)
+            .text(assessment.strength.label()),
+    );
+    for refusal in &assessment.refusals {
+        ui.add_space(6.0);
+        error_label(ui, refusal);
+    }
+    for advice in &assessment.advice {
+        ui.add_space(4.0);
+        hint(ui, advice);
+    }
+    assessment
+}
+
 /// A non-error banner: a condition worth noticing, or a build that is missing
 /// an optional feature.
 pub fn notice(ui: &mut egui::Ui, tone: CalloutTone, message: &str) {

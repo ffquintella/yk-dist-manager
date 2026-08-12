@@ -59,6 +59,44 @@ pub enum DbRequest {
     ForgetShare(String),
     /// Close the database and disconnect the share this session connected.
     DisconnectShare,
+    /// Set, change or remove the database password
+    /// (`features/db-password-and-encryption.md` phases 2 and 5).
+    ///
+    /// Carries the *intent* and not the password: the new one lives in
+    /// [`PasswordForm`], exactly as the share password lives in [`ShareForm`], so
+    /// that no secret is ever inside a `Debug`-derived type that a log line could
+    /// print.
+    SetPassword {
+        /// Take the password off, leaving a plain file.
+        remove: bool,
+    },
+}
+
+impl DbRequest {
+    /// Would this request submit a password to an existing register?
+    ///
+    /// Those are the requests the unlock throttle applies to, and only those.
+    /// Creating a database is not a guess at anybody's password, and neither is
+    /// forgetting a path or closing what is open — slowing them down would be a
+    /// throttle punishing the operator for a wrong password rather than
+    /// discouraging the next guess.
+    fn attempts_an_unlock(&self) -> bool {
+        match self {
+            DbRequest::Open(_)
+            | DbRequest::PickExisting
+            | DbRequest::TakeOverLock(_)
+            | DbRequest::ConnectShare { create: false } => true,
+            DbRequest::PickNew
+            | DbRequest::Create(_)
+            | DbRequest::Close
+            | DbRequest::Forget(_)
+            | DbRequest::ConnectShare { create: true }
+            | DbRequest::UseShare(_)
+            | DbRequest::ForgetShare(_)
+            | DbRequest::DisconnectShare
+            | DbRequest::SetPassword { .. } => false,
+        }
+    }
 }
 
 /// The database chooser's form state.
@@ -101,6 +139,47 @@ impl ShareForm {
         let password = self.password.clone();
         self.password.clear();
         password
+    }
+}
+
+/// The "set or change the database password" form, in Settings.
+///
+/// Same rule as [`ShareForm`]: the typed password lives here for as long as the
+/// operator is typing it and is cleared the moment it has been used. It is never
+/// in a request, a setting, a log line or an audit entry.
+#[derive(Default)]
+pub struct PasswordForm {
+    /// Is the form open? A password change is not something to offer as a stray
+    /// button next to *Integrity check*.
+    pub open: bool,
+    /// The open form is the *removal* confirmation rather than a new password.
+    ///
+    /// Removal has no fields to fill in, which is exactly why it needs a step of
+    /// its own: a one-click button that turns encryption off would be the easiest
+    /// thing on this screen to press by accident.
+    pub removing: bool,
+    pub new: String,
+    /// Typed twice, because a mistyped password that nobody can verify against
+    /// anything is a lost register — there is no reset and no administrator.
+    pub confirm: String,
+    pub error: Option<String>,
+}
+
+impl PasswordForm {
+    /// Read and clear both fields.
+    fn take(&mut self) -> (String, String) {
+        let new = std::mem::take(&mut self.new);
+        let confirm = std::mem::take(&mut self.confirm);
+        (new, confirm)
+    }
+
+    /// Close and clear. Called when the form is dismissed and after it is used,
+    /// so a typed password never outlives the operation it was typed for.
+    pub fn dismiss(&mut self) {
+        let _ = self.take();
+        self.open = false;
+        self.removing = false;
+        self.error = None;
     }
 }
 
@@ -497,6 +576,15 @@ pub struct YkDistApp {
     /// system had already mounted — that one is not this session's to take down.
     pub share: Option<crate::store::smb::ShareConnection>,
     pub share_form: ShareForm,
+    /// Setting, changing or removing the database password.
+    pub password_form: PasswordForm,
+    /// Wrong passwords at the unlock prompt, and the wait they have earned
+    /// (`features/db-password-and-encryption.md` phase 3).
+    ///
+    /// Session state on purpose: it is not persisted, because a throttle written
+    /// to disk is one that can be edited away, and it is not a lockout — there is
+    /// no administrator to lift one on a shared register.
+    pub throttle: crate::password::Throttle,
     /// How this session reaches an SMB share.
     ///
     /// A factory rather than a value, because each connection consumes one — and
@@ -586,6 +674,8 @@ impl YkDistApp {
             db_request: None,
             share: None,
             share_form: ShareForm::default(),
+            password_form: PasswordForm::default(),
+            throttle: crate::password::Throttle::new(),
             share_connector: Box::new(crate::store::smb::platform_connector),
             scan: ScanPanel::default(),
             open_error: None,
@@ -657,6 +747,22 @@ impl YkDistApp {
         let Some(request) = self.db_request.take() else {
             return;
         };
+
+        // The throttle is enforced here rather than only by a disabled button, so
+        // that it is one rule in testable code instead of a property of the paint
+        // pass: every way of asking to open a register — a click, the recent list,
+        // a share, a lock taken over — arrives through this function.
+        //
+        // Checked before `take_password`, so a refusal does not empty the field
+        // the operator will submit again when the wait is over.
+        if request.attempts_an_unlock()
+            && let Some(wait) = self.throttle.message()
+        {
+            self.db_form.error = Some(wait.clone());
+            self.open_error = Some(wait);
+            return;
+        }
+
         match request {
             DbRequest::PickExisting => self.pick_existing_database(),
             DbRequest::PickNew => self.pick_new_database(),
@@ -684,6 +790,7 @@ impl YkDistApp {
                 self.settings.save_quietly();
             }
             DbRequest::DisconnectShare => self.close_database(),
+            DbRequest::SetPassword { remove } => self.change_database_password(remove),
         }
     }
 
@@ -825,6 +932,11 @@ impl YkDistApp {
                     "database",
                     &self.config.path.display().to_string(),
                 );
+                // Creating a register is not unlocking one: the password was set
+                // here rather than proved against a file that already had one.
+                if !create {
+                    self.note_unlock_success();
+                }
                 self.refresh();
                 self.status = format!("{} — {describe}", self.status);
             }
@@ -894,6 +1006,7 @@ impl YkDistApp {
                     "database",
                     &self.config.path.display().to_string(),
                 );
+                self.note_unlock_success();
                 self.refresh();
             }
             Err(e) => self.report_open_failure(path, e),
@@ -946,10 +1059,45 @@ impl YkDistApp {
                     "database",
                     &self.config.path.display().to_string(),
                 );
+                self.note_unlock_success();
                 self.refresh();
             }
             Err(e) => self.report_open_failure(path, e),
         }
+    }
+
+    /// A password was accepted: clear the throttle, and audit the unlock.
+    ///
+    /// `db.unlocked` is only written for a register that *is* encrypted — on a
+    /// plain file there was nothing to unlock, and an entry saying otherwise would
+    /// make the trail read as though the file were protected.
+    fn note_unlock_success(&mut self) {
+        self.throttle.succeeded();
+        if self
+            .store
+            .as_ref()
+            .is_some_and(|store| store.is_encrypted())
+        {
+            self.record("db.unlocked", "database", "");
+        }
+    }
+
+    /// A password was refused: count it, and say so in the log.
+    ///
+    /// The entry cannot go where it belongs. `db.unlock.failed` is about the
+    /// database that would not open, and the audit table is *inside* that
+    /// database — so it goes to the log, and to the segregated mirror in a
+    /// deployment that configures one (`features/audit-trail.md`). Either way it
+    /// carries [`crate::password::Throttle::audit_detail`], which is a count and
+    /// nothing else: no password, and not even its length.
+    fn note_unlock_failure(&mut self, path: &Path) {
+        let delay = self.throttle.failed();
+        tracing::warn!(
+            event = "db.unlock.failed",
+            path = %path.display(),
+            detail = %self.throttle.audit_detail(),
+            delay_s = delay.as_secs(),
+        );
     }
 
     /// The open configuration this session uses: the operator's name goes into
@@ -961,7 +1109,17 @@ impl YkDistApp {
     /// Show a failed open, keeping a lock refusal actionable.
     fn report_open_failure(&mut self, path: &Path, error: crate::store::StoreError) {
         tracing::error!(event = "db.open.failed", path = %path.display(), reason = %error);
-        let message = error.to_string();
+        let mut message = error.to_string();
+
+        // A wrong password is the one failure that is worth slowing down, and the
+        // message has to carry the wait — the operator is looking at this line,
+        // not at the button they are about to find disabled.
+        if error.is_wrong_password() {
+            self.note_unlock_failure(path);
+            if let Some(wait) = self.throttle.message() {
+                message = format!("{message}. {wait}");
+            }
+        }
 
         // A lock refusal is not the operator's mistake and is not fixed by
         // retyping the path: it names the workstation that has the register, and
@@ -980,6 +1138,143 @@ impl YkDistApp {
 
         self.db_form.error = Some(message.clone());
         self.open_error = Some(message);
+    }
+
+    /// Set, change or remove the database password, then reopen the register.
+    ///
+    /// The operation itself is [`Store::change_password`] — export under the new
+    /// key, verify the copy, swap — and this is the part around it: check what can
+    /// be checked before anything moves, and put the application back into a
+    /// sensible state afterwards.
+    ///
+    /// ## Why the guards are here and not left to the store
+    ///
+    /// [`Store::change_password`] consumes the `Store`, because after a swap the
+    /// handle points at a file that is no longer the register. That is right for
+    /// the operation and wrong for a refusal: a build without SQLCipher, or a
+    /// read-only session, would have the register closed to be told "this build
+    /// cannot do that". So both are answered here, while the store is still ours.
+    ///
+    /// ## What happens when the swap itself fails
+    ///
+    /// The register is untouched — that is the whole point of the export-and-swap
+    /// order — but this session no longer has a handle on it, and the old password
+    /// was never kept. So the chooser comes back with the reason, and the operator
+    /// reopens with the password they already had. Deliberately not softened:
+    /// pretending the database is still open would be the lie, not the extra
+    /// unlock.
+    pub fn change_database_password(&mut self, remove: bool) {
+        let (new, confirm) = self.password_form.take();
+
+        if !cfg!(feature = "encrypted-db") {
+            self.password_form.error =
+                Some(crate::store::StoreError::EncryptionUnavailable.to_string());
+            return;
+        }
+        let Some(store) = self.store.as_ref() else {
+            self.password_form.error = Some("no database is open".into());
+            return;
+        };
+        if store.is_read_only() {
+            self.password_form.error = Some(crate::store::StoreError::ReadOnly.to_string());
+            return;
+        }
+        let was_encrypted = store.is_encrypted();
+        if remove && !was_encrypted {
+            self.password_form.error = Some("this register has no password to remove".into());
+            return;
+        }
+
+        // Typed twice, and compared before anything is exported: the operator
+        // would otherwise discover the typo at the next unlock, with no way back.
+        let new_password = if remove {
+            None
+        } else {
+            if new != confirm {
+                self.password_form.error =
+                    Some("the two passwords are not the same — type it again".into());
+                return;
+            }
+            let assessment = crate::password::assess(&new);
+            if !assessment.is_acceptable() {
+                self.password_form.error = Some(assessment.summary());
+                return;
+            }
+            Some(new)
+        };
+
+        // From here the store is consumed either way.
+        let store = self.store.take().expect("checked just above");
+        let operator = self.operator.clone();
+        let now_encrypted = new_password.is_some();
+        self.password_form.dismiss();
+
+        match store.change_password(&operator, new_password.as_deref()) {
+            Ok(path) => {
+                // Reopening is what proves the new password works, and it is the
+                // only way back to a usable session — the handle that did the swap
+                // is gone.
+                //
+                // Deliberately **not** [`Self::open_database`]: that one begins by
+                // releasing whatever is open, and releasing includes disconnecting
+                // an SMB share this session connected. For a register *on* that
+                // share it would pull the file out from under the reopen, and the
+                // password change would read as a failure. Nothing needs releasing
+                // here anyway — the store was consumed and its lock came off with
+                // the swap.
+                self.reopen_current(&path, new_password);
+                if self.store.is_some() {
+                    self.status = match (was_encrypted, now_encrypted) {
+                        (true, true) => "the database password was changed".into(),
+                        (false, true) => "the database is now password-protected".into(),
+                        (_, false) => "the database password was removed — the file is no \
+                                       longer encrypted"
+                            .to_owned(),
+                    };
+                }
+            }
+            Err(e) => {
+                tracing::error!(event = "db.rekey.failed", reason = %e);
+                let message = format!(
+                    "{e} — the register itself was not changed. Reopen it with the password it \
+                     had."
+                );
+                self.open_error = Some(message.clone());
+                self.db_form.error = Some(message);
+                self.db_form.path = self.config.path.display().to_string();
+            }
+        }
+    }
+
+    /// Reopen the register this session is already pointed at, with a password.
+    ///
+    /// Used after a password change, and only there. Two things make it different
+    /// from [`Self::open_database`]:
+    ///
+    /// * **It releases nothing.** There is nothing to release — the store was
+    ///   consumed by the swap and its lock came off with it — and releasing would
+    ///   disconnect an SMB share this session connected, which for a register on
+    ///   that share is the file itself going away.
+    /// * **It reuses `self.config`** rather than building a fresh one from the
+    ///   path. That config carries the location as it was *stated* when the
+    ///   register was opened — a share connector knows it is a share, where
+    ///   [`crate::store::Location::detect`] can only guess from a mount point — so
+    ///   rebuilding it risks reopening the same file under different pragmas.
+    fn reopen_current(&mut self, path: &Path, password: Option<String>) {
+        let config = self.config.clone().with_password(password);
+        match Store::open_existing(&config) {
+            Ok(store) => {
+                self.adopt(store, config);
+                self.record(
+                    "app.opened",
+                    "database",
+                    &self.config.path.display().to_string(),
+                );
+                self.note_unlock_success();
+                self.refresh();
+            }
+            Err(e) => self.report_open_failure(path, e),
+        }
     }
 
     /// Close the current database and return to the chooser.
@@ -1456,17 +1751,35 @@ impl YkDistApp {
         // that true rather than assumed: opening while a lock of ours is still
         // held would be refused by our own lock file.
         self.release_current_database();
+        let attempted = password.is_some();
         let config = self.config.clone().with_password(password);
+        let path = config.path.clone();
         match Store::open(&config) {
             Ok(store) => {
                 self.adopt(store, config);
                 self.record("app.opened", "database", "");
+                self.note_unlock_success();
                 self.refresh();
             }
             Err(e) => {
                 tracing::error!(event = "db.open.failed", reason = %e);
-                self.open_error = Some(e.to_string());
-                self.db_form.error = Some(e.to_string());
+                // Only when a password was actually submitted. Startup calls this
+                // with `None` to see whether the file is encrypted at all, and
+                // that probe is the application's question rather than a guess at
+                // anybody's password — counting it would have every session with
+                // an encrypted register start one failure down.
+                if attempted && e.is_wrong_password() {
+                    self.note_unlock_failure(&path);
+                }
+                let mut message = e.to_string();
+                if attempted
+                    && e.is_wrong_password()
+                    && let Some(wait) = self.throttle.message()
+                {
+                    message = format!("{message}. {wait}");
+                }
+                self.open_error = Some(message.clone());
+                self.db_form.error = Some(message);
                 self.store = None;
             }
         }

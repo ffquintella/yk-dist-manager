@@ -17,6 +17,60 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+### Added
+
+- **Setting, changing and removing the database password, from the application**
+  ([`features/db-password-and-encryption.md`](features/db-password-and-encryption.md)
+  phases 2, 5 and 6). The export-and-swap operation has existed since v0.7.0 with
+  nothing on screen to reach it: a unit that started with a plain register could
+  not encrypt it, and one whose password was known by somebody who has left could
+  not change it, without writing Rust. **Settings → Password protection** now does
+  all three. The password is typed twice, graded while it is typed, and cleared as
+  soon as it has been used; removal has a confirmation of its own that says what
+  becomes readable; and the register is reopened under the new password
+  afterwards, which is what proves it works. Every refusal — a build with no
+  SQLCipher, a read-only session, a mismatch, a password below the floor — is
+  reached *before* the operation begins, because it consumes the open register and
+  a refusal must not cost the operator their session. A register **on an SMB
+  share** keeps its share across the change: reopening it the obvious way would
+  release what is open first, and releasing disconnects a share this session
+  connected — which on a share takes the file away before the reopen and reports a
+  password change that worked as one that failed.
+- **The unlock prompt slows down after repeated wrong passwords** (phase 3). Three
+  free attempts, then a doubling delay capped at thirty seconds, counted down on
+  screen so a mistyped password never looks like a hung application. It is
+  enforced in `handle_db_request`, which every route to an unlock passes through,
+  rather than by the disabled buttons in the chooser — a control that lived only
+  in the paint pass could not be tested and would be one shortcut away from being
+  bypassed. Deliberately **not** a lockout, and the wording never implies one:
+  there is no administrator to lift one on a shared register, so it would be a
+  denial of service anybody holding the file could trigger. A refused unlock is
+  logged as `db.unlock.failed` carrying a count and nothing else — no password,
+  not even its length — because the audit table it belongs in is inside the
+  database that would not open. A successful one is audited as `db.unlocked`.
+- **The password strength meter** (phase 6), shown wherever a password is
+  *chosen*: the Settings card, and the chooser's field when the path names a file
+  that does not exist yet. Not when unlocking an existing register, where grading
+  a password the operator already has tells them nothing they can act on. The bar
+  always carries the word as well as the colour, and prints the advice — "weak"
+  tells nobody what to do; "several unrelated words work well" does.
+
+### Changed
+
+- **A new register can no longer be created with a password below the floor.**
+  `Store::create_new` now applies the same check `change_password` has always
+  applied, and applies it before the file is created, so a refusal leaves nothing
+  behind. The floor was enforced only when a password was *changed*, which left
+  the first one — the one that protects the register for the rest of its life — as
+  advice the GUI happened to give, and any other caller could key a register on
+  `a`.
+- **`StoreError::is_wrong_password`** is now the single place that distinguishes
+  "the password was wrong" from every other reason a register will not open. A
+  missing file, an unreachable share, a lock held by another workstation and a
+  build without SQLCipher are all failures that no amount of retyping fixes, and
+  the throttle must not count them. Nor does it count the application's own
+  password-less probe at startup, which is how a plain file opens with no prompt.
+
 ### Fixed
 
 - **The Templates catalogue no longer paints ragged rows.** The state cell wrapped

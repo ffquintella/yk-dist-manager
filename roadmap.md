@@ -29,13 +29,15 @@ deployment.
 
 | State | Count |
 |---|---|
-| Done | 10 |
-| In progress | 13 |
-| Todo | 18 |
+| Done | 11 |
+| In progress | 16 |
+| Todo | 14 |
 | **Total tracked items** | **41** (across 38 specs — two items share a spec) |
 
-> The counts above had drifted (they said 11 in progress against 13 `[/]` rows), as
-> had the test and coverage figures quoted in two places. Both are corrected here.
+> The counts had drifted again — they read 10 / 13 / 18 against 10 `[x]`, 16 `[/]` and
+> 15 `[ ]` rows — and are counted from the tables here rather than adjusted by hand:
+> `grep -cE '^\| .\[x\].' roadmap.md` and its two siblings. The database password moving
+> to `[x]` is this change; the rest was drift.
 
 Released: **v0.7.1**. Current wave: **Wave 1 — native execution.**
 
@@ -115,10 +117,15 @@ of the job: choosing or creating the database file, recording serials from a bar
 generating the consignment term in the holder's language, and filing the signed copy
 against the hand-over — and, from the Terms screen, editing that term's wording per
 language. The Templates screen now does the same for the bootstrap procedure itself.
-545 tests pass (plus 4 read-only hardware tests), with **86.91%** (region 85.79%) line
-coverage of the headless core — now enforced by CI rather than reported by it. The
-register can also be opened from the unit's **SMB share**, connected by the application
-itself.
+**619 tests** pass with the default features and **636** with `--all-features` (plus 4
+read-only hardware tests), with **83.7%** (region 82.8%) line coverage of the headless
+core — enforced by CI against a floor of 80% rather than reported. The register can also
+be opened from the unit's **SMB share**, connected by the application itself, and its
+password can be set, changed or removed from Settings.
+
+> The coverage figures quoted here had drifted again: they read 86.91% / 85.79%, and
+> `make coverage-core` on the released 0.7.1 says 83.51% / 82.69%. Corrected to what
+> the gate actually measures, which is the number CI enforces.
 
 **Wave 1 has started.** The bootstrap executor exists and is proven against mock
 transports; the secret machinery it needs exists. Nothing in this build can write to a
@@ -159,13 +166,25 @@ transports, to exist at all:
 Windows and Linux packaging (`features/packaging-and-release.md`).
 
 **4. Buildable now, and not yet built.** The honest remainder — no external
-blocker, simply not done: the database password's re-key, throttling,
-encrypt-existing and strength meter; the template applicability rules,
-import/export, signing, diff and retry policy; hot-plug polling and the multi-key
-picker; the GUI's search, sorting, window-state persistence, keyboard flow,
-confirmation dialogs, log panel and accessibility pass; the sealed-envelope slip,
-signature state machine and return receipt; the icon's in-application use; and
-property tests.
+blocker, simply not done. Every row is a phase carrying **wave 0** in its own
+spec, which is what decides whether it gates this wave:
+
+| Feature | Phase | What is missing |
+|---|---|---|
+| [Device detection](features/device-detection.md) | 2, 3 | background hot-plug polling; the picker when several keys are attached |
+| [Bootstrap templates](features/bootstrap-templates.md) | 4, 5, 6 | import/export as a file; template signing; diff between two versions |
+| [Receipts & terms](features/receipts-and-terms.md) | 4, 6 | the signature state machine with an age warning; the return receipt |
+| [SMB share hosting](features/smb-share-hosting.md) | 9 | reconnecting a share that drops mid-session |
+| [Application icon](features/application-icon.md) | 7 | the icon on the unlock screen and in an About box |
+| [Testing strategy](features/testing-strategy.md) | 9 | property tests for the audit chain and the RFC 4514 escaper |
+
+Two groups of rows left this list and are recorded here so nobody looks for them:
+the **database password** (re-key, encrypt-existing, throttling and the strength
+meter are built, wired and reachable from Settings — the row is `[x]` above, and
+only phase 4, the KDF parameter set, is left, in group 2 as the ESI's to decide),
+and the **GUI shell** (search, sorting, window-state persistence, keyboard flow,
+confirmation dialogs, the log panel and the accessibility pass are all done; the
+sealed-envelope slip landed with the custody decisions in 0.7.1).
 
 Camera scanning is a default feature, and on macOS it needs the bundled application:
 an unbundled build refuses with an explanation rather than aborting (v0.2.2). Two
@@ -210,7 +229,7 @@ Everything needed before a single byte is written to a key.
 | `[/]` | SMB share hosting | [spec](features/smb-share-hosting.md) — the application connects the share itself: the signed-in user (the default, and the whole mechanism on Windows), guest, or a named account whose password is typed and never stored. `WNetAddConnection2W` / `NetFSMountURLSync`, never a command line. An already-mounted share is used and left alone; one this session made is released on close and on quit. Reconnecting a share that drops mid-session, and Kerberos on macOS, are Todo. |
 | `[x]` | Cloud-sync hosting (OneDrive) | [spec](features/cloud-sync-hosting.md) — `Location::CloudSync`: waits for the sync client, takes `<database>.lock`, refuses a second workstation by name, releases after the upload, reports sync conflict copies, **snapshots the register at open** before this session can write, and offers a **read-only** open so a second operator can look without taking the lock. Every phase done. Whether the location is *acceptable* is an ESI decision, not this feature's. |
 | `[x]` | Choosing / creating the database file | [spec](features/database-selection.md) — strict `open_existing` vs `create_new` (a typo can no longer create an empty database), recent-database list, native dialogs, switch from Settings. |
-| `[ ]` | Optional database password | [spec](features/db-password-and-encryption.md) — `encrypted-db` feature wires `PRAGMA key`; unlock screen exists. KDF parameters, password change and re-key are Todo. |
+| `[x]` | Optional database password | [spec](features/db-password-and-encryption.md) — `encrypted-db` wires `PRAGMA key`; the chooser prompts. **Settings → Password protection** sets, changes and removes the password by export-and-swap, never an in-place re-key, with the strength meter beside it and the floor enforced by the store rather than by the screen. The prompt slows down after three wrong passwords — a doubling delay counted down on screen, enforced in `handle_db_request` and deliberately not a lockout. Explicit KDF parameters are the one thing left, and they are **blocked on the ESI's approved cipher set**; unlocking with a YubiKey is Wave 1. |
 | `[x]` | Logging | [spec](features/logging.md) — one entry point, three levels, G-002 line format, no hand-built log lines. |
 | `[/]` | Audit trail | [spec](features/audit-trail.md) — SHA-256 chain, `UPDATE`/`DELETE` refused by trigger, **verification at open**, a **segregated mirror** whose divergence is an alert, and **filtering** by event, actor, target and date. Executor events wait on Wave 1; whether the mirror satisfies segregation is the ESI's call. |
 | `[x]` | Key inventory | [spec](features/key-inventory.md) — serial, model, firmware, form factor, FIPS flag, applications, lifecycle with guarded transitions, serial provenance (verified / scanned / typed), an editable **observation** per key, and confirmed **removal** of an intake mistake (refused once a hand-over or a run refers to the serial). |
@@ -459,3 +478,5 @@ up here with the date and the reason.
 | 2026-08-11 | The application **connects the SMB share itself**, and the default identity is the operator already signed in | "Put the register on a real network share" was the recommendation in every storage document and the one thing the tool could not help with: it opened paths, so the share had to be mounted by somebody else first, and the answer when it was not was a question. On Windows the correct implementation of "use my credentials" is to make *no* call — a UNC path is authenticated by the session's own token, exactly as Explorer is — so the default costs nothing and needs no password. Guest and a named account exist because a NAS and a service-account share both exist, and an explicit choice is honoured exactly rather than falling back to the signed-in user: connecting as an unexpected identity is a register opened with permissions nobody reviewed, and on a share that is read-only for everyone else it looks like the writes were lost |
 | 2026-08-11 | Reaching a share uses the **native API** (`WNetAddConnection2W`, `NetFSMountURLSync`), never `net use` or `mount_smbfs` | The rule that no secret may persist decides this, not taste. Both CLIs take the password in the URL or the argument vector, where every process on the workstation can read it, and the documented way around that is a credentials file — the temporary file the same rule forbids. `mount_smbfs`'s interactive prompt reads `/dev/tty`, which a windowed application does not have. The API takes a string in this process's memory, which is what a zeroed-on-drop `Secret` can supply. The same reasoning is why Linux gets a *refusal that names `mount.cifs` and `autofs`* rather than a helper that writes a credentials file |
 | 2026-08-11 | A share the operating system already mounted is **used and left alone**; only a connection this session made is taken down | The probe comes before the credential, which means an operator who already has the share is never asked for a password and never has their mount pulled out from under their own work. It also fixes the ordering that matters on close: audit, close the database, *then* disconnect — and the audit entry has to be written while there is still a database to write it to |
+| 2026-08-12 | The database password is **chosen** under a policy the store enforces, and **retried** under a throttle the application enforces — neither lives in the screen | The meter and the disabled button are what an operator sees, and neither is a control: paint code cannot be covered by the gate, and a rule that exists only there is one keyboard shortcut or one new call site away from being bypassed. So `create_new` and `change_password` refuse a password below the floor — the first password, the one that protects the register for the rest of its life, was previously advice the GUI happened to give — and `handle_db_request` refuses an unlock while a wait is owed, which is the one funnel every route to an open passes through. What counts as a wrong password is a single predicate (`StoreError::is_wrong_password`), so a missing file, a share that is not there, another workstation's lock, a build without SQLCipher and the application's own password-less probe at startup cannot silently earn the operator a delay |
+| 2026-08-12 | Setting, changing and removing the password is **one screen and one operation**, and every refusal happens before the register is handed over to it | `Store::change_password` consumes the `Store` because after the swap the handle points at a file that is no longer the register — correct for the operation, and unforgiving for the caller: a refusal reached after that point closes the register in order to explain itself. So the build, the read-only session, the mismatch and the policy are all answered while the store is still ours, and the reopen afterwards deliberately does not go through `open_database` — that one releases what is open first, and releasing disconnects an SMB share this session connected, which on a share takes the file away before the reopen and reports a password change that worked as one that failed |

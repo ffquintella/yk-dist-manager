@@ -1012,6 +1012,40 @@ fn scenario_a_weak_password_is_refused_before_anything_is_touched() {
 
 #[cfg(feature = "encrypted-db")]
 #[test]
+fn scenario_a_new_register_cannot_be_created_with_a_password_below_the_floor() {
+    // The other moment a password is *chosen*. Enforcing the floor only when it is
+    // changed would leave the first one — the one that actually protects the
+    // register for the rest of its life — as advice the GUI happens to give.
+    use yk_dist_manager::store::StoreError;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("keys.sqlite3");
+    let config = StoreConfig::new(&path).with_password(Some("hunter2".into()));
+
+    match Store::create_new(&config) {
+        Err(StoreError::WeakPassword(reason)) => {
+            // And the refusal has to explain itself: twelve rather than eight is
+            // a judgement about offline attacks, not a house style.
+            assert!(reason.contains("12"), "{reason}");
+        }
+        Err(other) => panic!("expected WeakPassword, got {other}"),
+        Ok(_) => panic!("a seven-character password must be refused"),
+    }
+
+    // And nothing was created: a refused password must not leave an empty
+    // register behind for somebody to open and trust.
+    assert!(
+        !path.exists(),
+        "the refusal must come before the file is created"
+    );
+
+    // A passphrase that meets the floor creates it normally.
+    let good = StoreConfig::new(&path).with_password(Some(A_GOOD_PASSPHRASE.into()));
+    assert!(Store::create_new(&good).is_ok());
+}
+
+#[cfg(feature = "encrypted-db")]
+#[test]
 fn scenario_encrypting_takes_a_backup_first_because_it_rewrites_everything() {
     // The one operation that rewrites the whole register is the one that most
     // needs a copy of what it started from — and that copy is readable with the

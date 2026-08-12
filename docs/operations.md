@@ -181,6 +181,40 @@ better home for the register — and the share can now be reached from the choos
 Note that everyone shares the one password — it is confidentiality at rest, not per-operator
 access control.
 
+### Runbook: set, change or remove the database password
+
+**Settings → Password protection**, in a build with `--features encrypted-db`. The
+same operation covers all three: the register is exported into a new file under the
+new key, the copy is verified, and only then does it take the original's place.
+Nothing is ever re-keyed in place, so an interruption leaves the register as it was.
+
+1. **Write the password down where the unit keeps its passwords, first.** There is
+   no recovery, no reset and no administrator. A password nobody can produce is a
+   register nobody can read.
+2. Type it twice. It is graded as you type: at least 12 characters, and a
+   passphrase of several unrelated words beats a short password with symbols in it
+   — the threat is a copied file attacked offline, where length is the only thing
+   that buys time.
+3. The register is backed up before it is rewritten, and reopened under the new
+   password afterwards. Both are automatic.
+4. **Older backups keep the password they were taken with.** A password change does
+   not reach copies already on disk — label them, or take a fresh backup after the
+   change and prune the old ones deliberately.
+
+Removing the password asks for a separate confirmation, because what it does is
+make the whole register — every serial, every holder's name, e-mail and unit, and
+the audit trail — readable to anybody who can read the file.
+
+If the change itself fails, the register is untouched and the application returns
+to the chooser: reopen with the password it had. That is not a lost register, it is
+this session having handed its connection over to the swap.
+
+**Wrong passwords at the prompt** are slowed down: three free attempts, then a
+delay that doubles up to thirty seconds, counted down on screen. It is not a
+lockout — there is nobody to unlock it, and there is no limit on attempts. The
+delay only makes guessing at the prompt pointless; it does nothing about a copied
+file, which is what the length floor is for.
+
 ---
 
 ## Runbook: import the spreadsheet you keep today

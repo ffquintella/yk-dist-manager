@@ -17,6 +17,8 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
     ui.add_space(16.0);
     database_card(app, ui);
     ui.add_space(16.0);
+    password_card(app, ui);
+    ui.add_space(16.0);
     maintenance(app, ui);
 
     ui.add_space(16.0);
@@ -292,6 +294,210 @@ fn database_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
             }
         }
     });
+}
+
+/// Encryption at rest: set a password, change it, or take it off.
+///
+/// `features/db-password-and-encryption.md` phases 2, 5 and 6 — the screen that
+/// makes them reachable. The operation is one operation
+/// ([`crate::store::Store::change_password`]): export the register under the new
+/// key, prove the copy opens, then swap. Setting a first password and removing the
+/// last one are the two ends of the same thing.
+///
+/// The card is deliberately reticent. This is the only control in the application
+/// that can make the register unopenable, so it does not sit as a bare button
+/// between *Integrity check* and *Backup*: it has to be opened, the password is
+/// typed twice, the meter grades it, and the sentence about there being no
+/// recovery is on screen while the operator types rather than in a manual.
+fn password_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
+    let Some(store) = app.store.as_ref() else {
+        return;
+    };
+    let encrypted = store.is_encrypted();
+    let read_only = store.is_read_only();
+    let available = cfg!(feature = "encrypted-db");
+    let mut request: Option<DbRequest> = None;
+    let mut dismiss = false;
+
+    super::titled_card(ui, "Password protection", |ui| {
+        if !available {
+            super::notice(
+                ui,
+                CalloutTone::Neutral,
+                "This build cannot encrypt a database: rebuild with `--features encrypted-db`. \
+                 The register is a plain SQLite file, so its confidentiality is whatever the \
+                 folder or share it sits in provides.",
+            );
+            return;
+        }
+
+        super::hint(
+            ui,
+            if encrypted {
+                "This register is encrypted (SQLCipher). The password is held only while it is \
+                 being used to open the file — it is not stored anywhere, and there is no way \
+                 to recover it."
+            } else {
+                "This register is a plain SQLite file. A password makes a copy of it — a backup \
+                 on a share, a sync client's conflict copy, a stolen laptop — useless on its \
+                 own. It does not protect the register while the application has it open, and \
+                 it is not per-operator access control."
+            },
+        );
+
+        if read_only {
+            ui.add_space(10.0);
+            super::notice(
+                ui,
+                CalloutTone::Neutral,
+                "This session opened the register for reading only, so it cannot re-key it. \
+                 Open it with the single-writer lock first.",
+            );
+            return;
+        }
+
+        ui.add_space(12.0);
+
+        if !app.password_form.open {
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add(Button::new(if encrypted {
+                        "Change the password…"
+                    } else {
+                        "Set a password…"
+                    }))
+                    .on_hover_text(
+                        "exports the register under the new password and swaps the file, once \
+                         the copy has been verified",
+                    )
+                    .clicked()
+                {
+                    app.password_form.open = true;
+                }
+                if encrypted
+                    && ui
+                        .add(Button::new("Remove the password…").outline())
+                        .on_hover_text("leaves a plain, unencrypted file")
+                        .clicked()
+                {
+                    app.password_form.open = true;
+                    app.password_form.removing = true;
+                }
+            });
+            if encrypted {
+                ui.add_space(8.0);
+                super::hint(
+                    ui,
+                    "Every backup already taken keeps the password it was taken with; a new \
+                     password does not reach the old copies.",
+                );
+            }
+            return;
+        }
+
+        // The form.
+        if let Some(error) = app.password_form.error.clone() {
+            super::error_label(ui, &error);
+            ui.add_space(10.0);
+        }
+
+        if app.password_form.removing {
+            super::notice(
+                ui,
+                CalloutTone::Warning,
+                "This exports the register into a plain, unencrypted file and swaps it into \
+                 place. From then on anybody who can read the file — on the share, in a backup, \
+                 in a sync client's cache — can read the whole register: every serial, every \
+                 holder's name, e-mail and unit, and the whole audit trail. The change is \
+                 audited, and a backup of the encrypted file is taken first.",
+            );
+            ui.add_space(14.0);
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add(Button::new("Remove the password").accent(Accent::Red))
+                    .clicked()
+                {
+                    request = Some(DbRequest::SetPassword { remove: true });
+                }
+                if ui.add(Button::new("Keep it").outline()).clicked() {
+                    dismiss = true;
+                }
+            });
+            return;
+        }
+
+        super::notice(
+            ui,
+            CalloutTone::Warning,
+            "There is no recovery and no administrator: a password nobody can produce is a \
+             register nobody can read, and every backup taken from now on needs the new one. \
+             Put it where the unit keeps its passwords before pressing the button. A backup of \
+             the current file is taken automatically first, and it opens with the password the \
+             register has now.",
+        );
+        ui.add_space(12.0);
+
+        super::form_columns(ui, |left, right, _width| {
+            super::capped_input(left, &mut app.password_form.new, MAX_TEXT, |input| {
+                input
+                    .label("New password")
+                    .hint("a passphrase of several unrelated words")
+                    .password(true)
+                    .id_salt("db-new-password")
+            });
+            super::capped_input(right, &mut app.password_form.confirm, MAX_TEXT, |input| {
+                input
+                    .label("Again")
+                    .hint("typed twice, because a typo here is not recoverable")
+                    .password(true)
+                    .id_salt("db-confirm-password")
+            });
+        });
+
+        ui.add_space(10.0);
+        let assessment = super::password_meter(ui, &app.password_form.new);
+        let matching = app.password_form.new == app.password_form.confirm;
+        if !matching && !app.password_form.confirm.is_empty() {
+            ui.add_space(6.0);
+            super::error_label(ui, "the two passwords are not the same");
+        }
+
+        ui.add_space(14.0);
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .add(
+                    Button::new(if encrypted {
+                        "Change the password"
+                    } else {
+                        "Encrypt this database"
+                    })
+                    .accent(Accent::Red)
+                    .enabled(assessment.is_acceptable() && matching),
+                )
+                .on_hover_text(
+                    "the register is exported, verified and swapped — never re-keyed \
+                                in place",
+                )
+                .clicked()
+            {
+                request = Some(DbRequest::SetPassword { remove: false });
+            }
+            if ui.add(Button::new("Cancel").outline()).clicked() {
+                dismiss = true;
+            }
+        });
+    });
+
+    // Deferred out of the card closure, like every other mutation on these
+    // screens: the request is performed after the paint pass, and it re-opens the
+    // register — which cannot happen while the frame that drew it is still being
+    // painted.
+    if dismiss {
+        app.password_form.dismiss();
+    }
+    if let Some(request) = request {
+        app.db_request = Some(request);
+    }
 }
 
 /// Integrity, backup, reload.

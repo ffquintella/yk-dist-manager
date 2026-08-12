@@ -72,7 +72,14 @@ the operator closing one to switch. It carries:
 - **Open** and **Create** as separate buttons, plus native *Choose file…* /
   *New file…* dialogs;
 - a note when the build lacks `file-dialog` or `encrypted-db`, so a refused password
-  is explained rather than mysterious.
+  is explained rather than mysterious;
+- the **strength meter**, but only when the typed path is not a file yet — which is
+  the only case in which the password would become a *new* register's key. Grading
+  a password typed to unlock a register that already has one would be a judgement
+  nobody can act on here;
+- after repeated wrong passwords, the **wait** the throttle has earned: a banner
+  counting down, and the buttons that submit a password disabled while it runs. The
+  banner says it is not a lockout, because there is nobody to lift one.
 
 Open and Create never guess: opening a path that does not exist is an error, and
 creating over an existing file is refused.
@@ -251,6 +258,15 @@ Operator and organisation (persisted between sessions); the database path, locki
 whether it is password-protected; the device transport; the recent databases; and the
 actions — *Switch database…*, *Open another…*, *Create new…*, integrity check, backup,
 reload. Also the version string, so a screenshot identifies the build.
+
+A **Password protection** card sets a password on a plain register, changes the one it
+has, or takes it off. It is the only control in the application that can make the
+register unopenable, so it does not sit as a bare button among the maintenance
+actions: it has to be opened, the password is typed twice and graded as it is typed,
+the sentence about there being no recovery is on screen while the operator types, and
+removal asks for a confirmation of its own that names what becomes readable. The
+register is backed up first and reopened under the new password afterwards. In a build
+without `encrypted-db` the card says which build would do it instead of hiding.
 
 For a database in a cloud-sync folder there is one more row — the **single-writer lock**:
 held by this workstation, by whom since when, and the path of the lock file. The warning

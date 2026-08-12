@@ -32,7 +32,7 @@
 //! weak — and a dependency that scores passwords is a dependency that has to be
 //! kept current forever for a single text field.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The shortest password this tool will set.
 ///
@@ -65,6 +65,18 @@ pub enum Strength {
 }
 
 impl Strength {
+    /// Every step, weakest first.
+    ///
+    /// Exists so the accessibility test can assert that each step the meter
+    /// gives a colour to also has its own words
+    /// (`tests/unit_accessibility.rs`).
+    pub const ALL: [Strength; 4] = [
+        Strength::TooWeak,
+        Strength::Weak,
+        Strength::Fair,
+        Strength::Strong,
+    ];
+
     /// A word, so the meter is not a bar of colour with no text.
     pub fn label(&self) -> &'static str {
         match self {
@@ -246,11 +258,21 @@ fn looks_sequential(password: &str) -> bool {
 /// guessing pointless while leaving the operator who mistyped it able to try
 /// again.
 ///
-/// The clock is a parameter throughout, so the behaviour is testable without
-/// waiting.
+/// The clock is a parameter on every method that needs one, so the behaviour is
+/// testable without waiting: [`Self::failed_at`], [`Self::remaining_at`] and
+/// [`Self::message_at`] take the instant, and the argument-less versions are
+/// thin wrappers that read `Instant::now()` for the paint code.
 #[derive(Debug, Clone, Default)]
 pub struct Throttle {
     failures: u32,
+    /// When the last failure was recorded.
+    ///
+    /// [`Self::delay`] says how long is *owed* after a failure, which is what
+    /// the policy is about; the prompt needs the different question "how much of
+    /// it is left", so that the wait counts down instead of sitting at its
+    /// initial value until it expires. A count-down is also what stops the
+    /// operator concluding the application has hung.
+    since: Option<Instant>,
 }
 
 impl Throttle {
@@ -275,13 +297,20 @@ impl Throttle {
 
     /// Record a wrong password.
     pub fn failed(&mut self) -> Duration {
+        self.failed_at(Instant::now())
+    }
+
+    /// Record a wrong password at a stated instant.
+    pub fn failed_at(&mut self, now: Instant) -> Duration {
         self.failures = self.failures.saturating_add(1);
+        self.since = Some(now);
         self.delay()
     }
 
     /// A correct password clears the history.
     pub fn succeeded(&mut self) {
         self.failures = 0;
+        self.since = None;
     }
 
     /// Is the prompt currently slowed?
@@ -289,17 +318,55 @@ impl Throttle {
         self.delay() > Duration::ZERO
     }
 
+    /// How much of the delay is still to run.
+    pub fn remaining(&self) -> Duration {
+        self.remaining_at(Instant::now())
+    }
+
+    /// How much of the delay is still to run, as of `now`.
+    ///
+    /// Zero when nothing is owed, which is also the answer for a throttle that
+    /// has never seen a failure.
+    pub fn remaining_at(&self, now: Instant) -> Duration {
+        let Some(since) = self.since else {
+            return Duration::ZERO;
+        };
+        self.delay()
+            .saturating_sub(now.saturating_duration_since(since))
+    }
+
+    /// Must the next attempt wait?
+    ///
+    /// The question an unlock button asks, and different from
+    /// [`Self::is_throttled`]: that one says the prompt is in its slowed regime
+    /// at all, this one says a wait is owed *at this moment*.
+    pub fn must_wait(&self) -> bool {
+        !self.remaining().is_zero()
+    }
+
+    /// See [`Self::must_wait`].
+    pub fn must_wait_at(&self, now: Instant) -> bool {
+        !self.remaining_at(now).is_zero()
+    }
+
     /// What the operator is told. Never how many attempts remain, because there
     /// is no limit — saying "2 left" would imply a lockout that does not exist.
     pub fn message(&self) -> Option<String> {
-        let delay = self.delay();
-        if delay.is_zero() {
+        self.message_at(Instant::now())
+    }
+
+    /// See [`Self::message`].
+    pub fn message_at(&self, now: Instant) -> Option<String> {
+        let remaining = self.remaining_at(now);
+        if remaining.is_zero() {
             return None;
         }
+        // Rounded up: a wait of 300ms is still a wait, and "wait 0 second(s)"
+        // reads as a bug.
+        let seconds = remaining.as_millis().div_ceil(1000);
         Some(format!(
-            "{} failed attempts — wait {} second(s) before trying again",
+            "{} failed attempts — wait {seconds} second(s) before trying again",
             self.failures,
-            delay.as_secs()
         ))
     }
 
@@ -483,6 +550,49 @@ mod tests {
     }
 
     #[test]
+    fn the_wait_counts_down_and_then_lets_the_operator_try_again() {
+        // The prompt has to show a shrinking number, not the delay it started
+        // with: a figure that sits still for eight seconds is how an operator
+        // decides the application has hung and kills it mid-hand-over.
+        let start = Instant::now();
+        let mut throttle = Throttle::new();
+        for _ in 0..=FREE_ATTEMPTS {
+            throttle.failed_at(start);
+        }
+        assert_eq!(throttle.delay(), Duration::from_secs(1));
+        assert!(throttle.must_wait_at(start));
+
+        let half = start + Duration::from_millis(500);
+        assert_eq!(throttle.remaining_at(half), Duration::from_millis(500));
+        assert!(throttle.must_wait_at(half));
+        // Rounded up, because half a second of waiting is not "0 seconds".
+        assert!(
+            throttle
+                .message_at(half)
+                .expect("still waiting")
+                .contains("1 second"),
+            "{:?}",
+            throttle.message_at(half)
+        );
+
+        let after = start + Duration::from_secs(2);
+        assert_eq!(throttle.remaining_at(after), Duration::ZERO);
+        assert!(!throttle.must_wait_at(after), "the delay has run out");
+        assert!(throttle.message_at(after).is_none());
+        // The failures are still on record, so the *next* wrong password waits
+        // longer rather than starting again from free attempts.
+        assert!(throttle.is_throttled());
+        assert_eq!(throttle.failures(), FREE_ATTEMPTS + 1);
+    }
+
+    #[test]
+    fn a_throttle_that_has_seen_nothing_owes_no_wait() {
+        let throttle = Throttle::new();
+        assert_eq!(throttle.remaining(), Duration::ZERO);
+        assert!(!throttle.must_wait());
+    }
+
+    #[test]
     fn a_correct_password_clears_the_history() {
         let mut throttle = Throttle::new();
         for _ in 0..6 {
@@ -491,6 +601,8 @@ mod tests {
         assert!(throttle.is_throttled());
         throttle.succeeded();
         assert!(!throttle.is_throttled());
+        assert!(!throttle.must_wait());
+        assert_eq!(throttle.remaining(), Duration::ZERO);
         assert_eq!(throttle.failures(), 0);
     }
 

@@ -120,6 +120,25 @@ pub enum StoreError {
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
+impl StoreError {
+    /// Does this refusal mean "the password was wrong"?
+    ///
+    /// What the unlock throttle counts (`features/db-password-and-encryption.md`
+    /// phase 3), and it must be exactly this one variant. A missing file, an
+    /// unreachable share, a lock held by another workstation and a build without
+    /// SQLCipher are all failures to open that no amount of retyping fixes, and
+    /// counting them would slow an operator down for something that is not a
+    /// guess.
+    ///
+    /// [`Self::PasswordRequired`] is also what a genuinely corrupt file produces
+    /// — SQLCipher cannot tell "wrong key" from "not a database", which is why
+    /// the message says both. Throttling that case costs nothing: the file is not
+    /// going to open on the fourth attempt either.
+    pub fn is_wrong_password(&self) -> bool {
+        matches!(self, StoreError::PasswordRequired)
+    }
+}
+
 /// Turn SQLite's own refusal to write a read-only connection into the message an
 /// operator can act on.
 ///
@@ -444,6 +463,25 @@ impl Store {
     pub fn create_new(config: &StoreConfig) -> Result<Self> {
         if config.path.exists() {
             return Err(StoreError::AlreadyExists(config.path.clone()));
+        }
+        // The policy belongs here as well as in [`Self::change_password`], and for
+        // the same reason it is checked before anything moves there: this is the
+        // other moment a password is *chosen*. Enforcing it only in the meter
+        // would leave the floor as advice the GUI happens to give — every other
+        // caller (a test, a future CLI) could create a register keyed on `a`, and
+        // the file would then be un-rekeyable without also changing its password.
+        //
+        // Only when the build can encrypt at all: without the feature the
+        // password is refused a moment later by `apply_key` with an error that
+        // names the flag to rebuild with, which is the more useful answer than
+        // grading a password this build cannot use.
+        if cfg!(feature = "encrypted-db")
+            && let Some(password) = &config.password
+        {
+            let assessment = crate::password::assess(password);
+            if !assessment.is_acceptable() {
+                return Err(StoreError::WeakPassword(assessment.summary()));
+            }
         }
         let store = Self::open(config)?;
         store.seed_builtin_templates()?;
