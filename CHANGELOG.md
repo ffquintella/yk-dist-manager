@@ -19,6 +19,28 @@ Maintenance instructions (see AGENTS.md §5):
 
 ### Fixed
 
+- **A hand-over was written and *then* refused.** Recording a distribution for a key the
+  lifecycle would not move produced *recorded, but status not updated: illegal status
+  transition: In stock -> Distributed*: the record was on the register, the key was still
+  filed as untouched stock, and there was nothing the operator could do about either. The
+  lifecycle is now asked **before** the insert, from the key's own row rather than the
+  cached list, and the refusal says what the key needs and that nothing was recorded. The
+  post-insert refusal stays as the guard for a status that moves between the two reads.
+
+- **A completed bootstrap run now moves the key to `Bootstrapped`.** The lifecycle has
+  always read `InStock → Bootstrapped → Distributed`, but nothing performed the first
+  arrow — the only thing that moved a key was *mark bootstrapped* on the Inventory
+  screen, so a key could be fully configured and still filed as stock, and the operator
+  met that hours later on another screen as a refused hand-over. Only a `Completed` run
+  counts, which is the line the engine already draws (a run with a required step unmet is
+  `Failed` and audited `bootstrap.incomplete` — "the key is not ready to hand over"), and
+  a run never overrules a key marked lost, retired or already handed over. The move is
+  audited `key.status_changed` with the run that earned it.
+
+- **The paperwork banner on the Distribution screen** ran two sentences together and
+  carried runs of spaces through it — the same wrapped-literal-without-continuations
+  slip as the pre-flight refusal in the previous fix.
+
 - **No key could be bootstrapped at all: the "already configured" refusal fired on
   every YubiKey ever made.** The first real run against a factory-fresh key was blocked
   with *PIV slot(s) f9 already hold a certificate*, and there is deliberately no

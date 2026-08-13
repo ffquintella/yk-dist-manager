@@ -4806,13 +4806,24 @@ impl YkDistApp {
         self.wizard.stage = crate::app::WizardStage::Running;
         match outcome {
             Ok(run) => {
-                self.status = format!(
-                    "run {:?}: {} done, {} failed, {} skipped",
-                    run.status,
-                    run.tally().0,
-                    run.tally().1,
-                    run.tally().2
+                let (done, failed, skipped, _) = run.tally();
+                let tally = format!(
+                    "run {:?}: {done} done, {failed} failed, {skipped} skipped",
+                    run.status
                 );
+                self.status = match self.settle_key_status(serial, &run) {
+                    Ok(true) => {
+                        format!("{tally} — serial {serial} is bootstrapped and ready to hand over")
+                    }
+                    Ok(false) => tally,
+                    Err(e) => {
+                        // The run happened; the key is filed as something it is no
+                        // longer. That has to be met here, not on the Distribution
+                        // screen an hour later.
+                        self.wizard.error = Some(e.clone());
+                        format!("{tally} — but serial {serial} was not moved: {e}")
+                    }
+                };
                 self.wizard.run = Some(run);
             }
             Err(e) => {
@@ -4821,6 +4832,63 @@ impl YkDistApp {
             }
         }
         self.refresh();
+    }
+
+    /// Move a key to `Bootstrapped` when the run that just finished says it is.
+    ///
+    /// The lifecycle has always read `InStock → Bootstrapped → Distributed`, but
+    /// nothing performed the first arrow: the only thing that moved a key was a
+    /// button on the Inventory screen, so a key could be fully configured and
+    /// still be filed as untouched stock. The operator met that hours later, on
+    /// another screen, as a refused hand-over.
+    ///
+    /// Only a `Completed` run counts, which is the same line the engine already
+    /// draws: a run with a required step unmet is marked `Failed` and audited
+    /// `bootstrap.incomplete` — "the key is not ready to hand over".
+    ///
+    /// `Ok(true)` when the key moved, `Ok(false)` when there was nothing to move
+    /// it to, `Err` when the move was refused — which the caller has to show,
+    /// because a key filed as something it is no longer is the whole bug.
+    pub fn settle_key_status(
+        &mut self,
+        serial: u32,
+        run: &crate::domain::BootstrapRun,
+    ) -> Result<bool, String> {
+        if run.status != crate::domain::RunStatus::Completed {
+            return Ok(false);
+        }
+        let Some(store) = &self.store else {
+            return Ok(false);
+        };
+        let current = match store.key_by_serial(serial) {
+            Ok(Some(found)) => found.status,
+            Ok(None) => return Ok(false),
+            Err(e) => {
+                tracing::error!(event = "key.status.read.failed", serial, reason = %e);
+                return Err(e.to_string());
+            }
+        };
+        // Already there, or somewhere a run has no business overruling — a key
+        // marked lost during a resume is not quietly returned to the shelf.
+        if current == KeyStatus::Bootstrapped || !current.can_transition_to(KeyStatus::Bootstrapped)
+        {
+            return Ok(false);
+        }
+        if let Err(e) = store.set_key_status(serial, KeyStatus::Bootstrapped) {
+            tracing::error!(event = "key.status.write.failed", serial, reason = %e);
+            return Err(e.to_string());
+        }
+        self.record(
+            "key.status_changed",
+            &format!("serial:{serial}"),
+            &format!(
+                "to={} from={} run={}",
+                KeyStatus::Bootstrapped.audit_name(),
+                current.audit_name(),
+                run.id
+            ),
+        );
+        Ok(true)
     }
 
     /// The write transport for this build, if it has one.
@@ -5054,12 +5122,47 @@ impl YkDistApp {
         };
 
         let Some(store) = &self.store else { return };
+
+        // The lifecycle is asked *before* the record is written. Asking after it
+        // produced the worst of both answers: a hand-over on the register, the key
+        // still sitting in stock, and a refusal the operator could do nothing
+        // about. The key's own row decides it, not the cached list, because a
+        // stale copy would decide it wrong.
+        let current = match store.key_by_serial(key.serial) {
+            Ok(Some(found)) => found.status,
+            Ok(None) => {
+                self.dist_form.error =
+                    Some(format!("serial {} is not in the inventory", key.serial));
+                return;
+            }
+            Err(e) => {
+                self.dist_form.error = Some(e.to_string());
+                return;
+            }
+        };
+        if current != KeyStatus::Distributed && !current.can_transition_to(KeyStatus::Distributed) {
+            self.dist_form.error = Some(format!(
+                "serial {} is {} — a key is handed over once a bootstrap run has completed on \
+                 it. Nothing was recorded: run the bootstrap, or mark the key bootstrapped on \
+                 the Inventory screen, and record the hand-over then.",
+                key.serial,
+                current.label()
+            ));
+            tracing::warn!(
+                event = "distribution.refused.lifecycle",
+                serial = key.serial,
+                status = current.audit_name()
+            );
+            return;
+        }
+
         if let Err(e) = store.insert_distribution(&record) {
             self.dist_form.error = Some(e.to_string());
             return;
         }
         if let Err(e) = store.set_key_status(key.serial, KeyStatus::Distributed) {
-            // The hand-over is recorded; the status refusal is surfaced, not hidden.
+            // The pre-flight above should have caught this; if the status moved
+            // under us between the two reads, the refusal is still surfaced.
             self.dist_form.error = Some(format!("recorded, but status not updated: {e}"));
         }
         let details = format!(

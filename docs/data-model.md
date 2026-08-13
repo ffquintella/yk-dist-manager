@@ -33,7 +33,10 @@ Conventions:
 | `created_at`, `updated_at` | TEXT | |
 
 Transitions are enforced in `domain::KeyStatus::can_transition_to` and refused by
-`Store::set_key_status`. `in_stock → distributed` is deliberately illegal.
+`Store::set_key_status`. `in_stock → distributed` is deliberately illegal, and the
+Distribution screen asks the lifecycle before it inserts the hand-over rather than
+after. `in_stock → bootstrapped` is performed by a bootstrap run that settles
+`Completed`, not by the operator remembering a button.
 
 A row can be **deleted** (`Store::delete_key`), but only as the correction of an
 intake mistake: the store refuses a serial that any row in `distributions` or

@@ -207,6 +207,11 @@ The hand-over form (key, holder, delivery method, receipt reference, notes, and 
 attach the latest bootstrap run) above the history table. The table shows what was applied —
 the run summary — and offers "record return" on open records only.
 
+The key list names each key's lifecycle state, and a key the lifecycle will not move to
+`Distributed` is refused **before** anything is written: the message names the state, says
+nothing was recorded, and says what the key needs — a completed bootstrap run, or *mark
+bootstrapped* on the Inventory screen for a key configured elsewhere.
+
 Each row carries the **Term** column, which is the *signature state* rather than a count
 of attachments (`features/receipts-and-terms.md` phase 4): `awaiting signature · 3d`,
 `overdue · 30d`, `signed`, `returned unsigned · 50d`, or `term not used`. The days are on

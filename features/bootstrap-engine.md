@@ -79,6 +79,11 @@ Three decisions in the executor worth knowing about:
   `custody = "dry run — no secret was set"`.
 - `BootstrapRun::settle()` derives the run status: any failure ⇒ `Failed`, anything
   pending ⇒ `Running`, otherwise `Completed`.
+- A run that settles `Completed` **moves the key to `Bootstrapped`**
+  (`YkDistApp::settle_key_status`, audited `key.status_changed` with the run id).
+  `Completed` is the same line the `bootstrap.incomplete` rule above draws: a run
+  with a required step unmet is `Failed`, and a failed run moves nothing. A run
+  never overrules a key that is lost, retired or already handed over.
 
 Nothing in the *default* build writes to a key.
 

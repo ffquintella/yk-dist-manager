@@ -18,7 +18,7 @@ whole even though every part passes.
 
 **Suites in place, and CI now enforces the gate.**
 
-- **833 tests** pass on the default features (`cargo test`), **838** with
+- **834 tests** pass on the default features (`cargo test`), **839** with
   `--all-features` — the encrypted-database paths account for the difference, minus
   the one test that exists only when `encrypted-db` is *off*. The default figure now
   includes the native-transport tests, because `native-device` became a default
@@ -78,10 +78,12 @@ whole even though every part passes.
   `behaviour_bootstrap.rs` (10), `behaviour_storage.rs` (25),
   `behaviour_templates.rs` (13), `behaviour_terms_and_documents.rs` (18),
   `behaviour_executor.rs` (10 — a bootstrap run against mock write transports),
-  `behaviour_smb_share.rs` (6 — a register on a share), plus the two suites that
+  `behaviour_smb_share.rs` (6 — a register on a share), plus the suites that
   drive `YkDistApp` and therefore own their binary's environment, one scenario each:
-  `behaviour_app_cloud_lock.rs` and `behaviour_app_smb_share.rs` (see their module
-  docs).
+  `behaviour_app_cloud_lock.rs`, `behaviour_app_smb_share.rs` and
+  `behaviour_app_key_ready_to_hand_over.rs` — the lifecycle step between a run and a
+  hand-over: the refusal comes before anything is written, and a run that completes
+  is what moves the key (see their module docs).
 - **Three mockable seams**, for the same reason: `device::MockBackend` means no test
   needs a key to *read*, `device::write::MockWriter` means none needs one to
   *write* — it is the only implementation of the write traits in a **default**

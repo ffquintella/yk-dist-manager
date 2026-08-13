@@ -536,8 +536,13 @@ bootstrap run** — nothing else touches the key while a run is writing to it.
    **Record distribution**.
 6. Confirm the Distribution table shows the hand-over with what was applied.
 
-If the key status refuses to advance ("illegal status transition"), the key was never marked
-bootstrapped — that is the guard working, not a bug.
+A run that **completes** moves the key to *Bootstrapped* itself, so step 5 normally finds a
+key the lifecycle will hand over. If the hand-over is refused — *serial … is In stock — a
+key is handed over once a bootstrap run has completed on it* — nothing was recorded, and
+the key genuinely is not ready: either the run did not complete (a required step unmet is
+recorded as failed, with `bootstrap.incomplete` naming the steps), or the key was
+configured outside this tool. For the second case, **Inventory → mark bootstrapped**, then
+record the hand-over. That is the guard working, not a bug.
 
 ## Runbook: a key that is already configured
 

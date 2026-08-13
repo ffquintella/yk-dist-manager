@@ -54,7 +54,9 @@ fn paperwork(app: &mut YkDistApp, ui: &mut egui::Ui) {
             CalloutTone::Neutral
         },
         &format!(
-            "{line}. {} An unsigned term means the holder has not acknowledged the obligations              the loss procedure depends on, so it is a gap in the record rather than a missing              attachment.",
+            "{line}. {}. An unsigned term means the holder has not acknowledged the obligations \
+             the loss procedure depends on, so it is a gap in the record rather than a missing \
+             attachment.",
             app.settings.signatures.describe()
         ),
     );

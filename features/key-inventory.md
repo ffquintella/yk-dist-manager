@@ -63,7 +63,19 @@ Legal transitions (`domain::key::KeyStatus::can_transition_to`):
 | `Lost` | `Returned`, `Retired` |
 | `Retired` | — (terminal) |
 
-Notably absent: `InStock → Distributed`. A behaviour test asserts it is refused.
+Notably absent: `InStock → Distributed`. A behaviour test asserts it is refused, and
+the Distribution screen asks the lifecycle *before* it writes the hand-over, so the
+refusal arrives with nothing recorded.
+
+**What performs `InStock → Bootstrapped`** is the run itself: a bootstrap run that
+settles `Completed` moves the key (`YkDistApp::settle_key_status`), audited
+`key.status_changed` with the run id. Only `Completed` counts — the engine marks a run
+with a required step unmet as `Failed` and audits `bootstrap.incomplete`, "the key is
+not ready to hand over" — and a run never overrules a key that is lost, retired or
+already distributed. *Mark bootstrapped* on the Inventory screen stays for the key
+configured outside the tool; it is no longer the only thing that moves a key, which it
+was until 0.13, and forgetting it surfaced much later as a refused hand-over.
+
 `Bootstrapped → InStock` exists for the case where a bootstrap is undone by an
 applet reset.
 
@@ -132,13 +144,14 @@ real FIPS flag instead.
 |---|---|
 | `key.added` | New serial recorded; `source=… verified=… note_chars=<n>` |
 | `key.refreshed` | Known serial re-read |
-| `key.status_changed` | Lifecycle move, with `to=<status>` |
+| `key.status_changed` | Lifecycle move, with `to=<status>`; a move made by a completed run also carries `from=<status> run=<id>` |
 | `key.note_changed` | Observation stored; `note=set\|cleared\|changed\|unchanged chars=<n> was_chars=<n>` — shape, never content |
 | `key.removed` | Inventory row deleted; `status=… source=… model=… note_chars=<n>`. The entry outlives the row |
 
-A refused transition is logged and shown, and (Phase 2 of the audit feature)
-should also be audited: an attempt to hand out an unbootstrapped key is
-information worth keeping.
+A refused transition is logged and shown — a hand-over refused by the lifecycle is
+logged `distribution.refused.lifecycle` with the serial and the state it is in —
+and (Phase 2 of the audit feature) should also be *audited*: an attempt to hand out
+an unbootstrapped key is information worth keeping.
 
 ## Tests
 
@@ -169,6 +182,12 @@ information worth keeping.
 - `scenario_a_key_that_has_been_handed_over_cannot_be_removed_from_the_inventory`
 - `scenario_a_serial_typed_by_mistake_is_removed_with_its_observation`
 - `scenario_an_observation_survives_reading_the_key_again`
+
+`tests/behaviour_app_key_ready_to_hand_over.rs`:
+
+- `scenario_a_key_is_handed_over_once_a_run_has_made_it_ready` — a run that settles
+  `Completed` moves the key and audits the move once (a second run for a key already
+  there writes nothing); a run that ends `Failed` leaves the key where it was.
 
 ## References
 
