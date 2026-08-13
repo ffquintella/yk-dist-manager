@@ -17,7 +17,51 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-08-13
+
 ### Added
+
+- **A FIDO2 reset now walks the operator through the power cycle it needs**
+  ([`features/key-lifecycle-and-revocation.md`](features/key-lifecycle-and-revocation.md)
+  phase 5a).
+
+  CTAP accepts `authenticatorReset` only in the first seconds after the
+  authenticator powers up. A key that has been in the port while the operator read
+  the preview is therefore always out of time, and the first real reset said so:
+  `ERROR: Reset failed. Reset must be triggered within 5 seconds after the YubiKey
+  is inserted` — while PIV, in the same run, came back reset. Phase 5 knew about
+  the window and answered it with a sentence asking the operator to unplug the key
+  and plug it back in *before* confirming, which is a race with no visible start.
+
+  So the tool runs the race itself ([`device::reinsert`](src/device/reinsert.rs)).
+  The confirmation is taken first and the applets are frozen into it — the seconds
+  an operator then spends with a key in one hand are not seconds in which an
+  agreement to destroy credentials should be able to drift. The panel then asks for
+  the key to be pulled out and put back, watches the port for that one serial with
+  a poll of its own (200ms native, 500ms through the subprocess, and the background
+  device watch stands down for the duration), and fires the run on the observation
+  that sees the key return.
+
+  Around that: *Send the reset now* arms it by hand, for a port this workstation
+  enumerates more slowly than the window allows; a window that closes anyway is
+  **reported rather than risked**, because a late command earns a refusal that
+  reads like a hardware fault; a minute with nobody touching the key abandons the
+  handshake instead of polling a port all afternoon; and a FIDO2 row that says
+  *refused* offers **Power-cycle and try FIDO2 again**, which repeats the whole
+  thing for that applet alone and leaves the ones that answered untouched. Every
+  step says that nothing has been written yet, and until the key is back in the
+  port that is literally true.
+
+  Three new events — `key.reset.power_cycle.requested`, `…armed` and
+  `…abandoned` (with the reason: the window, the operator, or a key that never came
+  back). None of them is a write; together they explain a refusal that arrives
+  afterwards, and an abandoned destructive action with no entry is indistinguishable
+  from one nobody ever asked for.
+
+  The lasting fix is a native `authenticatorReset`
+  ([`features/native-device-transport.md`](features/native-device-transport.md)),
+  which would take a Python process start out of a five-second budget. The power
+  cycle itself is CTAP's requirement and stays either way.
 
 - **A way out of a single-writer lock that is still alive**
   ([`features/cloud-sync-hosting.md`](features/cloud-sync-hosting.md) phase 9).
@@ -257,6 +301,16 @@ Maintenance instructions (see AGENTS.md §5):
   error fields and stopped there. The operator got the holder's name, twice, and nothing
   to press. Both halves now go through one `show_open_failure`, and the chooser no longer
   paints the same message twice when both fields carry it.
+
+- **The dropped-share behaviour test could not run on Windows**, which is the platform
+  the feature exists for, and had held the Windows build red since 0.11.0. It simulated
+  the file server going away by moving the mount directory aside — and Windows refuses
+  to move a directory that holds an open file, which the register deliberately is at
+  that moment (`ERROR_ACCESS_DENIED`). The share's root is now a link to the
+  "server-side" tree — a symlink on Unix, a junction on Windows — and the drop takes the
+  mount point away rather than the files, which is both what a share going away actually
+  does and something Windows allows with the register still open. No production code
+  changed; the scenario and its assertions are the same.
 
 ### Not done, and why
 

@@ -164,6 +164,17 @@ table gives one row per applet — reset, nothing to do, or refused with the tra
 words — and the applets are read again, so what the panel shows is the key as it is now.
 The device watch is stopped for the duration, like a bootstrap run.
 
+With **FIDO2 ticked the button confirms and then asks for the key** (phase 5a): the panel
+is replaced by a two-step power cycle — pull the key out, plug it back in — because CTAP
+only accepts a reset in the first seconds after the authenticator powers up, and a key that
+has been in the port since the preview opened is always too late. A fast presence poll
+watches for the serial and the reset fires on the observation that sees it return; *Send
+the reset now* arms it by hand for a port this workstation reads too slowly, and every step
+repeats that nothing has been written yet. A window that closes, or a minute with nobody
+touching the key, ends the handshake with an explanation instead of a command the applet
+would refuse. A FIDO2 row that says *refused* offers **Power-cycle and try FIDO2 again**,
+which repeats the handshake for that applet alone.
+
 **Add by serial / scan…** opens the intake panel: a text field (which is what a USB
 barcode scanner types into — Enter submits), an *Observation (optional)* field, camera
 controls with a preview when the build has the `camera` feature, and confirm/discard for

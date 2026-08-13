@@ -12,6 +12,9 @@
 //! in order, naming the applet, and that a register which refuses to write stops
 //! the reset before it starts.
 
+use std::time::{Duration, Instant};
+
+use yk_dist_manager::device::reinsert;
 use yk_dist_manager::device::reset::{
     self, Applet, Confirmation, MockResetter, Recorder, Request, ResetError, Status,
 };
@@ -22,6 +25,11 @@ use yk_dist_manager::store::Store;
 
 const SERIAL: u32 = 20_423_633;
 const OPERATOR: &str = "ana.silva";
+
+/// What the screen names in an entry it writes itself, matching the engine's.
+fn target() -> String {
+    format!("serial:{SERIAL}")
+}
 
 /// The register, and the recorder the screen would use.
 struct World {
@@ -285,4 +293,105 @@ fn scenario_the_inventory_record_outlives_the_reset() {
         5,
         "one opening entry, one per applet, one closing"
     );
+}
+
+#[test]
+fn scenario_a_fido2_reset_waits_for_the_key_to_be_taken_out_and_put_back() {
+    // Given: an operator who has confirmed a FIDO2 reset. The applet only accepts
+    // one in the first seconds after it powers up, so the key in the port — the
+    // one they have been reading the preview with — is already out of time.
+    let mut world = World::new();
+    let applets = [Applet::Fido2, Applet::Piv];
+    let mut resetter = MockResetter::attached(SERIAL);
+    let confirmation = Confirmation::given(SERIAL, &applets);
+    assert!(reinsert::needed(&applets));
+
+    let start = Instant::now();
+    let mut handshake = reinsert::Handshake::start(SERIAL, &applets, reinsert::POLL_NATIVE, start);
+    let (event, detail) = handshake.requested();
+    world.audit(event, &target(), &detail).expect("recorded");
+
+    // When: the key stays where it is, nothing happens — and nothing is written.
+    // This is the whole failure the handshake exists to prevent: "the key is
+    // there" must never be read as "the key has just been plugged in".
+    for tick in 1..=3 {
+        let reaction = handshake.observe(Some(true), start + Duration::from_millis(tick * 200));
+        assert_eq!(reaction, reinsert::Reaction::Wait);
+        assert!(handshake.audit_for(reaction).is_none());
+    }
+    assert!(resetter.calls().is_empty(), "nothing may reach the key yet");
+
+    // When: it is pulled out, and put back.
+    handshake.observe(Some(false), start + Duration::from_millis(800));
+    let back = start + Duration::from_millis(3_000);
+    let reaction = handshake.observe(Some(true), back);
+    assert_eq!(reaction, reinsert::Reaction::Fire, "the moment it returns");
+
+    let (event, detail) = handshake.audit_for(reaction).expect("an entry");
+    world.audit(event, &target(), &detail).expect("recorded");
+
+    // Then: the reset runs — on the applets confirmed before the key was touched,
+    // not on whatever a screen might hold by now.
+    let request = Request::new(SERIAL, handshake.applets(), OPERATOR);
+    let outcomes = reset::perform(&request, &confirmation, &mut resetter, &mut world)
+        .expect("a confirmed reset runs");
+    assert!(reset::all_done(&outcomes));
+    assert_eq!(resetter.calls(), &[Applet::Fido2, Applet::Piv]);
+
+    // And: the trail reads as the operation happened — the tool asked for the key,
+    // the key came back, and only then was anything written.
+    assert_eq!(
+        world.events(),
+        vec![
+            "key.reset.power_cycle.requested",
+            "key.reset.power_cycle.armed",
+            "key.reset.started",
+            "key.applet_reset",
+            "key.applet_reset",
+            "key.reset.finished",
+        ]
+    );
+    assert!(
+        world.details_for("key.reset.power_cycle.armed")[0].contains("applets=fido2+piv"),
+        "the entry names what it armed"
+    );
+    world.store.verify_audit().expect("the chain verifies");
+}
+
+#[test]
+fn scenario_a_power_cycle_nobody_performs_writes_nothing_and_says_so() {
+    // Given: a confirmed FIDO2 reset, and an operator called away with the key
+    // still in the port.
+    let mut world = World::new();
+    let resetter = MockResetter::attached(SERIAL);
+    let start = Instant::now();
+    let mut handshake =
+        reinsert::Handshake::start(SERIAL, &[Applet::Fido2], reinsert::POLL_SUBPROCESS, start)
+            .with_deadlines(Duration::from_millis(500), Duration::from_millis(1_000));
+    let (event, detail) = handshake.requested();
+    world.audit(event, &target(), &detail).expect("recorded");
+
+    // When: nothing is unplugged for as long as this tool is willing to wait.
+    let reaction = handshake.observe(Some(true), start + Duration::from_millis(1_000));
+    assert_eq!(reaction, reinsert::Reaction::GaveUp);
+    let (event, detail) = handshake.audit_for(reaction).expect("an entry");
+    world.audit(event, &target(), &detail).expect("recorded");
+
+    // Then: no reset was ever attempted, and the trail says why the operation
+    // that was asked for did not happen — an abandoned destructive action with no
+    // entry is indistinguishable from one nobody ever asked for.
+    assert!(resetter.calls().is_empty());
+    assert_eq!(
+        world.events(),
+        vec![
+            "key.reset.power_cycle.requested",
+            "key.reset.power_cycle.abandoned",
+        ]
+    );
+    assert!(world.details_for("key.reset.power_cycle.abandoned")[0].contains("not re-inserted"));
+
+    // And: asking again is another attempt at the same agreement, not a new one.
+    handshake.restart(start + Duration::from_secs(2));
+    assert_eq!(handshake.applets(), &[Applet::Fido2]);
+    assert!(handshake.requested().1.contains("attempt=2"));
 }

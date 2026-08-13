@@ -81,6 +81,21 @@ on the key (phase 3), does not remove the credential at the relying party (phase
 does not gate reassignment (phase 6). No schema change. Reset *authority* — one operator
 or two — remains an ESI question, listed in the spec.
 
+**Out of turn, unreleased**: the **power cycle in front of a FIDO2 reset** — the same
+spec's phase 5a, added at the request of the operator who will run the tool, after the
+first real reset came back `ERROR: Reset failed. Reset must be triggered within 5 seconds
+after the YubiKey is inserted`. Phase 5 knew about that window and answered it with a
+sentence in the preview telling the operator to unplug the key and plug it back in before
+confirming — which is a race with no visible start, and the refusal it produces reads like
+a broken key. So the tool now runs the race: confirmation first, then
+[`device::reinsert`](src/device/reinsert.rs) asks for the key, watches the port for that
+one serial and fires the run as it returns. It is the exit for the same refusal phase 5
+was built for, one step further down: an action the tool insists on should not depend on
+the operator's reflexes. No schema change; three new audit events, all of them about a
+power cycle and none about a write. The lasting fix is a native `authenticatorReset`
+(`features/native-device-transport.md`), which would take a subprocess start out of a
+five-second window.
+
 **Out of turn, released in v0.6.0** (AGENTS.md §1 asks for the reason, in this file, in the
 same commit): **hosting the database in a OneDrive folder** —
 [`features/cloud-sync-hosting.md`](features/cloud-sync-hosting.md) — was built at the
@@ -378,7 +393,7 @@ The point of the tool: apply the template to a key, safely, with evidence.
 
 | Status | Feature | Notes |
 |---|---|---|
-| `[/]` | Key lifecycle & revocation | [spec](features/key-lifecycle-and-revocation.md) — lost/stolen handling, certificate revocation, applet reset, re-issue to a new holder. **Phase 5, the factory reset, is done and landed out of turn** (see below): any plugged key can be returned to factory default per applet from *Attached now*, previewed, confirmed by typing the serial, and recorded per applet. The rest of the wave is untouched — a reset does not yet revoke the certificate that was on the key. |
+| `[/]` | Key lifecycle & revocation | [spec](features/key-lifecycle-and-revocation.md) — lost/stolen handling, certificate revocation, applet reset, re-issue to a new holder. **Phases 5 and 5a, the factory reset, are done and landed out of turn** (see below): any plugged key can be returned to factory default per applet from *Attached now*, previewed, confirmed by typing the serial, and recorded per applet — and a FIDO2 reset is now walked through the power cycle CTAP requires, the tool watching the port and firing the run as the key comes back. The rest of the wave is untouched — a reset does not yet revoke the certificate that was on the key. |
 | `[ ]` | Reports & export | [spec](features/reports-and-export.md) — inventory and distribution reports, CSV/JSON export, audit export for the ESI. |
 | `[ ]` | Bulk enrolment | [spec](features/bulk-enrollment.md) — queue of keys for one template, batch progress, per-key evidence. |
 | `[ ]` | Operator authentication & roles | [spec](features/operator-auth-and-roles.md) — operator identity is currently `$USER`, which is not authentication. Roles (admin / distributor / auditor), AD integration, MFA with a YubiKey on sensitive operations. |

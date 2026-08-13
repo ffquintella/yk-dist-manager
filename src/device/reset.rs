@@ -117,13 +117,18 @@ impl Applet {
     /// FIDO2 has one and it is easy to get wrong: CTAP requires the reset to
     /// arrive within seconds of power-up and to be confirmed by touch, so a key
     /// that has been sitting in the port all morning refuses. That refusal reads
-    /// like a broken tool unless somebody said so first.
+    /// like a broken tool unless somebody said so first — and telling the operator
+    /// to win the race by hand is barely better, which is why
+    /// [`crate::device::reinsert`] now runs it for them: confirm first, then the
+    /// panel asks for the key and sends the reset the moment it is back.
     pub fn instruction(&self) -> Option<&'static str> {
         match self {
             Applet::Fido2 => Some(
-                "unplug the key and plug it back in immediately before confirming, then \
-                 touch it when it blinks — the authenticator refuses a reset that does not \
-                 arrive within a few seconds of power-up",
+                "after you confirm, this screen asks you to pull the key out and plug it \
+                 back in, and sends the reset the moment it sees the key again — then touch \
+                 it when it blinks. The authenticator refuses a reset that does not arrive \
+                 within a few seconds of power-up, so nothing is written until the key is \
+                 back in the port",
             ),
             Applet::Piv => None,
             Applet::Otp => None,

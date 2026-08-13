@@ -38,6 +38,9 @@ pub mod piv_mgm;
 /// writes that need it. Behind `native-piv` because it needs `pcsc` and `aes`.
 #[cfg(feature = "native-piv")]
 pub mod piv_session;
+/// The power-cycle handshake a FIDO2 reset needs, and the fast presence poll that
+/// drives it. Always compiled: the window it races is CTAP's, not a transport's.
+pub mod reinsert;
 pub mod reset;
 pub mod select;
 pub mod watch;

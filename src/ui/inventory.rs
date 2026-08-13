@@ -364,16 +364,26 @@ fn removal_confirmation(app: &mut YkDistApp, ui: &mut egui::Ui, serial: u32) {
 fn reset_confirmation(app: &mut YkDistApp, ui: &mut egui::Ui, serial: u32) {
     use crate::device::reset::{Applet, Status};
 
+    // A confirmed reset waiting for its key to come back owns the panel: the
+    // selection is frozen into it, and re-painting the checkboxes under a step
+    // that says "plug the key back in" would invite a change that cannot be made.
+    if app.reset.handshake.is_some() {
+        power_cycle(app, ui, serial);
+        return;
+    }
+
     let plan = app.reset_plan();
     let selected = app.reset.applets.clone();
     let outcomes = app.reset.outcomes.clone();
     let unread = app.reset.observed.unread.clone();
     let confirmable = app.reset_is_confirmable();
     let transport_disabled = app.transport.disabled;
+    let power_cycle_first = crate::device::reinsert::needed(&selected);
 
     let mut toggles: Vec<(Applet, bool)> = Vec::new();
     let mut confirm = false;
     let mut cancel = false;
+    let mut retry_fido2 = false;
 
     super::titled_card(ui, format!("Factory reset serial {serial}?"), |ui| {
         super::notice(
@@ -468,18 +478,26 @@ fn reset_confirmation(app: &mut YkDistApp, ui: &mut egui::Ui, serial: u32) {
         });
         super::hint(
             ui,
-            "Nothing has been written yet. Whatever is ticked above is destroyed the moment \
-             the button below is used.",
+            if power_cycle_first {
+                "Nothing has been written yet. FIDO2 is ticked, so the next step asks you to \
+                 pull the key out and plug it back in — the applet only accepts a reset in \
+                 the seconds after it powers up. Nothing is destroyed until the key is back \
+                 in the port."
+            } else {
+                "Nothing has been written yet. Whatever is ticked above is destroyed the \
+                 moment the button below is used."
+            },
         );
 
         ui.add_space(10.0);
         ui.horizontal(|ui| {
+            let label = if power_cycle_first {
+                format!("Confirm, then power-cycle serial {serial}")
+            } else {
+                format!("Reset serial {serial} to factory default")
+            };
             if ui
-                .add_enabled(
-                    confirmable,
-                    Button::new(format!("Reset serial {serial} to factory default"))
-                        .accent(Accent::Red),
-                )
+                .add_enabled(confirmable, Button::new(label).accent(Accent::Red))
                 .clicked()
             {
                 confirm = true;
@@ -513,6 +531,35 @@ fn reset_confirmation(app: &mut YkDistApp, ui: &mut egui::Ui, serial: u32) {
                     }
                 },
             );
+
+            // The one refusal an operator can do something about from here. It is
+            // usually the timing window closing anyway — the key enumerated slowly,
+            // or `ykman` took longer to start than the applet was willing to wait —
+            // and the answer to that is another power cycle, not a command line.
+            let fido2_refused = outcomes
+                .iter()
+                .any(|o| o.applet == Applet::Fido2 && o.status == Status::Failed);
+            if fido2_refused {
+                ui.add_space(10.0);
+                super::notice(
+                    ui,
+                    CalloutTone::Warning,
+                    "The FIDO2 applet refused. If it says the reset must arrive within \
+                     seconds of the key being inserted, the window closed before the command \
+                     reached it — try again and it will usually land.",
+                );
+                ui.add_space(6.0);
+                if ui
+                    .add(Button::new("Power-cycle and try FIDO2 again").accent(Accent::Red))
+                    .on_hover_text(
+                        "asks for the key again and re-sends the FIDO2 reset only — the \
+                         applets that already answered are left alone",
+                    )
+                    .clicked()
+                {
+                    retry_fido2 = true;
+                }
+            }
         }
 
         if let Some(error) = &app.reset.error {
@@ -527,6 +574,110 @@ fn reset_confirmation(app: &mut YkDistApp, ui: &mut egui::Ui, serial: u32) {
     }
     if confirm {
         app.confirm_key_reset();
+    }
+    if retry_fido2 {
+        app.retry_fido2_reset();
+    }
+    if cancel {
+        app.cancel_key_reset();
+    }
+}
+
+/// The power cycle a confirmed FIDO2 reset waits on
+/// (`features/key-lifecycle-and-revocation.md` phase 5a).
+///
+/// Two steps and a countdown, replacing the panel that took the confirmation:
+/// pull the key out, plug it back in, and the reset goes out on the poll that
+/// sees it return. The operator is told at every step that nothing has been
+/// written, because they are being asked to handle the key *after* agreeing to
+/// destroy what is on it — which is the wrong moment to be unsure.
+///
+/// What this screen deliberately does not offer is a way to change the selection:
+/// it was frozen into the handshake at the click, and the seconds spent with a key
+/// in one hand are not seconds in which an agreement should be able to drift.
+fn power_cycle(app: &mut YkDistApp, ui: &mut egui::Ui, serial: u32) {
+    use crate::device::reinsert::Stage;
+
+    let Some(handshake) = &app.reset.handshake else {
+        return;
+    };
+    let stage = handshake.stage();
+    let title = handshake.title();
+    let detail = handshake.detail();
+    let applets = crate::device::reset::describe(handshake.applets());
+    let attempts = handshake.attempts();
+    let presence = app.reset.presence_seen.clone();
+
+    let mut arm_now = false;
+    let mut again = false;
+    let mut cancel = false;
+
+    super::titled_card(ui, format!("Resetting serial {serial}"), |ui| {
+        let tone = match stage {
+            Stage::Armed { .. } => CalloutTone::Danger,
+            Stage::Expired | Stage::GaveUp => CalloutTone::Warning,
+            _ => CalloutTone::Neutral,
+        };
+        super::notice(ui, tone, title);
+        ui.add_space(6.0);
+        super::hint(ui, detail);
+
+        ui.add_space(10.0);
+        super::faint(
+            ui,
+            &format!("Confirmed: {applets} on serial {serial}. Attempt {attempts}."),
+        );
+        super::faint(ui, &presence.describe(serial));
+        if let Some(error) = &presence.last_error {
+            super::error_label(ui, error);
+        }
+        if presence.stopped.is_some() {
+            ui.add_space(6.0);
+            super::notice(
+                ui,
+                CalloutTone::Warning,
+                "This workstation cannot watch the port, so it cannot see the key come back. \
+                 Plug it in and use *Send the reset now* — or cancel, since the same missing \
+                 transport is what would send the reset.",
+            );
+        }
+
+        ui.add_space(12.0);
+        ui.horizontal_wrapped(|ui| {
+            if matches!(
+                stage,
+                Stage::AwaitingRemoval { .. } | Stage::AwaitingInsertion { .. }
+            ) && ui
+                .add(Button::new("Send the reset now").outline())
+                .on_hover_text(
+                    "for a port this workstation enumerates too slowly: use it the instant \
+                     the key is back in, and touch the key when it blinks",
+                )
+                .clicked()
+            {
+                arm_now = true;
+            }
+            if matches!(stage, Stage::Expired | Stage::GaveUp)
+                && ui
+                    .add(Button::new("Ask for the key again").accent(Accent::Red))
+                    .clicked()
+            {
+                again = true;
+            }
+            if ui
+                .add(Button::new("Cancel — write nothing").outline())
+                .clicked()
+            {
+                cancel = true;
+            }
+        });
+    });
+
+    if arm_now {
+        app.arm_power_cycle_now();
+    }
+    if again {
+        app.restart_power_cycle();
     }
     if cancel {
         app.cancel_key_reset();

@@ -574,24 +574,36 @@ revoke the certificate that was on it; that is still a manual step with the issu
 2. Read the two lists per applet: what a reset of it destroys, and what this key is
    holding. Untick any applet you want to keep. An applet reported as *not read* is an
    applet whose contents are unknown — the reset still destroys them.
-3. If FIDO2 is ticked, **unplug the key and plug it back in now**, and be ready to touch
-   it. CTAP refuses a reset that does not arrive within a few seconds of power-up, which is
-   the usual reason a FIDO2 reset fails.
-4. Type the serial into the confirmation field, then **Reset serial N to factory
-   default**.
+3. Type the serial into the confirmation field, then use the red button.
+4. **If FIDO2 is ticked, the button confirms and then asks for the key.** CTAP only
+   accepts a reset in the first seconds after the authenticator powers up, so the panel
+   walks you through a power cycle: *pull the key out of the port*, then *plug it straight
+   back in*. It watches the port itself and sends the reset the moment the key reappears —
+   you do not click anything. **Touch the key when it blinks**; the applet asks for that
+   too. Nothing is written until the key is back in the port, and *Cancel — write nothing*
+   is there for the whole step.
+   - A workstation that enumerates the port slowly may not see the key in time. *Send the
+     reset now* is the manual arm for that case: use it the instant the key is back.
+   - If nothing is unplugged for a minute the handshake is abandoned, so a reset left
+     half-started does not keep polling the port. Nothing was written; *Ask for the key
+     again* restarts it.
 5. Read the result table. Each applet says *reset*, *nothing to do*, or *refused* with the
    transport's own words, and the applets are read again afterwards so the panel shows the
    key as it now is.
-6. If an applet refused: a FIDO2 timing failure is retried by starting again at step 1 with
-   only FIDO2 ticked. A protected **OTP** slot cannot be cleared without its access code,
+6. If an applet refused: a FIDO2 refusal offers **Power-cycle and try FIDO2 again** right
+   under the table — it re-runs the handshake for that applet alone and leaves the ones
+   that answered alone. The timing failure is the common one and usually lands on the
+   second attempt. A protected **OTP** slot cannot be cleared without its access code,
    which this tool records custody of and never stores — that slot stays as it is, and the
    key is reusable for everything except reprogramming it.
 7. **Read attached key** to refresh the inventory row before bootstrapping it again.
 
-Everything is recorded: `key.reset.started`, one `key.applet_reset` per applet that was
-actually reset, `key.reset.failed` for each refusal, and `key.reset.finished` with the
-counts. There is no undo, and nothing here can be restored from a backup — the register's
-backups hold the register, and what a reset destroys lived only on the key.
+Everything is recorded: `key.reset.power_cycle.requested` when the key is asked for,
+`key.reset.power_cycle.armed` when it comes back (or `…abandoned`, with the reason, when it
+does not), then `key.reset.started`, one `key.applet_reset` per applet that was actually
+reset, `key.reset.failed` for each refusal, and `key.reset.finished` with the counts. There
+is no undo, and nothing here can be restored from a backup — the register's backups hold
+the register, and what a reset destroys lived only on the key.
 
 ## Runbook: the consignment term
 

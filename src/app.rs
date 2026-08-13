@@ -470,6 +470,15 @@ pub struct ResetPanel {
     /// What the run did, per applet, once it has run.
     pub outcomes: Vec<crate::device::reset::Outcome>,
     pub error: Option<String>,
+    /// The power cycle a confirmed FIDO2 reset waits on, and the applets it will
+    /// run once the key is back (`crate::device::reinsert`). `None` when no reset
+    /// is arming, which is every frame except the few seconds this takes.
+    pub handshake: Option<crate::device::reinsert::Handshake>,
+    /// The fast presence poll that drives it. Dropped the moment the reset fires,
+    /// so nothing enumerates the port while `ykman` is writing to the key.
+    pub presence: Option<crate::device::reinsert::PresenceWatch>,
+    /// The last presence snapshot, read once per frame like the device watch's.
+    pub presence_seen: crate::device::reinsert::Presence,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2163,6 +2172,9 @@ impl YkDistApp {
         // is asked for last closes the other, so no frame can show both.
         self.inventory.pending_removal = None;
         self.inventory.note_serial = None;
+        // And a power cycle asked for on another key is over: the applets it
+        // carries were confirmed for that serial, not this one.
+        self.abandon_power_cycle("another key's reset was opened");
 
         self.reset.serial = Some(serial);
         self.reset.applets = crate::device::reset::Applet::ALL.to_vec();
@@ -2183,6 +2195,7 @@ impl YkDistApp {
 
     /// Abandon a reset the operator asked about and then declined.
     pub fn cancel_key_reset(&mut self) {
+        self.abandon_power_cycle("the operator cancelled");
         self.reset.serial = None;
         self.reset.typed.clear();
         self.reset.error = None;
@@ -2232,12 +2245,19 @@ impl YkDistApp {
         !self.reset.applets.is_empty() && self.reset.typed.trim() == serial.to_string()
     }
 
-    /// Run the confirmed reset against the attached key.
+    /// Take the operator's confirmation, and either run the reset or ask for the
+    /// power cycle a FIDO2 reset cannot do without.
     ///
-    /// The confirmation is built here, from the same two values the button was
-    /// enabled on, and re-checked inside the engine against the request.
+    /// **Still nothing written here when FIDO2 is ticked.** CTAP accepts
+    /// `authenticatorReset` only in the first seconds after the authenticator
+    /// powers up, so a key that has been in the port since the preview opened is
+    /// always out of time — the tool used to ask the operator to win that race by
+    /// hand and then report `ykman`'s refusal when they lost it. Instead the
+    /// confirmation is taken now, frozen with its applets, and
+    /// [`crate::device::reinsert`] walks the operator through pulling the key out
+    /// and putting it back, firing the run the moment it returns.
     pub fn confirm_key_reset(&mut self) {
-        use crate::device::reset::{self, Confirmation, HardwareResetter, Request};
+        use crate::device::reinsert;
 
         self.reset.error = None;
         let Some(serial) = self.reset.serial else {
@@ -2250,13 +2270,193 @@ impl YkDistApp {
             return;
         }
 
+        let applets = self.reset.applets.clone();
+        if reinsert::needed(&applets) {
+            self.begin_power_cycle(serial, &applets);
+            return;
+        }
+        self.run_confirmed_reset(serial, &applets);
+    }
+
+    /// Ask for the key to be re-inserted, and start watching the port for it.
+    ///
+    /// The device watch is stopped first and stays stopped for the handshake:
+    /// [`Self::sync_device_watch`] will not bring it back while one is live. Two
+    /// enumerations of the same reader, one of them a `ykman` subprocess, is not
+    /// what to spend a five-second window on.
+    fn begin_power_cycle(&mut self, serial: u32, applets: &[crate::device::reset::Applet]) {
+        use crate::device::reinsert::{Handshake, PresenceWatch, poll_for};
+
+        self.stop_device_watch("a factory reset is arming");
+
+        let native = self.transport.transport == crate::device::Transport::Native;
+        let poll = poll_for(native);
+        let handshake = Handshake::start(serial, applets, poll, std::time::Instant::now());
+        let (event, detail) = handshake.requested();
+        self.record(event, &format!("serial:{serial}"), &detail);
+
+        self.reset.presence_seen = crate::device::reinsert::Presence::default();
+        self.reset.presence = Some(PresenceWatch::start(
+            crate::device::select::backend_for(&self.transport),
+            serial,
+            poll,
+        ));
+        self.reset.handshake = Some(handshake);
+        self.status = format!(
+            "serial {serial}: pull the key out and plug it back in — nothing has been written"
+        );
+    }
+
+    /// Drive a live handshake, once per frame.
+    ///
+    /// Thin on purpose: every decision belongs to
+    /// [`crate::device::reinsert::Handshake`], where it is unit tested against
+    /// synthetic instants rather than against a key and a stopwatch.
+    pub fn tick_power_cycle(&mut self) {
+        if self.tab != Tab::Inventory {
+            // The panel is the only place this is visible or cancellable, so a
+            // handshake left running behind another screen would poll a port for a
+            // step nobody can see. Nothing was written; the confirmation goes with it.
+            self.abandon_power_cycle("the screen showing the reset was left");
+            return;
+        }
+
+        let Some(handshake) = &mut self.reset.handshake else {
+            return;
+        };
+        if let Some(watch) = &self.reset.presence {
+            self.reset.presence_seen = watch.snapshot();
+        }
+
+        let present = self.reset.presence_seen.present;
+        let reaction = handshake.observe(present, std::time::Instant::now());
+        self.settle_power_cycle(reaction);
+    }
+
+    /// Act on one reaction: record it, and fire or end the handshake.
+    fn settle_power_cycle(&mut self, reaction: crate::device::reinsert::Reaction) {
+        use crate::device::reinsert::Reaction;
+
+        let Some(handshake) = &self.reset.handshake else {
+            return;
+        };
+        let serial = handshake.serial();
+        let applets = handshake.applets().to_vec();
+        let entry = handshake.audit_for(reaction);
+        let target = format!("serial:{serial}");
+        if let Some((event, detail)) = entry {
+            self.record(event, &target, &detail);
+        }
+
+        match reaction {
+            Reaction::Wait => {}
+            Reaction::Fire => {
+                // The port is released before the reset goes out, and the
+                // handshake with it: `ykman fido reset` must not race an
+                // enumeration of the same reader inside the window it is racing.
+                self.reset.presence = None;
+                self.reset.handshake = None;
+                self.run_confirmed_reset(serial, &applets);
+            }
+            Reaction::Expired => {
+                self.reset.error = Some(
+                    "the key was back in the port for longer than the applet's window, so the \
+                     reset was not sent — nothing was written. Pull the key out and plug it \
+                     back in to try again."
+                        .into(),
+                );
+                self.status =
+                    format!("serial {serial}: the power-up window closed — nothing written");
+            }
+            Reaction::GaveUp => {
+                self.reset.error = Some(
+                    "the key was neither pulled out nor plugged back in, so the reset was \
+                     abandoned — nothing was written."
+                        .into(),
+                );
+                self.status = format!("serial {serial}: the power cycle was abandoned");
+            }
+        }
+    }
+
+    /// Ask again, after a window that closed or an operator who stepped away.
+    ///
+    /// The selection is the one already confirmed and carried by the handshake —
+    /// a retry is another chance at the same agreement, never a new one.
+    pub fn restart_power_cycle(&mut self) {
+        let Some(handshake) = &mut self.reset.handshake else {
+            return;
+        };
+        handshake.restart(std::time::Instant::now());
+        let (event, detail) = handshake.requested();
+        let target = format!("serial:{}", handshake.serial());
+        self.reset.error = None;
+        self.record(event, &target, &detail);
+        self.reset.presence_seen = crate::device::reinsert::Presence::default();
+        self.status = "pull the key out and plug it back in — nothing has been written".into();
+    }
+
+    /// Send the reset on the operator's word rather than on a poll.
+    ///
+    /// For a workstation whose enumeration is slower than the window: the operator
+    /// has the key in their hand and can see it is back before this can.
+    pub fn arm_power_cycle_now(&mut self) {
+        let Some(handshake) = &mut self.reset.handshake else {
+            return;
+        };
+        let reaction = handshake.arm_now(std::time::Instant::now());
+        self.settle_power_cycle(reaction);
+    }
+
+    /// Drop a handshake without writing anything, recording that it was dropped.
+    fn abandon_power_cycle(&mut self, why: &str) {
+        let Some(handshake) = self.reset.handshake.take() else {
+            return;
+        };
+        self.reset.presence = None;
+        self.reset.presence_seen = crate::device::reinsert::Presence::default();
+        if !handshake.is_finished() {
+            let (event, detail) = handshake.cancelled();
+            let target = format!("serial:{}", handshake.serial());
+            self.record(event, &target, &detail);
+        }
+        tracing::debug!(event = "key.reset.power_cycle.dropped", reason = why);
+    }
+
+    /// Power-cycle the key and try the FIDO2 reset again, after one that refused.
+    ///
+    /// The button under an outcome table where FIDO2 says *refused* — which is
+    /// where the timing failure lands when the window closes anyway. Only FIDO2 is
+    /// retried: the other applets either succeeded or have their own row, and
+    /// resetting a slot twice because the operator wanted one more attempt at
+    /// something else is not a thing this panel may do.
+    pub fn retry_fido2_reset(&mut self) {
+        use crate::device::reset::Applet;
+
+        let Some(serial) = self.reset.serial else {
+            return;
+        };
+        self.reset.error = None;
+        self.reset.applets = vec![Applet::Fido2];
+        self.reset.outcomes.clear();
+        self.begin_power_cycle(serial, &[Applet::Fido2]);
+    }
+
+    /// Run the confirmed reset against the attached key.
+    ///
+    /// The confirmation is built here, from the applets the operator agreed to —
+    /// either in the same click that called this, or frozen into the handshake
+    /// when they did — and re-checked inside the engine against the request.
+    fn run_confirmed_reset(&mut self, serial: u32, applets: &[crate::device::reset::Applet]) {
+        use crate::device::reset::{self, Confirmation, HardwareResetter, Request};
+
         // Nothing else touches the key while this runs, for the reason the
         // executor stops it too: enumerating readers while another handle holds
         // the card is not a thing to discover half way through a reset. The next
         // frame restarts it.
         self.stop_device_watch("a factory reset is about to write to a key");
 
-        let applets = self.reset.applets.clone();
+        let applets = applets.to_vec();
         let request = Request::new(serial, &applets, &self.operator);
         let confirmation = Confirmation::given(serial, &applets);
         let mut resetter = HardwareResetter::for_key(serial, &self.transport);
@@ -4209,7 +4409,13 @@ impl YkDistApp {
     /// be running against what is, so the frame after a tab change does the work
     /// and every frame after that does nothing.
     pub fn sync_device_watch(&mut self) {
-        let wanted = Self::tab_watches_hardware(self.tab) && self.store.is_some();
+        // Not while a reset is arming: `device::reinsert` is watching the same
+        // reader for the same key, faster and for a deadline, and two enumerations
+        // of one port — one of them a subprocess — is not what to spend a
+        // five-second window on.
+        let wanted = Self::tab_watches_hardware(self.tab)
+            && self.store.is_some()
+            && self.reset.handshake.is_none();
         match (wanted, self.watch.is_some()) {
             (true, false) => self.start_device_watch(),
             (false, true) => self.stop_device_watch("the screen that needed it was closed"),
@@ -4979,6 +5185,21 @@ impl eframe::App for YkDistApp {
         // Notices a file server that has gone away under a share-hosted register,
         // rather than letting the next write be the thing that finds out.
         self.tick_share_health();
+        // A confirmed FIDO2 reset waiting for its key to come back. First, because
+        // it may fire the run this frame, and because it decides whether the
+        // background watch may run at all.
+        if self.reset.handshake.is_some() {
+            self.tick_power_cycle();
+            // The window is five seconds wide and egui sleeps when idle: without
+            // this the port would be polled into a frame nobody paints.
+            ui.ctx().request_repaint_after(
+                self.reset
+                    .presence
+                    .as_ref()
+                    .map(|p| p.interval())
+                    .unwrap_or(std::time::Duration::from_millis(200)),
+            );
+        }
         // Start or stop the hardware watch for the screen we are on, then take one
         // snapshot for this frame. Both are cheap and neither touches the hardware:
         // the looking happens on the watch's own thread.
