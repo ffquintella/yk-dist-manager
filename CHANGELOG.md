@@ -19,6 +19,31 @@ Maintenance instructions (see AGENTS.md §5):
 
 ### Added
 
+- **A way out of a single-writer lock that is still alive**
+  ([`features/cloud-sync-hosting.md`](features/cloud-sync-hosting.md) phase 9).
+
+  *Take the lock over* used to appear only after fifteen minutes of silence from
+  the holder. That is right for the case it was written for — a crashed session's
+  leftovers — and wrong for the commonest one: a second window of this same
+  application, on this same workstation, that the operator cannot get back to. Its
+  lock is refreshed every minute and never goes stale, so the only ways on were to
+  find the other window or to copy the file and get on with the afternoon — and
+  copying the register is precisely the divergence the lock exists to prevent.
+
+  So a live lock can be taken over as well. The offer is deliberately harder to
+  reach than the stale one: *Try again* first, then a warning that says what the
+  other session does when it loses the lock (it finds out within a minute, closes
+  the register rather than writing to it, and says so) and what it cannot undo (a
+  hand-over it was halfway through recording), then a tick — "I have confirmed that
+  nobody is working in this register" — that arms the button and is cleared by the
+  next refusal. The default is unchanged: a held register is still refused, and
+  fifteen minutes still marks the difference between clearing up after a crash and
+  cutting in on somebody.
+
+  `db.lock.taken_over` now records which of the two it was. An entry that names the
+  previous holder cannot say it by itself, because staleness is a judgement about
+  *now* and the trail is read later.
+
 - **AES management-key authentication, so every PIV write is reachable on current
   firmware** ([`features/step-piv-pin-puk-management-key.md`](features/step-piv-pin-puk-management-key.md)
   phases 2–4, [`features/native-device-transport.md`](features/native-device-transport.md)
@@ -222,6 +247,16 @@ Maintenance instructions (see AGENTS.md §5):
   reports whether a slot carries an access code, and the only way to find out is to
   attempt a write and be rejected. No read claims one; the record, not the key, says
   whether this tool set one.
+
+### Fixed
+
+- **A register held by another session was refused with no card when the application
+  *started* on it** — which is how an operator meets a lock in the first place. Every
+  other refused open builds the *In use by another workstation* card;
+  `YkDistApp::try_open`, the one path a plain launch takes, wrote the message into both
+  error fields and stopped there. The operator got the holder's name, twice, and nothing
+  to press. Both halves now go through one `show_open_failure`, and the chooser no longer
+  paints the same message twice when both fields carry it.
 
 ### Not done, and why
 

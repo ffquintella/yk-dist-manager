@@ -95,8 +95,24 @@ would hand the register to a second operator while the first still has it open.
 
 A stale lock is **still refused** by default. Only the operator can know that the other
 machine is off rather than mid-hand-over, so the chooser offers a *Take the lock over*
-button — and only once the holder has gone quiet long enough — and the break is
-audited with the previous holder's name in the entry.
+button and the break is audited with the previous holder's name in the entry.
+
+A **live** lock can be taken over too, and the difference is how hard the button is to
+reach. Past `STALE_AFTER` it is one red button: the likely cause is a crash or a machine
+switched off, and clearing up after one is ordinary work. Before it, *Try again* is the
+first offer and the take-over sits below it behind a tick — "I have confirmed that nobody
+is working in this register" — that has to be made deliberately and is cleared by the
+next refusal. It is offered at all because the commonest live holder is a second window
+of this same application that the operator cannot get back to, and because a refusal with
+no way out is how somebody ends up copying the file to get on with the afternoon — which
+is the divergence the lock exists to prevent, arrived at the long way round. The other
+session is not left guessing: it finds out on its next renewal (`RENEW_EVERY`, one
+minute), closes the register rather than writing to it, and says so.
+
+The audit entry says which of the two it was. A holder that was still refreshing is
+recorded as *"that lock was still being refreshed; it was taken over deliberately"* — the
+holder's own line cannot carry it, because staleness is a judgement about *now* and the
+trail is read later.
 
 ### Location
 
@@ -126,12 +142,13 @@ PIN, no access code, on any path in this feature.
 | 6 | GUI: lock state in Settings, refusal card in the chooser, status pill | 0 | Done | `db: cloud-sync (locked)` |
 | 7 | Automatic backup before the first write of a session | 0 | **Done** | taken at *open*, which is earlier and needs no "have we written yet?" bookkeeping; [`store::backup`](../src/store/backup.rs) |
 | 8 | Read-only mode instead of a refusal | 0 | **Done** | `Store::open_read_only` — `SQLITE_OPEN_READ_ONLY`, no lease taken, writes refused by the database |
+| 9 | A way out of a **live** lock, and the refusal card at startup | 0 | **Done** | out of turn — see `roadmap.md`; take-over behind a tick, and `try_open` now reports through `show_open_failure` |
 
 ## Audit events
 
 | Event | When |
 |---|---|
-| `db.lock.taken_over` | An abandoned lock was broken deliberately; the entry names the previous holder |
+| `db.lock.taken_over` | A lock was broken deliberately; the entry names the previous holder, and says so when that holder was still refreshing it |
 | `db.closed` | Carries "releasing the single-writer lock held by …" when a lock was held |
 | `db.sync.conflict_copies` | Copies a sync client could not merge were found next to the database |
 
@@ -164,8 +181,11 @@ to write to. It is logged (`db.open.failed`, `db.lock.acquired`, `db.lock.lost`,
 the lock; closing releases it and audits "releasing the single-writer lock held by …";
 another workstation's abandoned lock becomes a refusal carrying the holder and the
 `stale` flag rather than a message; taking it over opens the register and writes
-`db.lock.taken_over` naming the previous holder; and **quitting** the application
-releases the lock as well as closing it does.
+`db.lock.taken_over` naming the previous holder; **quitting** the application
+releases the lock as well as closing it does; a lock met at **startup** — the way an
+operator actually meets one — produces the same refusal card rather than a bare
+sentence, with the take-over tick starting clear; and taking a **live** lock over opens
+the register and writes an entry that says the lock was still being refreshed.
 
 `tests/behaviour_storage.rs`:
 

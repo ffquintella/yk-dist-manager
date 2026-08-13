@@ -201,6 +201,14 @@ access with a lock file**. What that means at the desk:
    over** — use it only when you know nobody is working in the register, because two
    people writing is exactly what produces two divergent copies. Who was holding it goes
    into the audit trail.
+   A lock that is **still being refreshed** can be taken too, and the card asks for more
+   before it lets you: first *Try again*, then a tick confirming that nobody is working
+   in the register, and only then the red button. Use it for a window you cannot get back
+   to — a workstation left on a locked screen, or this application no longer responding
+   in another window of your own machine — not for a colleague you have not asked. The
+   session that loses the lock finds out within a minute and closes the register rather
+   than writing to it, so nothing is corrupted; what it cannot undo is a hand-over it was
+   halfway through recording. The audit entry says the lock was live when it was taken.
 5. Settings and `--diagnose` show the lock state (`database lock:`). If a sync conflict
    copy appears next to the file (`yk-dist-manager (1).sqlite3`, `…conflicted copy…`),
    both places report it as an alarm: the register may have forked, and the copies have

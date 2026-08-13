@@ -137,4 +137,64 @@ fn scenario_the_application_takes_the_lock_reports_a_refusal_and_releases_on_clo
         !lock.exists(),
         "quitting must release the lock, not leave it to go stale"
     );
+
+    // When the lock waiting there belongs to a session that is still alive — the
+    // ordinary case, a second window somebody left open — and the application is
+    // *started* on that register, which is how an operator meets this at all
+    let a_moment_ago = chrono::Utc::now() - chrono::Duration::seconds(47);
+    let alive = LeaseHolder {
+        host: "ARJ2247.local".into(),
+        operator: "felipe".into(),
+        pid: 60136,
+        session: uuid::Uuid::from_u128(0xF00D),
+        app_version: "0.12.0".into(),
+        acquired_at: a_moment_ago,
+        renewed_at: a_moment_ago,
+    };
+    std::fs::write(&lock, serde_json::to_string(&alive).unwrap()).unwrap();
+    let mut app = YkDistApp::new(Some(database.clone()));
+
+    // Then the refusal is a card and not just a sentence. Startup used to be the
+    // one path that reported a held register as a bare message, which left the
+    // operator reading who had it with no way to act on it.
+    assert!(app.store.is_none(), "a held register must not open");
+    let refused = app
+        .db_form
+        .locked
+        .as_ref()
+        .expect("a refusal at startup is a refusal like any other");
+    assert!(refused.holder.contains("felipe"), "{}", refused.holder);
+    assert!(!refused.stale, "forty-seven seconds is a live session");
+    assert!(
+        !refused.break_confirmed,
+        "the tick that arms taking a live lock over starts clear"
+    );
+
+    // When the operator takes that live lock over deliberately
+    app.db_request = Some(DbRequest::TakeOverLock(database.clone()));
+    app.handle_db_request();
+
+    // Then the register opens, and the trail says it was taken from a session that
+    // was still refreshing — the difference between clearing up after a crash and
+    // cutting in on somebody, which is the part a later reader has to be able to see
+    assert!(app.store.is_some(), "{:?}", app.db_form.error);
+    let entry = app
+        .store
+        .as_ref()
+        .unwrap()
+        .audit_entries(20)
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.event == "db.lock.taken_over")
+        .expect("breaking a live lock is audited");
+    assert!(entry.details.contains("felipe"), "{}", entry.details);
+    assert!(
+        entry.details.contains("still being refreshed"),
+        "the entry must say the lock was live: {}",
+        entry.details
+    );
+
+    app.db_request = Some(DbRequest::Close);
+    app.handle_db_request();
+    assert!(!lock.exists());
 }

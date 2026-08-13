@@ -49,6 +49,22 @@ deployment.
 
 Released: **v0.11.0**. Current wave: **Wave 1 — native execution.**
 
+**Out of turn, unreleased**: a **way out of a live single-writer lock**, and the refusal
+card an operator meets at **startup** — [`features/cloud-sync-hosting.md`](features/cloud-sync-hosting.md)
+phase 9, a phase added for this. It belongs to Wave 0's storage work. It was taken now
+because the feature as built had a hole exactly where an operator stands: the take-over
+button lived on a card that `YkDistApp::try_open` never raised, so a register held when
+the application *launched* — the ordinary way to meet a lock — produced a sentence naming
+the holder and no way to act on it, twice over, because both error fields were painted.
+And the button itself only ever appeared after fifteen minutes of silence, which leaves
+the commonest case (a second window of this application, on this workstation, that the
+operator cannot get back to) with no exit but copying the file — the divergence the lock
+exists to prevent, reached the long way round. So a live lock can now be taken over too,
+behind a tick that is cleared by the next refusal, and the audit entry says the lock was
+still being refreshed when it was taken. No schema change. `STALE_AFTER` and the refusal
+itself are unchanged: the default is still to refuse, and the fifteen minutes still mark
+the difference between clearing up after a crash and cutting in on somebody.
+
 **Out of turn, unreleased**: the **factory reset** of a plugged key —
 [`features/key-lifecycle-and-revocation.md`](features/key-lifecycle-and-revocation.md)
 phase 5, which belongs to **Wave 2** — built at the request of the operator who will run
@@ -317,7 +333,7 @@ Everything needed before a single byte is written to a key.
 | `[x]` | Device detection | [spec](features/device-detection.md) — read-on-demand, plus a **background watch** that notices a key being plugged in or pulled out (identifying only when the set of serials changes; 1.5s natively, 4s when every poll is a subprocess, and only while a screen that needs it is open) and a **picker** for when several are attached. Nothing is ever chosen for the operator, and the watch is stopped — thread joined — before a run writes to a key. Per-applet reads, the "already bootstrapped" warning and attestation are Wave 1. |
 | `[x]` | Single-file SQLite storage | [spec](features/storage-sqlite-single-file.md) — schema **v5** (per-step run rows), `user_version` migrations (v1→v5 tested), WAL locally / rollback journal on a share, `VACUUM INTO` backup **on a schedule with rotation**, `integrity_check`, **CSV import** of the spreadsheet this replaces, and the SMB share connected by the application itself. Every wave-0 phase done. Concurrency is Wave 2; archival and retention (phase 7, gating no wave) has its decision — one year, configurable — and needs the archive-then-remove path that may break and rebuild the audit trigger. |
 | `[x]` | SMB share hosting | [spec](features/smb-share-hosting.md) — the application connects the share itself: the signed-in user (the default, and the whole mechanism on Windows), guest, or a named account whose password is typed and never stored. `WNetAddConnection2W` / `NetFSMountURLSync`, never a command line. An already-mounted share is used and left alone; one this session made is released on close and on quit. A share that **drops mid-session** is noticed within five seconds, the register is abandoned rather than closed, an identity that needs no password is retried at once, and the way back is one button — `db.share.reconnected` records the round trip. Kerberos on macOS gates no wave. |
-| `[x]` | Cloud-sync hosting (OneDrive) | [spec](features/cloud-sync-hosting.md) — `Location::CloudSync`: waits for the sync client, takes `<database>.lock`, refuses a second workstation by name, releases after the upload, reports sync conflict copies, **snapshots the register at open** before this session can write, and offers a **read-only** open so a second operator can look without taking the lock. Every phase done. Whether the location is *acceptable* is an ESI decision, not this feature's. |
+| `[x]` | Cloud-sync hosting (OneDrive) | [spec](features/cloud-sync-hosting.md) — `Location::CloudSync`: waits for the sync client, takes `<database>.lock`, refuses a second workstation by name, releases after the upload, reports sync conflict copies, **snapshots the register at open** before this session can write, and offers a **read-only** open so a second operator can look without taking the lock. A refusal is a card wherever it is met, including at startup, and a **live** lock can be taken over behind a deliberate tick — audited as live. Every phase done. Whether the location is *acceptable* is an ESI decision, not this feature's. |
 | `[x]` | Choosing / creating the database file | [spec](features/database-selection.md) — strict `open_existing` vs `create_new` (a typo can no longer create an empty database), recent-database list, native dialogs, switch from Settings. |
 | `[x]` | Optional database password | [spec](features/db-password-and-encryption.md) — `encrypted-db` wires `PRAGMA key`; the chooser prompts. **Settings → Password protection** sets, changes and removes the password by export-and-swap, never an in-place re-key, with the strength meter beside it and the floor enforced by the store rather than by the screen. The prompt slows down after three wrong passwords — a doubling delay counted down on screen, enforced in `handle_db_request` and deliberately not a lockout. Explicit KDF parameters are the one thing left, and they are **blocked on the ESI's approved cipher set**; unlocking with a YubiKey is Wave 1. |
 | `[x]` | Logging | [spec](features/logging.md) — one entry point, three levels, G-002 line format, no hand-built log lines. |

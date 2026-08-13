@@ -218,6 +218,13 @@ pub struct LockedDatabase {
     /// window of this application. A different instruction from "ask the person
     /// at the other desk".
     pub same_host: bool,
+    /// The operator has ticked "nobody is working in this register", which is what
+    /// arms the take-over button while the holder is still refreshing its lock.
+    ///
+    /// Lives here, next to the refusal it belongs to, so that it is cleared by the
+    /// next refusal: every *Try again* that comes back held asks the question
+    /// again, rather than leaving a dangerous button armed from a minute ago.
+    pub break_confirmed: bool,
 }
 
 /// Consignment-term panel state (distribution screen).
@@ -1270,7 +1277,21 @@ impl YkDistApp {
                 let broken = store
                     .lease()
                     .and_then(|lease| lease.report().took_over.as_ref())
-                    .map(|previous| previous.to_string())
+                    .map(|previous| {
+                        // Whether the holder had gone quiet is the whole difference
+                        // between clearing a crashed session's leftovers and cutting
+                        // in on a live one, and it is exactly what a later reader of
+                        // the trail needs — the holder's own line does not say it,
+                        // because staleness is a judgement about *now*.
+                        if previous.is_stale() {
+                            previous.to_string()
+                        } else {
+                            format!(
+                                "{previous} — that lock was still being refreshed; it was taken \
+                                 over deliberately"
+                            )
+                        }
+                    })
                     .unwrap_or_else(|| "no lock was there to take".into());
                 self.adopt(store, config);
                 self.record("db.lock.taken_over", "database", &broken);
@@ -1345,16 +1366,33 @@ impl YkDistApp {
             }
         }
 
+        self.show_open_failure(path, &error, message);
+    }
+
+    /// Put a failed open on the chooser, keeping a lock refusal actionable.
+    ///
+    /// Separate from [`Self::report_open_failure`] because the throttle rule is
+    /// not the same on every path — the startup probe opens with no password on
+    /// purpose and must not be counted — while *this* half is the same everywhere:
+    /// whatever refused the open has to reach the screen, and a lock refusal has
+    /// to reach it as a card rather than as a sentence.
+    fn show_open_failure(
+        &mut self,
+        path: &Path,
+        error: &crate::store::StoreError,
+        message: String,
+    ) {
         // A lock refusal is not the operator's mistake and is not fixed by
         // retyping the path: it names the workstation that has the register, and
         // offers the one action that can help when that workstation is gone.
-        self.db_form.locked = match &error {
+        self.db_form.locked = match error {
             crate::store::StoreError::Lease(crate::store::LeaseError::Held { holder, stale }) => {
                 Some(LockedDatabase {
                     path: path.to_path_buf(),
                     holder: holder.to_string(),
                     stale: *stale,
                     same_host: holder.is_same_host(),
+                    break_confirmed: false,
                 })
             }
             _ => None,
@@ -2396,8 +2434,13 @@ impl YkDistApp {
                 {
                     message = format!("{message}. {wait}");
                 }
-                self.open_error = Some(message.clone());
-                self.db_form.error = Some(message);
+                // Through the same display as every other refused open. It has to
+                // be: this is the path an ordinary launch takes, so a register a
+                // second window is holding is refused *here* — and before this it
+                // arrived as a sentence with no card and no way to take the lock
+                // over, which left the operator reading who had it and unable to
+                // act on it.
+                self.show_open_failure(&path, &e, message);
                 self.store = None;
             }
         }

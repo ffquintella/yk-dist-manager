@@ -115,11 +115,24 @@ names the alternative instead of offering a button that fails.
 
 A database in a cloud-sync folder that another workstation has open produces an **In use
 by another workstation** card instead of a bare error: the path, who holds it (operator,
-computer, since when), and one action. While that session is alive the action is *Try
-again*; once its lock has gone unrefreshed for fifteen minutes it becomes *Take the lock
-over*, in the red accent, with the warning that a live session mid-hand-over is exactly
-what must not be interrupted. A lock held by this computer says so, because the usual
-cause is a second window of this application.
+computer, since when), and an action. That card is raised by every refused open,
+**including the one at startup** — which is where an operator actually meets a lock, and
+where it used to be a sentence with nothing to press. A lock held by this computer says
+so, because the usual cause is a second window of this application.
+
+How hard the take-over is to reach depends on the holder. Once its lock has gone
+unrefreshed for fifteen minutes it is one red *Take the lock over*, with the warning that
+a live session mid-hand-over is exactly what must not be interrupted. While the session is
+still refreshing, the first action is *Try again* and *Take the lock over anyway* sits
+below it behind a tick — "I have confirmed that nobody is working in this register" —
+which arms the button and is cleared by the next refusal, so a *Try again* that comes back
+held asks again rather than leaving a red button armed. The wording differs for a lock
+held by this computer, because "get back to that window" and "ask that operator" are
+different instructions.
+
+The chooser prints a refusal **once**. Both `open_error` and `db_form.error` carry it, so
+that the reason survives whichever of them the next screen clears; identical messages are
+painted a single time, because twice reads as two problems.
 
 ### Inventory
 

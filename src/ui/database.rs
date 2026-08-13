@@ -50,12 +50,18 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
                 ui.vertical(|ui| {
                     ui.set_width(COLUMN.min(ui.available_width()));
 
-                    if let Some(error) = app.open_error.clone() {
-                        super::error_label(ui, &error);
-                        ui.add_space(10.0);
-                    }
-                    if let Some(error) = app.db_form.error.clone() {
-                        super::error_label(ui, &error);
+                    // Two fields, one message on most paths: a refused open writes
+                    // both, so that the reason survives whichever of them the next
+                    // screen clears. Printed twice it reads as two problems, which
+                    // is how a lock refusal came to look like a wall of red.
+                    let opening = app.open_error.clone();
+                    let form = app
+                        .db_form
+                        .error
+                        .clone()
+                        .filter(|error| opening.as_ref() != Some(error));
+                    for error in opening.iter().chain(form.iter()) {
+                        super::error_label(ui, error);
                         ui.add_space(10.0);
                     }
 
@@ -195,9 +201,19 @@ fn throttled(app: &mut YkDistApp, ui: &mut egui::Ui) {
 ///
 /// A card rather than a line, because it carries an action nobody should take by
 /// accident: breaking a lock that a live session still holds is how a sync folder
-/// produces two divergent registers, so the button appears only once the holder
-/// has gone silent long enough to count as abandoned, and it says whose lock it is
-/// breaking.
+/// produces two divergent registers. So the card always says whose lock it is
+/// breaking, and how hard it is to reach the button depends on the holder:
+///
+/// * **Abandoned** — silent past [`crate::store::cloud::STALE_AFTER`]. One red
+///   button. The likely cause is a crash or a machine switched off, and clearing
+///   up after one is ordinary work.
+/// * **Alive** — still refreshing. *Try again* is the first offer, and the
+///   take-over sits below it behind a tick that has to be made deliberately. It
+///   is offered at all because the commonest live holder is a window of this same
+///   application that the operator cannot get back to, and because a refusal with
+///   no way out is how somebody ends up copying the file "just to get on with it"
+///   — which is the divergence the lock exists to prevent, arrived at the long way
+///   round.
 fn locked(app: &mut YkDistApp, ui: &mut egui::Ui) {
     let Some(locked) = app.db_form.locked.as_ref() else {
         return;
@@ -206,6 +222,7 @@ fn locked(app: &mut YkDistApp, ui: &mut egui::Ui) {
     let holder = locked.holder.clone();
     let stale = locked.stale;
     let same_host = locked.same_host;
+    let mut confirmed = locked.break_confirmed;
     let waiting = app.throttle.must_wait();
     let mut request = None;
 
@@ -258,10 +275,55 @@ fn locked(app: &mut YkDistApp, ui: &mut egui::Ui) {
             {
                 request = Some(DbRequest::Open(path.clone()));
             }
+
+            ui.add_space(18.0);
+            super::notice(
+                ui,
+                CalloutTone::Warning,
+                if same_host {
+                    "If that window is not one you can get back to — it was left on a locked \
+                     screen, or the application is no longer responding — you can take the lock \
+                     from it. It finds out within a minute, closes the register rather than \
+                     writing to it, and says so. What that does not undo is a hand-over it was \
+                     halfway through recording when the lock went."
+                } else {
+                    "You can also take the lock from a session that is still alive. It finds out \
+                     within a minute, closes the register rather than writing to it, and tells \
+                     that operator. What that does not undo is a hand-over they were halfway \
+                     through recording when the lock went — so this is for a workstation you \
+                     know has been left open, not for one you have not asked."
+                },
+            );
+            ui.add_space(10.0);
+            // The tick is the deliberation. A red button on its own is one
+            // mis-aimed click away from the register this whole feature exists to
+            // keep whole, and the sentence beside it is the thing the operator is
+            // actually being asked to answer.
+            ui.checkbox(
+                &mut confirmed,
+                "I have confirmed that nobody is working in this register",
+            );
+            ui.add_space(8.0);
+            if ui
+                .add(
+                    Button::new("Take the lock over anyway")
+                        .accent(Accent::Red)
+                        .enabled(confirmed && !waiting),
+                )
+                .on_hover_text(
+                    "records who was holding it, and that it was live, in the audit trail",
+                )
+                .clicked()
+            {
+                request = Some(DbRequest::TakeOverLock(path.clone()));
+            }
         }
     });
     ui.add_space(14.0);
 
+    if let Some(locked) = app.db_form.locked.as_mut() {
+        locked.break_confirmed = confirmed;
+    }
     if let Some(request) = request {
         app.db_request = Some(request);
     }
