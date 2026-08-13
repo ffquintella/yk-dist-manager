@@ -47,7 +47,7 @@ deployment.
 > its own wave-0 phases finished. See
 > [Wave 0 is closed](#wave-0-is-closed).
 
-Released: **v0.10.0**. Current wave: **Wave 1 — native execution.**
+Released: **v0.11.0**. Current wave: **Wave 1 — native execution.**
 
 **Out of turn, released in v0.6.0** (AGENTS.md §1 asks for the reason, in this file, in the
 same commit): **hosting the database in a OneDrive folder** —
