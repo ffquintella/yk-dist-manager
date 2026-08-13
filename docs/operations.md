@@ -524,6 +524,12 @@ bootstrap run** — nothing else touches the key while a run is writing to it.
      checks that depend on it produced nothing, so this pre-flight looked at less than it
      appears to have.
    * a **low PIN retry count** — a key one wrong PIN from needing its PUK.
+   * **"which applications this key has enabled was never read"** — the native transport
+     identifies a key over its PIV applet and cannot see the management applet's enable
+     flags, so the record's *Applications* column reads `—`. The step is attempted rather
+     than skipped, and will fail there if that application really is disabled. To fill the
+     column in, read the key with the `ykman` transport (Settings → transport), which
+     reports the applications table.
 5. Run it *(Wave 1; today: **Record dry run**)*.
 5. **Distribution** — select the key and holder, set the delivery method, put the signed
    term's reference in *Receipt*, leave *Attach the most recent bootstrap run* ticked, and
@@ -552,6 +558,13 @@ What to do:
 A changed PIV **management key** on its own is not treated as evidence and will not refuse
 the run: a fleet-management tool may have set it without the key ever having been
 bootstrapped.
+
+Neither is **PIV slot `f9`**. That is the attestation slot, and Yubico programmes a
+certificate into it on every key at manufacture — it is not cleared by a reset and this
+tool never writes it. The applet description still shows it, because it is genuinely on
+the card, but a refusal that counted it would refuse every key ever made. If an older
+build refused your key with *PIV slot(s) f9 already hold a certificate*, that was this
+bug, and resetting the key would have changed nothing.
 
 If the refusal seems wrong, the pre-flight names the evidence it found — quote that line.
 An applet reported as *not read* is worth checking too: the refusal only speaks for the

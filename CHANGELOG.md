@@ -17,6 +17,55 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+### Fixed
+
+- **No key could be bootstrapped at all: the "already configured" refusal fired on
+  every YubiKey ever made.** The first real run against a factory-fresh key was blocked
+  with *PIV slot(s) f9 already hold a certificate*, and there is deliberately no
+  override to press — the way out the message names is a factory reset, which on this
+  key would have destroyed nothing and changed nothing.
+
+  Slot `f9` is the **attestation** slot. Yubico programmes a key and certificate into it
+  during manufacture on every YubiKey since firmware 4.3; it is what `piv keys attest`
+  signs a slot's proof with, a PIV reset does not clear it, and this procedure never
+  writes it. So `piv::Key::list` reports it on a key nobody has ever touched, and a
+  refusal resting on the raw slot list refuses every key — including the one it was
+  written to protect, whose *real* evidence would have been a certificate in `9c`.
+
+  [`PivState::configured_slots`](src/device/write.rs) is now what the refusal
+  ([`device::applets`](src/device/applets.rs)) and the reset preview
+  ([`device::reset`](src/device/reset.rs)) consult; `occupied_slots` stays the raw read,
+  because a *description* of the applet should say what is actually on the card. The
+  reset preview no longer lists `f9` as a certificate it is about to destroy either,
+  which it was never going to.
+
+- **Five of the eleven steps skipped themselves on a key that had every application
+  enabled** — the FIDO2 PIN, the minimum-PIN-length policy, the forced change, the
+  initial credential and the OTP access code, each reported as *the FIDO2/OTP
+  application is not enabled on this key*. Nearly the whole procedure, quietly not
+  happening, on the strength of a field nobody had filled in.
+
+  The native transport identifies a key over the PIV applet and reported
+  `usb_applications: ["PIV"]` — the applet it had just spoken to. The per-application
+  enable flags live in the *management* applet (CCID `00 1D`), which no crate covers and
+  this transport does not read, so that one word was a claim that the other two were
+  **disabled**. It now reports an empty list, which is what a record built from a
+  scanned serial already means by it, what the Inventory screen already renders as `—`,
+  and what the pre-flight already treats as no reason to skip a step.
+
+- **A pre-flight that cannot check whether an application is enabled now says so**,
+  instead of being silent about it. When the record's application list was never read
+  *and* the applet did not answer either, each step of that applet raises a `Warning`
+  naming both gaps and saying the step will be attempted — and will fail there rather
+  than skip if the application turns out to be disabled. Not a `Skip`: skipping on that
+  much evidence is how the bug above happened.
+
+- **The refusal's own text was unreadable**, arriving on screen with runs of spaces
+  through the middle of it: a wrapped string literal in `Preflight` was missing its line
+  continuations, so the source's indentation was part of the message. Same wording, now
+  in one paragraph. (Nine other messages elsewhere in the tool have the same defect and
+  are untouched here.)
+
 ## [0.13.0] - 2026-08-13
 
 ### Added

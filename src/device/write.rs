@@ -122,8 +122,34 @@ pub struct PivState {
 }
 
 impl PivState {
+    /// The slot every YubiKey leaves the factory with a certificate in.
+    ///
+    /// `f9` holds the **attestation** key and certificate, programmed by Yubico during
+    /// manufacture on every key since firmware 4.3, and it is what
+    /// [`PivWriter::attest`] signs a slot's proof with. A PIV reset does not clear it,
+    /// and this procedure never writes it.
+    ///
+    /// So a certificate here is a fact about the model, not about whether anybody has
+    /// bootstrapped this key — see [`Self::configured_slots`].
+    pub const ATTESTATION_SLOT: &'static str = "f9";
+
     pub fn slot_occupied(&self, slot: &str) -> bool {
         self.occupied_slots.iter().any(|s| s == slot)
+    }
+
+    /// The occupied slots that say something about how this key was *configured*.
+    ///
+    /// [`Self::occupied_slots`] stays the raw read, because a description of the applet
+    /// should say what is actually on the card. This is the narrower list a **refusal**
+    /// may rest on, and the distinction is not academic: `piv::Key::list` reports the
+    /// factory attestation slot on a key nobody has ever touched, so a refusal built on
+    /// the raw list refuses every YubiKey ever made.
+    pub fn configured_slots(&self) -> Vec<&str> {
+        self.occupied_slots
+            .iter()
+            .map(String::as_str)
+            .filter(|slot| !slot.eq_ignore_ascii_case(Self::ATTESTATION_SLOT))
+            .collect()
     }
 }
 

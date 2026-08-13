@@ -159,7 +159,11 @@ impl Preflight<'_> {
             Severity::Blocking,
             "",
             format!(
-                "this key has already been through a procedure — {}. A configured key is only                  ever returned to factory default, and only by the system operator: there is no                  in-place re-bootstrap, because overwriting the credential a holder is currently                  relying on cannot be undone from here. Reset the key to factory default first,                  then start the run against it.",
+                "this key has already been through a procedure — {}. A configured key is only \
+                 ever returned to factory default, and only by the system operator: there is no \
+                 in-place re-bootstrap, because overwriting the credential a holder is currently \
+                 relying on cannot be undone from here. Reset the key to factory default first, \
+                 then start the run against it.",
                 evidence.join("; ")
             ),
         )]
@@ -207,6 +211,12 @@ impl Preflight<'_> {
         }
 
         // Applications the key does not have enabled.
+        //
+        // An **empty** list is "never read", not "none enabled", and is therefore no
+        // reason to skip anything: the enable flags live in the management applet, which
+        // the native transport does not read, and a record built from a scanned serial
+        // has never had them either. Reading emptiness as a claim is what silently
+        // reduced an eleven-step procedure to the PIV steps alone.
         let applet = match command.kind {
             StepKind::Fido2Pin
             | StepKind::Fido2MinPinLength
@@ -220,18 +230,32 @@ impl Preflight<'_> {
             | StepKind::PivCertImport => Some("PIV"),
             StepKind::Verify => None,
         };
-        if let Some(applet) = applet
-            && !key.applications.is_empty()
-            && !key
+        if let Some(applet) = applet {
+            let listed = key
                 .applications
                 .iter()
-                .any(|a| a.to_uppercase().contains(applet))
-        {
-            findings.push(Finding::new(
-                Severity::Skip,
-                id,
-                format!("the {applet} application is not enabled on this key"),
-            ));
+                .any(|a| a.to_uppercase().contains(applet));
+            if !key.applications.is_empty() && !listed {
+                findings.push(Finding::new(
+                    Severity::Skip,
+                    id,
+                    format!("the {applet} application is not enabled on this key"),
+                ));
+            } else if key.applications.is_empty() && !self.applet_answered(applet) {
+                // Neither list nor read: the tool cannot promise this step will run, and
+                // phase 7's rule is that such a thing arrives before the run rather than
+                // during it. Not a skip — skipping on this much would be inventing the
+                // answer, which is the mistake the empty list already caused once.
+                findings.push(Finding::new(
+                    Severity::Warning,
+                    id,
+                    format!(
+                        "which applications this key has enabled was never read, and the {applet} \
+                         applet did not answer either — the step will be attempted, and will fail \
+                         here rather than skip if the application turns out to be disabled"
+                    ),
+                ));
+            }
         }
 
         // Already configured. These are the same questions the executor's
@@ -239,6 +263,19 @@ impl Preflight<'_> {
         // than discovered mid-run.
         findings.extend(self.already_applied(command, id));
         findings
+    }
+
+    /// Did this applet answer when the key was read?
+    ///
+    /// A successful read is the one positive signal available without the management
+    /// applet: an applet that answered is an applet that is enabled.
+    fn applet_answered(&self, applet: &str) -> bool {
+        match applet {
+            "FIDO2" => self.applets.fido2.is_some(),
+            "PIV" => self.applets.piv.is_some(),
+            "OTP" => self.applets.otp.is_some(),
+            _ => false,
+        }
     }
 
     fn already_applied(&self, command: &PlannedCommand, id: &str) -> Vec<Finding> {
@@ -550,6 +587,53 @@ mod tests {
         let mut sorted_severities = severities.clone();
         sorted_severities.sort_by(|a, b| b.cmp(a));
         assert_eq!(severities, sorted_severities, "{findings:?}");
+    }
+
+    #[test]
+    fn an_unread_application_list_warns_instead_of_skipping_the_step() {
+        // An empty list is "never read", not "none enabled" — which is what the native
+        // transport produces, because the enable flags live in the management applet it
+        // does not read. Skipping on it silently reduced the procedure to its PIV steps.
+        let key = key_with("5.7.4", &[]);
+        let findings = check(&key, &AppletSnapshot::default());
+        let fido2: Vec<&Finding> = findings
+            .iter()
+            .filter(|f| f.step_id == "fido2-pin")
+            .collect();
+        assert!(
+            fido2.iter().all(|f| f.severity != Severity::Skip),
+            "{fido2:?}"
+        );
+        let warning = fido2
+            .iter()
+            .find(|f| f.severity == Severity::Warning)
+            .unwrap_or_else(|| {
+                panic!("the operator is told the tool could not check: {findings:?}")
+            });
+        assert!(
+            warning.message.contains("never read"),
+            "{}",
+            warning.message
+        );
+        assert!(!blocks(&findings), "{findings:?}");
+    }
+
+    #[test]
+    fn an_applet_that_answered_the_read_needs_no_warning_about_being_enabled() {
+        // The read is the positive signal: an applet that replied is enabled, whatever
+        // the record's application list does or does not say.
+        let key = key_with("5.7.4", &[]);
+        let applets = AppletSnapshot {
+            fido2: Some(Fido2State::default()),
+            piv: Some(PivState::default()),
+            otp: Some(OtpState::default()),
+            unread: Vec::new(),
+        };
+        let findings = check(&key, &applets);
+        assert!(
+            !findings.iter().any(|f| f.message.contains("never read")),
+            "{findings:?}"
+        );
     }
 
     #[test]

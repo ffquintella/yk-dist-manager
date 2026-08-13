@@ -270,10 +270,14 @@ fn observed_state(applet: Applet, observed: &AppletStates) -> Vec<String> {
                     .to_owned(),
             ),
             Some(state) => {
-                if !state.occupied_slots.is_empty() {
+                // The attestation slot is excluded: it is factory-programmed on every
+                // key and a PIV reset does not clear it, so naming it here would
+                // describe a loss that will not happen.
+                let slots = state.configured_slots();
+                if !slots.is_empty() {
                     lines.push(format!(
                         "slot(s) {} hold a certificate and the private key behind it",
-                        state.occupied_slots.join(", ")
+                        slots.join(", ")
                     ));
                 }
                 if state.management_key_changed {
@@ -962,6 +966,30 @@ mod tests {
         let otp = items.iter().find(|i| i.applet == Applet::Otp).unwrap();
         assert!(otp.observed.is_empty(), "{otp:?}");
         assert!(otp.was_read());
+    }
+
+    #[test]
+    fn the_factory_attestation_certificate_is_not_previewed_as_a_loss() {
+        // Slot f9 is on every key from the factory, and a PIV reset does not clear it.
+        // Listing it as a certificate "and the private key behind it" would tell the
+        // operator a reset destroys something it does not, on a key carrying nothing.
+        let observed = AppletStates {
+            piv: Some(PivState {
+                occupied_slots: vec!["f9".into()],
+                ..PivState::default()
+            }),
+            fido2: Some(Fido2State::default()),
+            otp: Some(OtpState::default()),
+            unread: Vec::new(),
+        };
+        let items = plan(&[Applet::Piv], &observed, &choice(Transport::Native));
+        let piv = &items[0];
+        assert!(
+            piv.observed.is_empty(),
+            "nothing on this key is lost to a reset: {:?}",
+            piv.observed
+        );
+        assert!(piv.was_read(), "and the applet did answer");
     }
 
     #[test]

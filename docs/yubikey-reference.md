@@ -161,6 +161,11 @@ used it must run *before* the PIN change, never after.
 | 82–95 | Retired key management | |
 | f9 | Attestation (Yubico) | read-only |
 
+**`f9` is occupied on every key**, from the factory, and a PIV reset does not clear it. So
+`piv::Key::list` (and `ykman piv info`) report a certificate on a key nobody has touched,
+and any "has this key been configured?" test must exclude it — `PivState::configured_slots`
+is where this tool does that. Getting it wrong is not a subtle bug: it refuses every key.
+
 Slot 9c is chosen for signing because it always asks for the PIN. Note that the slot
 enforces that regardless of the `--pin-policy` requested, so a template asking for
 `once` on 9c gets per-use behaviour anyway — the wizard should say so rather than imply

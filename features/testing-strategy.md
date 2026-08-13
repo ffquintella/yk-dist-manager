@@ -18,7 +18,7 @@ whole even though every part passes.
 
 **Suites in place, and CI now enforces the gate.**
 
-- **753 tests** pass on the default features (`cargo test`), **758** with
+- **833 tests** pass on the default features (`cargo test`), **838** with
   `--all-features` — the encrypted-database paths account for the difference, minus
   the one test that exists only when `encrypted-db` is *off*. The default figure now
   includes the native-transport tests, because `native-device` became a default
@@ -54,7 +54,7 @@ whole even though every part passes.
 - `cargo check --no-default-features` is part of the pre-commit sweep, because the
   no-camera build is a supported configuration
   (`make check-all`).
-- Core line coverage **86.07%** (region 85.29%), above the 80% floor. It has fallen
+- Core line coverage **85.68%** (region 84.97%), above the 80% floor. It has fallen
   twice for the same structural reason rather than through neglect: from 88.25% when
   `device/native_fido.rs` joined the build, and again when `native-device` became a
   default feature. The hardware transports are reachable only with a key attached, so

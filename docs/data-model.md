@@ -25,7 +25,7 @@ Conventions:
 | `firmware` | TEXT | `5.4.3`; drives the capability gates |
 | `form_factor` | TEXT | `Keychain (USB-A)`; empty on the native path (management applet not covered) |
 | `fips` | INTEGER | Inferred from the model name today |
-| `applications` | TEXT (JSON) | USB-enabled applications: `["FIDO2","PIV",…]` |
+| `applications` | TEXT (JSON) | USB-enabled applications: `["FIDO2","PIV",…]`. **Empty means never read**, not "none enabled" — the flags live in the management applet, which only the `ykman` path reports — and the pre-flight treats it that way: it skips a step for a *missing* application only when the list is non-empty |
 | `status` | TEXT | `in_stock` \| `bootstrapped` \| `distributed` \| `returned` \| `lost` \| `retired` |
 | `batch` | TEXT | Purchase/invoice reference |
 | `notes` | TEXT | The operator's **observation**, edited on the Inventory screen; bounded by `domain::MAX_NOTE`, never overwritten by a device re-read, and never a place for a secret |

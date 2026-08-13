@@ -74,15 +74,21 @@ impl Snapshot {
     /// piece of state a fleet-management tool may legitimately have set without ever
     /// bootstrapping the key, and treating it as evidence would refuse keys that are
     /// merely under management.
+    ///
+    /// Neither is the **attestation certificate in slot f9**
+    /// ([`PivState::configured_slots`]). Yubico programmes it during manufacture, so it
+    /// is on every key the refusal is meant to let through — and counting it made the
+    /// first real bootstrap impossible: the refusal fired on a key out of the box.
     pub fn already_configured(&self) -> Vec<String> {
         let mut evidence = Vec::new();
-        if let Some(piv) = &self.piv
-            && !piv.occupied_slots.is_empty()
-        {
-            evidence.push(format!(
-                "PIV slot(s) {} already hold a certificate",
-                piv.occupied_slots.join(", ")
-            ));
+        if let Some(piv) = &self.piv {
+            let slots = piv.configured_slots();
+            if !slots.is_empty() {
+                evidence.push(format!(
+                    "PIV slot(s) {} already hold a certificate",
+                    slots.join(", ")
+                ));
+            }
         }
         if let Some(fido2) = &self.fido2
             && fido2.pin_set
@@ -254,6 +260,45 @@ mod tests {
         };
         assert!(snapshot.already_configured().is_empty());
         assert!(!snapshot.is_empty());
+    }
+
+    #[test]
+    fn the_factory_attestation_certificate_is_not_evidence_of_a_previous_bootstrap() {
+        // The bug this test exists for: `piv::Key::list` reports slot f9 on every
+        // YubiKey, because Yubico programmes the attestation certificate there during
+        // manufacture. Counting it as evidence made the phase-5 refusal fire on every
+        // key attached to the tool, so no key could be bootstrapped at all.
+        let snapshot = Snapshot {
+            fido2: Some(Fido2State::default()),
+            piv: Some(piv(&["f9"])),
+            otp: Some(OtpState::default()),
+            unread: Vec::new(),
+        };
+        assert!(
+            snapshot.already_configured().is_empty(),
+            "a factory-fresh key must not be refused: {:?}",
+            snapshot.already_configured()
+        );
+
+        // And it is still *described*, because what is on the card is what the operator
+        // should be shown — only the refusal narrows.
+        let piv_line = snapshot
+            .describe()
+            .into_iter()
+            .find(|l| l.starts_with("PIV:"))
+            .unwrap();
+        assert!(piv_line.contains("f9"), "{piv_line}");
+
+        // A real certificate alongside it still gives the key away, and the evidence
+        // names only that slot.
+        let bootstrapped = Snapshot {
+            piv: Some(piv(&["9c", "f9"])),
+            ..Snapshot::default()
+        };
+        let evidence = bootstrapped.already_configured();
+        assert_eq!(evidence.len(), 1, "{evidence:?}");
+        assert!(evidence[0].contains("9c"), "{}", evidence[0]);
+        assert!(!evidence[0].contains("f9"), "{}", evidence[0]);
     }
 
     #[test]

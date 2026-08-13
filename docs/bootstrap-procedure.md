@@ -44,7 +44,9 @@ sub-decisions still open (the PUK, the OTP access code) are in
    validate it *before* generating anything, because a wrong SAN means a reissue.
 3. **Check the gates.** Firmware below 5.7 has no minimum-PIN-length policy; a key with PIV
    disabled cannot take a certificate. These become skips, shown up front, not failures
-   mid-run.
+   mid-run. Which applications are enabled is only known when the key was read through
+   `ykman` — the native path cannot see the management applet — and an *unknown* list is
+   never read as "disabled": those steps are attempted, with a warning saying so.
 4. **Review the plan.** Every step, its transport (`native` / `ykman` / `manual`) and its
    caveats, on screen, before anything is written.
 

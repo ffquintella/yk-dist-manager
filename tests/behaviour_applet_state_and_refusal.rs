@@ -162,6 +162,88 @@ fn scenario_a_factory_fresh_key_is_not_refused() {
 }
 
 #[test]
+fn scenario_a_key_carrying_only_its_factory_attestation_certificate_is_not_refused() {
+    // The failure an operator actually met: every step of a first real bootstrap was
+    // blocked by "PIV slot(s) f9 already hold a certificate" on a key straight out of
+    // the box.
+    //
+    // Slot f9 is the attestation slot. Yubico programmes it during manufacture on every
+    // key since firmware 4.3, a PIV reset does not clear it, and this procedure never
+    // writes it — so it is present on exactly the keys the refusal is meant to let
+    // through. Reading it is right; counting it as evidence was not.
+    let applets = AppletSnapshot {
+        piv: Some(PivState {
+            occupied_slots: vec!["f9".into()],
+            ..PivState::default()
+        }),
+        fido2: Some(Fido2State::default()),
+        otp: Some(OtpState::default()),
+        unread: Vec::new(),
+    };
+
+    let findings = preflight(&applets);
+    assert!(
+        !findings
+            .iter()
+            .any(|f| f.message.contains("already been through")),
+        "a factory-fresh key must be bootstrappable: {findings:?}"
+    );
+    assert!(
+        !findings.iter().any(|f| f.severity == Severity::Blocking),
+        "and nothing else may stop the run either: {findings:?}"
+    );
+}
+
+#[test]
+fn scenario_a_key_whose_enabled_applications_were_never_read_still_runs_every_step() {
+    // The other half of the same bootstrap failure. The native transport reads identity
+    // off the PIV applet and cannot see the management applet's enable flags, so the
+    // record's application list is empty — "not read", not "only PIV".
+    //
+    // With it read as a claim, five of eleven steps were marked "will skip" on a key
+    // with FIDO2 and OTP both enabled: the FIDO2 PIN, the policy, the forced change,
+    // the credential, and the OTP access code. Nearly the whole procedure, skipped
+    // quietly, on the strength of a field nobody had filled in.
+    let template = template();
+    let commands = commands(&template);
+    let key = YubiKeyRecord::from_device(&DeviceInfo {
+        serial: SERIAL,
+        model: "YubiKey CCID".into(),
+        firmware: "5.7.4".into(),
+        form_factor: String::new(),
+        nfc: false,
+        usb_applications: Vec::new(),
+    });
+    let applets = AppletSnapshot::default();
+    let findings = Preflight {
+        commands: &commands,
+        key: Some(&key),
+        applets: &applets,
+        can_write: true,
+    }
+    .run();
+
+    for step in [
+        "fido2-pin",
+        "fido2-credential",
+        "fido2-force-pin-change",
+        "fido2-min-pin-length",
+        "otp-access-code",
+    ] {
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.step_id == step && f.severity == Severity::Skip),
+            "{step} must not skip on the strength of an unread application list: {findings:?}"
+        );
+    }
+    assert!(
+        !findings.iter().any(|f| f.severity == Severity::Blocking),
+        "{findings:?}"
+    );
+}
+
+#[test]
 fn scenario_an_applet_that_could_not_be_read_does_not_produce_a_refusal_it_cannot_justify() {
     // The dangerous middle case. With nothing read, the tool knows nothing — and it
     // must neither refuse (it has no evidence) nor quietly imply the key is clean.

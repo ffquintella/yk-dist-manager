@@ -82,16 +82,11 @@ impl YubiKeyBackend for NativeBackend {
                 continue;
             }
             let version = key.version();
-            found.push(DeviceInfo {
-                serial: device_serial,
-                // The PIV applet does not carry a marketing name; the reader
-                // name is the closest identification available natively.
-                model: name,
-                firmware: format!("{}.{}.{}", version.major, version.minor, version.patch),
-                form_factor: String::new(),
-                nfc: false,
-                usb_applications: vec!["PIV".to_owned()],
-            });
+            found.push(identified(
+                device_serial,
+                name,
+                format!("{}.{}.{}", version.major, version.minor, version.patch),
+            ));
         }
 
         match (found.len(), serial) {
@@ -104,5 +99,51 @@ impl YubiKeyBackend for NativeBackend {
 
     fn describe(&self) -> String {
         "native (yubikey crate over PC/SC)".into()
+    }
+}
+
+/// Everything the PIV applet can answer for, and nothing beyond it.
+///
+/// **`usb_applications` is left empty on purpose, and that is not the same as "only
+/// PIV".** The per-application enable flags live in the *management* applet (CCID
+/// `00 1D`), which no crate covers and this transport does not read. It used to report
+/// `["PIV"]` — the applet it had just spoken to — and that one word was a claim that
+/// FIDO2 and OTP were *disabled*: the pre-flight then skipped every FIDO2 and OTP step
+/// of the procedure on a key that had them all enabled, which is most of a bootstrap
+/// silently not happening.
+///
+/// Empty means "not read", which is what [`crate::domain::YubiKeyRecord::from_serial`]
+/// already means by it, what the Inventory screen renders as `—`, and what the
+/// pre-flight treats as no reason to skip a step.
+fn identified(serial: u32, reader: String, firmware: String) -> DeviceInfo {
+    DeviceInfo {
+        serial,
+        // The PIV applet does not carry a marketing name; the reader name is the
+        // closest identification available natively.
+        model: reader,
+        firmware,
+        form_factor: String::new(),
+        nfc: false,
+        usb_applications: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_native_read_never_claims_an_application_is_disabled() {
+        // The management applet is what carries the enable flags, and this transport
+        // does not read it. Naming the one applet it did speak to would be read
+        // downstream as "the others are off" — and the pre-flight would skip them.
+        let info = identified(20_423_633, "YubiKey CCID".to_owned(), "5.7.4".to_owned());
+        assert_eq!(info.serial, 20_423_633);
+        assert_eq!(info.firmware, "5.7.4");
+        assert!(
+            info.usb_applications.is_empty(),
+            "an unread field stays empty rather than guessed: {:?}",
+            info.usb_applications
+        );
     }
 }
