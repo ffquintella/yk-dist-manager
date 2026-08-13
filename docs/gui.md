@@ -140,6 +140,17 @@ would send somebody after a cable. Plugging a key in fills this list and the wiz
 serial field and **records nothing** — recording stays a click. The card says how often it
 looks, and that it never looks while a bootstrap is writing to a key.
 
+**factory reset…** on an *Attached now* row opens the reset panel below that card
+(`features/key-lifecycle-and-revocation.md` phase 5). It is offered on a key that would
+not describe itself too, because a key in an unknown state is what a reset is most for.
+The panel ticks the three applets **individually**; per applet it names the transport
+(and says so when that is `ykman`, with why), what a reset of it destroys, and what this
+key was read to be holding — an applet that did not answer says *unknown*, never *empty*.
+The confirm button is disabled until the serial is **typed back**. Afterwards a small
+table gives one row per applet — reset, nothing to do, or refused with the transport's own
+words — and the applets are read again, so what the panel shows is the key as it is now.
+The device watch is stopped for the duration, like a bootstrap run.
+
 **Add by serial / scan…** opens the intake panel: a text field (which is what a USB
 barcode scanner types into — Enter submits), an *Observation (optional)* field, camera
 controls with a preview when the build has the `camera` feature, and confirm/discard for

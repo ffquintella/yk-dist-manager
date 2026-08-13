@@ -40,6 +40,14 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
     ui.add_space(12.0);
     attached(app, ui);
 
+    // Directly under the card the key was chosen from, because the panel is
+    // about *that* key and a confirmation that scrolls away from its subject is
+    // one somebody answers from memory.
+    if let Some(serial) = app.reset.serial {
+        ui.add_space(12.0);
+        reset_confirmation(app, ui, serial);
+    }
+
     if !app.detected.is_empty() {
         ui.add_space(12.0);
         for info in &app.detected {
@@ -333,6 +341,198 @@ fn removal_confirmation(app: &mut YkDistApp, ui: &mut egui::Ui, serial: u32) {
     });
 }
 
+/// The confirmation in front of a factory reset: what is destroyed, on which
+/// applet, by which transport, and what this key is actually carrying
+/// (`features/key-lifecycle-and-revocation.md` phase 5).
+///
+/// This is the panel AGENTS.md §2 is describing when it says a destructive
+/// operation names what will be lost before it runs. It is also the exit the
+/// pre-flight's "this key is already bootstrapped" refusal points at: per the
+/// decision of 2026-08-13 there is no override and no in-place re-bootstrap, so
+/// the reset is the way forward and it has to be reachable.
+///
+/// Three gates, and each one is doing separate work:
+///
+/// * the applets are **ticked individually**, because "reset FIDO2" and "destroy
+///   the signing key in 9c" are different decisions and a key is often returned
+///   for only one of them;
+/// * the loss is **named twice** — what the applet's reset destroys in general,
+///   and what this key was observed to hold;
+/// * the serial is **typed back**, because the button is a row action in a table
+///   of attached keys and a mis-click should not be able to destroy a
+///   certificate.
+fn reset_confirmation(app: &mut YkDistApp, ui: &mut egui::Ui, serial: u32) {
+    use crate::device::reset::{Applet, Status};
+
+    let plan = app.reset_plan();
+    let selected = app.reset.applets.clone();
+    let outcomes = app.reset.outcomes.clone();
+    let unread = app.reset.observed.unread.clone();
+    let confirmable = app.reset_is_confirmable();
+    let transport_disabled = app.transport.disabled;
+
+    let mut toggles: Vec<(Applet, bool)> = Vec::new();
+    let mut confirm = false;
+    let mut cancel = false;
+
+    super::titled_card(ui, format!("Factory reset serial {serial}?"), |ui| {
+        super::notice(
+            ui,
+            CalloutTone::Danger,
+            "This destroys what is on the key. It is not recoverable — not from a backup, \
+             not by this tool and not by the holder: a private key generated on the device \
+             never existed anywhere else. The register keeps its record of the key, its \
+             hand-overs and this reset; the key keeps nothing.",
+        );
+
+        if transport_disabled {
+            ui.add_space(8.0);
+            super::notice(
+                ui,
+                CalloutTone::Warning,
+                "Nothing on this workstation can reach a key right now, so a reset would \
+                 fail before it started. See the transport in the status bar.",
+            );
+        }
+
+        if !unread.is_empty() {
+            ui.add_space(8.0);
+            super::notice(
+                ui,
+                CalloutTone::Warning,
+                &format!(
+                    "Not every applet answered when this key was read, so what follows is \
+                     incomplete: {}. A reset still destroys what is there — an applet that \
+                     could not be read is not an applet that is empty.",
+                    unread.join(" | ")
+                ),
+            );
+        }
+
+        for item in &plan {
+            ui.add_space(12.0);
+            let mut ticked = selected.contains(&item.applet);
+            ui.horizontal(|ui| {
+                if ui
+                    .checkbox(
+                        &mut ticked,
+                        format!("Reset the {} applet", item.applet.label()),
+                    )
+                    .changed()
+                {
+                    toggles.push((item.applet, ticked));
+                }
+                ui.add_space(6.0);
+                let label = if item.route.fallback {
+                    format!("via {} — a labelled fallback", item.route.transport)
+                } else {
+                    format!("via {}", item.route.transport)
+                };
+                super::faint(ui, &label);
+            });
+            super::hint(ui, item.route.reason);
+
+            ui.add_space(4.0);
+            super::faint(ui, "Destroys:");
+            for line in &item.destroys {
+                super::hint(ui, &format!("• {line}"));
+            }
+
+            super::faint(ui, "On this key:");
+            if item.observed.is_empty() {
+                super::hint(
+                    ui,
+                    "• nothing this tool can see — it read the applet and found it at \
+                     factory default",
+                );
+            }
+            for line in &item.observed {
+                super::hint(ui, &format!("• {line}"));
+            }
+
+            if let Some(instruction) = item.applet.instruction() {
+                ui.add_space(4.0);
+                super::notice(ui, CalloutTone::Neutral, instruction);
+            }
+        }
+
+        ui.add_space(14.0);
+        ui.horizontal(|ui| {
+            ui.label(format!("Type {serial} to confirm"));
+            super::capped_input(ui, &mut app.reset.typed, 24, |input| {
+                input
+                    .hint("the serial, typed back")
+                    .id_salt("reset-typed")
+                    .desired_width(160.0)
+            });
+        });
+        super::hint(
+            ui,
+            "Nothing has been written yet. Whatever is ticked above is destroyed the moment \
+             the button below is used.",
+        );
+
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(
+                    confirmable,
+                    Button::new(format!("Reset serial {serial} to factory default"))
+                        .accent(Accent::Red),
+                )
+                .clicked()
+            {
+                confirm = true;
+            }
+            if ui.add(Button::new("Cancel").outline()).clicked() {
+                cancel = true;
+            }
+        });
+
+        if !outcomes.is_empty() {
+            ui.add_space(14.0);
+            super::table(
+                ui,
+                "reset-outcomes",
+                &["Applet", "Transport", "Result", "Detail"],
+                |ui| {
+                    for outcome in &outcomes {
+                        ui.label(outcome.applet.label());
+                        super::faint(ui, outcome.transport);
+                        ui.add(match outcome.status {
+                            Status::Done => elegance::Badge::new("reset", elegance::BadgeTone::Ok),
+                            Status::Skipped => {
+                                elegance::Badge::new("nothing to do", elegance::BadgeTone::Neutral)
+                            }
+                            Status::Failed => {
+                                elegance::Badge::new("refused", elegance::BadgeTone::Danger)
+                            }
+                        });
+                        super::faint(ui, &outcome.detail);
+                        ui.end_row();
+                    }
+                },
+            );
+        }
+
+        if let Some(error) = &app.reset.error {
+            ui.add_space(10.0);
+            super::error_label(ui, error);
+        }
+    });
+
+    // Deferred, like every other action that would mutate what is being painted.
+    for (applet, wanted) in toggles {
+        app.toggle_reset_applet(applet, wanted);
+    }
+    if confirm {
+        app.confirm_key_reset();
+    }
+    if cancel {
+        app.cancel_key_reset();
+    }
+}
+
 /// What is plugged in right now, and — when it is more than one thing — which one
 /// the operator has chosen (`features/device-detection.md` phases 2 and 3).
 ///
@@ -352,6 +552,7 @@ fn attached(app: &mut YkDistApp, ui: &mut egui::Ui) {
 
     let snapshot = app.attached.clone();
     let mut choose: Option<u32> = None;
+    let mut reset_requested: Option<u32> = None;
 
     // Nothing to say before the first poll lands, and nothing to say on a screen
     // where the watch is not running.
@@ -427,6 +628,15 @@ fn attached(app: &mut YkDistApp, ui: &mut egui::Ui) {
                         {
                             choose = Some(key.serial);
                         }
+                        if super::row_button_danger(ui, "factory reset…")
+                            .on_hover_text(
+                                "opens the preview. Nothing is written until the loss is \
+                                 named and the serial typed back",
+                            )
+                            .clicked()
+                        {
+                            reset_requested = Some(key.serial);
+                        }
                     });
                     ui.end_row();
                 }
@@ -437,7 +647,13 @@ fn attached(app: &mut YkDistApp, ui: &mut egui::Ui) {
                         .on_hover_text(reason.clone());
                     super::faint(ui, "—");
                     super::faint(ui, reason);
-                    ui.label("");
+                    // A key in an unknown state is the case a reset is most for,
+                    // so the action is offered here too. The preview will say
+                    // which applets it could not read rather than pretending
+                    // they are empty.
+                    if super::row_button_danger(ui, "factory reset…").clicked() {
+                        reset_requested = Some(*serial);
+                    }
                     ui.end_row();
                 }
             },
@@ -460,6 +676,9 @@ fn attached(app: &mut YkDistApp, ui: &mut egui::Ui) {
     // Deferred out of the table, like every other row action.
     if let Some(serial) = choose {
         app.select_key(serial);
+    }
+    if let Some(serial) = reset_requested {
+        app.request_key_reset(serial);
     }
 }
 

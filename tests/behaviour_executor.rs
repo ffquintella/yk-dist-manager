@@ -98,6 +98,7 @@ fn request<'a>(
         certificate_subject: "CN=Ana Silva,OU=ESI".into(),
         certificate_email: "ana@example.org".into(),
         holder_display: "Ana Silva".into(),
+        certificate_pem: None,
     }
 }
 
@@ -489,10 +490,11 @@ fn scenario_no_secret_reaches_the_run_record_or_the_audit_trail() {
 #[test]
 fn scenario_a_run_missing_a_required_step_is_not_reported_as_completed() {
     // The case that makes this rule necessary rather than theoretical: the
-    // certificate import is required by the standard procedure and skips on
-    // every run today, because the issuing CA is an open question. A key with no
-    // signing certificate must not be recorded as a completed bootstrap — that
-    // is the one claim this register cannot be allowed to get wrong.
+    // certificate import is required by the standard procedure and skips on every
+    // *first* run, because the issuer is manual — the CSR has to exist before a CA
+    // can sign anything (`features/ca-integration.md` phase 1). A key with no
+    // signing certificate must not be recorded as a completed bootstrap — that is
+    // the one claim this register cannot be allowed to get wrong.
     let template = template();
     let commands = commands(&template);
     let request = request(&template, &commands);
@@ -517,9 +519,16 @@ fn scenario_a_run_missing_a_required_step_is_not_reported_as_completed() {
         StepStatus::Skipped,
         "nothing broke — there is simply no certificate to import yet"
     );
+    // The record has to say what happens next, not merely that nothing happened:
+    // this run's own request is what the operator has to take to the CA.
     assert!(
-        cert_import.detail.contains("CA"),
+        cert_import.detail.contains("no certificate supplied"),
         "and the record says why: {}",
+        cert_import.detail
+    );
+    assert!(
+        cert_import.detail.contains("resume"),
+        "and what to do about it: {}",
         cert_import.detail
     );
 

@@ -17,9 +17,12 @@
 //! `features/native-device-transport.md` for the migration plan.
 
 pub mod applets;
+/// Reading and checking an issued certificate before it reaches a slot. Always
+/// compiled: no card is involved, and the operator brings the certificate.
+pub mod certificate;
 pub mod composite;
-/// PKCS#10 assembly for the PIV signing certificate. Behind `native-piv` because it
-/// needs `x509-cert`, which only that feature brings in.
+/// PKCS#10 assembly for the PIV signing certificate. Behind `native-piv` because
+/// only that feature brings in the card the request is signed by.
 #[cfg(feature = "native-piv")]
 pub mod csr;
 pub mod mock;
@@ -31,6 +34,11 @@ pub mod native_fido;
 pub mod native_piv;
 #[cfg(feature = "native-piv")]
 pub mod piv_mgm;
+/// The card session that carries management-key authentication, and the two
+/// writes that need it. Behind `native-piv` because it needs `pcsc` and `aes`.
+#[cfg(feature = "native-piv")]
+pub mod piv_session;
+pub mod reset;
 pub mod select;
 pub mod watch;
 pub mod write;

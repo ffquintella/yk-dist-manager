@@ -368,6 +368,8 @@ fn run_view(app: &mut YkDistApp, ui: &mut egui::Ui) {
         });
     }
 
+    certificate_exchange(app, ui);
+
     ui.add_space(14.0);
     if ui.add(Button::new("Start another")).clicked() {
         app.reset_wizard();
@@ -375,6 +377,156 @@ fn run_view(app: &mut YkDistApp, ui: &mut egui::Ui) {
 
     ui.add_space(18.0);
     plan_table(app, ui);
+}
+
+/// The round trip to the CA: take the request out, bring the certificate back.
+///
+/// Shown only when this run actually produced a request, because that is the only
+/// state in which there is anything to do here. The issuer is the operator
+/// (`features/ca-integration.md` phase 1, decided 2026-08-13), so this is where a
+/// run that ended with the import still pending gets finished.
+fn certificate_exchange(app: &mut YkDistApp, ui: &mut egui::Ui) {
+    use crate::domain::{StepKind, StepStatus};
+
+    let Some(run) = app.wizard.run.clone() else {
+        return;
+    };
+    if crate::bootstrap::certificate_request(&run).is_none() {
+        return;
+    }
+    let import_pending = run
+        .steps
+        .iter()
+        .any(|step| step.kind == StepKind::PivCertImport && step.status != StepStatus::Done);
+
+    ui.add_space(14.0);
+    super::titled_card(ui, "Signing certificate — the CA round trip", |ui| {
+        if import_pending {
+            super::notice(
+                ui,
+                CalloutTone::Warning,
+                "This key has its signing key but no certificate, so it is not ready to hand \
+                 over. Save the request below, have it signed by the CA this deployment uses, \
+                 then bring the certificate back here.",
+            );
+        } else {
+            super::notice(
+                ui,
+                CalloutTone::Success,
+                "The certificate is on the key. The request is kept below as evidence of what \
+                 was asked for.",
+            );
+        }
+
+        ui.add_space(10.0);
+        if ui
+            .add(Button::new("Save the certification request…"))
+            .on_hover_text("a PKCS#10 request — a public key and a name, no secret")
+            .clicked()
+        {
+            app.save_certificate_request();
+        }
+
+        if !import_pending {
+            return;
+        }
+
+        ui.add_space(14.0);
+        ui.label("The issued certificate (PEM), pasted or loaded from a file:");
+        let box_ = ui.add(
+            egui::TextEdit::multiline(&mut app.wizard.certificate_pem)
+                .desired_rows(6)
+                .code_editor()
+                .hint_text("-----BEGIN CERTIFICATE-----"),
+        );
+        if box_.changed() {
+            app.preview_certificate();
+        }
+
+        ui.add_space(8.0);
+        ui.horizontal_wrapped(|ui| {
+            if ui.add(Button::new("Load from a file…")).clicked() {
+                app.load_certificate();
+            }
+            if ui.add(Button::new("Check it")).clicked() {
+                app.preview_certificate();
+            }
+        });
+
+        // What the certificate says, before it is written rather than after. A
+        // certificate for the wrong holder is the failure this display exists for.
+        if let Some(preview) = &app.wizard.certificate_preview {
+            ui.add_space(10.0);
+            match preview {
+                Ok(summary) => {
+                    super::table(ui, "certificate-preview", &["Field", "Value"], |ui| {
+                        for (field, value) in [
+                            ("Subject", summary.subject.clone()),
+                            ("Issuer", summary.issuer.clone()),
+                            ("Serial", summary.serial.clone()),
+                            (
+                                "Valid",
+                                format!("{} .. {}", summary.not_before, summary.not_after),
+                            ),
+                            ("rfc822Name", summary.email_sans.join(", ")),
+                        ] {
+                            ui.label(field);
+                            super::mono(ui, &value);
+                            ui.end_row();
+                        }
+                    });
+                    ui.add_space(8.0);
+                    match app.certificate_matches_holder() {
+                        Some(true) => super::notice(
+                            ui,
+                            CalloutTone::Success,
+                            "The address in this certificate is the one this run was built for.",
+                        ),
+                        Some(false) => super::notice(
+                            ui,
+                            CalloutTone::Warning,
+                            "This certificate does not carry the address this run was built for. \
+                             The import will refuse it — check it is the right holder's \
+                             certificate.",
+                        ),
+                        None => {}
+                    }
+                }
+                Err(message) => super::error_label(ui, message),
+            }
+        }
+
+        // The PIN has to be typed because nothing was retained: the run that set it
+        // kept no copy, and the applet will not accept a certificate without it.
+        // While the key waits for its certificate it is still on the operator's
+        // desk, with the transport PIN written down beside it.
+        ui.add_space(14.0);
+        ui.label("The PIV PIN this key was given (needed to authenticate the import):");
+        ui.add(
+            egui::TextEdit::singleline(&mut app.wizard.resume_pin)
+                .password(true)
+                .desired_width(140.0),
+        );
+
+        ui.add_space(14.0);
+        let loaded = matches!(app.wizard.certificate_preview, Some(Ok(_)));
+        let has_pin = !app.wizard.resume_pin.trim().is_empty();
+        if ui
+            .add(
+                Button::new("Import the certificate and finish the run")
+                    .accent(Accent::Red)
+                    .enabled(loaded && has_pin),
+            )
+            .on_hover_text(match (loaded, has_pin) {
+                (false, _) => "load a certificate this tool can read first",
+                (true, false) => "the import needs this key's PIV PIN",
+                (true, true) => "this writes the certificate to the key",
+            })
+            .clicked()
+        {
+            app.resume_run();
+        }
+    });
 }
 
 fn selection(app: &mut YkDistApp, ui: &mut egui::Ui) {

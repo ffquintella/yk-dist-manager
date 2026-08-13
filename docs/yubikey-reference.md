@@ -19,10 +19,10 @@ verified against **ykman 5.9.2** and a **YubiKey 5 NFC, firmware 5.4.3**, on 202
 | OTP slot status | `hidapi` (protocol ours to write — unwritten) | `otp info` | **ykman**, parsed in `device::ykman::parse_otp_info` |
 | OTP access code | `hidapi` (protocol ours to write) | `otp settings <slot> --new-access-code` | **ykman only** |
 | PIV PIN / PUK | `yubikey` | `piv access change-pin/change-puk` | native, **built but not hardware-verified** |
-| PIV management key | our own APDU (`device::piv_mgm`; the crate's 3DES type fails on 5.7) | `piv access change-management-key` | native, **built but not hardware-verified** |
-| PIV on-device keygen | `yubikey::piv::generate` | `piv keys generate` | native, **built but not hardware-verified** |
+| PIV management key | our own APDU (`device::piv_session`; the crate's 3DES type fails on 5.7) | `piv access change-management-key` | native, **hardware-verified 2026-08-11** (the same APDUs, moved into the shared session on 2026-08-13 and not re-run since) |
+| PIV on-device keygen | our own APDU (`device::piv_session`; it needs the AES management-key authentication the crate cannot do) | `piv keys generate` | native, **built but not hardware-verified** |
 | **CSR with an e-mail SAN** | `device::csr` (`x509-cert`) + `piv::sign_data` | **✗ no SAN option** | **native only** — built; the ASN.1 is verified against `openssl`, the card path is not |
-| Import a certificate | `yubikey::certificate::Certificate::write` | `piv certificates import` | native — built; nothing to import until the CA is decided |
+| Import a certificate | our own APDU (`device::piv_session`, `PUT DATA` with command chaining — same authentication problem) | `piv certificates import` | native — built; the certificate comes from the operator (decided 2026-08-13) |
 | Attestation | `yubikey::piv::attest` | `piv keys attest` | native, **built but not hardware-verified** |
 | OpenPGP applet | `openpgp-card-sequoia` (to evaluate) | `openpgp *` | undecided |
 

@@ -17,8 +17,16 @@ when a key is lost.
 
 ## Current state
 
-**Not started.** The plan's `PivCsr` step names the SAN requirement and notes that on
-the `ykman` fallback path the CA must inject it. No issuer is wired up.
+**Phase 1 done (2026-08-13); phase 2 partly.** The issuer is the **operator**, which
+was the decision this feature was waiting for, and it is the only issuer that exists:
+the run keeps its PKCS#10 request so it can be saved, the certificate comes back
+through the wizard as a file or pasted text, and the run is resumed to import it.
+Before the write the certificate is parsed
+([`device::certificate`](../src/device/certificate.rs)), summarised on screen, matched
+against the slot's public key, and refused unless it carries the holder's
+`rfc822Name`. Phases 3–5 — a pilot CA, BastionVault, an enterprise CA — are
+automations of this path and are not started; no `trait CertificateIssuer` has been
+invented for them, because an abstraction over one implementation is a guess.
 
 ## Design
 
@@ -80,7 +88,7 @@ The certificate that comes back is **verified before import**:
 A certificate failing any of these is refused with a specific reason, not imported
 "because the CA said so".
 
-### Offline / manual mode
+### Offline / manual mode — decided 2026-08-13, and this is what exists
 
 Some institutional CAs cannot be automated. The tool must support: export the CSR to
 a file, hand it over, paste or import the issued certificate later, then finish the
@@ -88,12 +96,48 @@ run. That means a bootstrap run can be **suspended awaiting issuance** and resum
 which is a requirement on the executor
 (`features/bootstrap-engine.md` Phase 9), not just here.
 
+**The decision of 2026-08-13 makes this the issuer rather than the fallback**: the
+tool asks the operator for the certificate they want imported. No endpoint, no
+credential, no network. Every other option in this file is an automation of it.
+
+How it runs, end to end:
+
+1. The run produces the PKCS#10 request and **keeps it** in the CSR step's detail.
+   Not its size — the request itself, because it has to leave the workstation and a
+   request nobody can retrieve means generating a second key and abandoning the
+   first. It is a public document: a public key, a name and a signature.
+2. The wizard offers *Save the certification request…*, audited as
+   `ca.csr.exported` — the moment a request in a holder's name leaves
+   the tool.
+3. The import step skips, saying what happens next, and the run is recorded as
+   **not** completed. A key with no signing certificate must never be claimed as
+   ready to hand over.
+4. The operator returns with the certificate, loads or pastes it, and sees what it
+   says — subject, issuer, serial, validity, every `rfc822Name` — **before** the
+   write.
+5. *Import the certificate and finish the run* resumes the run. Resuming is what
+   makes this possible at all: the pre-flight refuses a fresh run on a configured
+   key with no override (`features/device-detection.md` phase 5).
+
+Two consequences worth stating, because both are load-bearing:
+
+* **The PIV PIN has to be typed for the resume.** Nothing is retained (custody
+  model B), so the run that set the transport PIN kept no copy of it, and the
+  applet will not accept a certificate without it. While the key waits for its
+  certificate it is still on the operator's desk with that PIN written down. It is
+  supplied to the executor for the run and never recorded — and deliberately not
+  handed to the show-once panel, which is for values the *tool* produced.
+* **The checks are the feature.** A certificate from an API client arrives
+  machine-checked at both ends; one that a person pastes has only the checks here.
+  So a mismatch of public key or address is a refusal that names what was expected
+  and what arrived, and nothing reaches the key.
+
 ## Phases
 
 | # | Phase | State | Notes |
 |---|---|---|---|
-| 1 | Issuer abstraction (`trait CertificateIssuer`) + manual/offline mode | Todo | export CSR, import certificate, resume the run |
-| 2 | Post-issuance verification (the six checks above) | Todo | refuse on mismatch |
+| 1 | Manual/offline issuer: export the CSR, import the certificate, resume the run | **Done (2026-08-13)** | The decision was to build *this* and no client: the tool asks the operator for the certificate. The CSR is kept in the run so it survives the register being closed; the certificate comes in as a file or pasted text, is checked, and the run is resumed to finish. A `trait CertificateIssuer` was deliberately **not** added — there is one issuer and inventing an abstraction over a single implementation would be a guess at what phases 3–5 need |
+| 2 | Post-issuance verification (the six checks above) | **Partly done** | checks 1, 2 and 6 are enforced before the write in [`device::certificate`](../src/device/certificate.rs) and the import step: the public key must be the slot's, the `rfc822Name` must be the holder's, and the validity window is read and recorded. Checks 3–5 (subject DN, key usage / EKU, chain to a trusted root) are still Todo, and 5 needs a trust store this tool does not have yet |
 | 3 | Internal pilot CA, clearly marked | Todo | never usable in a production template |
 | 4 | BastionVault PKI issuer | Todo | role-scoped token, chain retrieval |
 | 5 | Enterprise CA issuer | Todo | needs the template and enrolment path from the PKI team |
@@ -105,9 +149,17 @@ which is a requirement on the executor
 
 | Event | Detail |
 |---|---|
-| `ca.csr.exported` | `serial=<key> path=<file>` (manual mode) |
+| `ca.csr.exported` | `serial=<key> path=<file>` (manual mode) — **implemented** |
 | `ca.certificate.issued` | `issuer=<dn> cert_serial=<hex> not_after=<date> ca=<option>` |
 | `ca.certificate.rejected` | `reason=san_mismatch|key_mismatch|chain_untrusted…` |
+
+The two `ca.certificate.*` entries are **not** written as separate events today, and
+that is deliberate rather than pending: an import is a bootstrap step, so it is
+already audited as `bootstrap.step.done` or `bootstrap.step.failed` with the reason,
+and the step's detail carries the issuer, the certificate's serial and its validity
+window. A second event for the same fact would be a second place for the two to
+disagree. They become worth having when a phase-3–5 issuer can succeed or fail
+*outside* a run.
 | `ca.pilot_used` | A non-production CA signed a certificate |
 | `ca.certificate.revoked` | `cert_serial=<hex> reason=<code>` |
 
@@ -122,7 +174,9 @@ which is a requirement on the executor
 ## Open questions and gates
 
 - ~~**Which issuer for production?**~~ **Answered 2026-08-11: none is hard-wired —
-  the CA is a configured parameter.** The tool must be able to point at any CA, so
+  the CA is a configured parameter**, and **2026-08-13: the operator is the
+  issuer.** The manual path is the one that is built; phases 3–5 remain open for a
+  deployment that wants its CA automated. The tool must be able to point at any CA, so
   what this feature owes is the *mechanism*, not a choice of issuer: the CSR
   builder is therefore **required**, not optional, and
   [`step-piv-signing-certificate.md`](step-piv-signing-certificate.md) is

@@ -129,6 +129,14 @@ pub struct ExecutionRequest<'a> {
     pub certificate_email: String,
     /// The holder's display name, for the credential's user entry.
     pub holder_display: String,
+    /// The issued certificate the operator brought back, if they have it yet.
+    ///
+    /// Empty on a first run, which is the shape of the manual issuer decided on
+    /// 2026-08-13: the run produces a request, somebody signs it elsewhere, and
+    /// the certificate arrives on a **resume**. The import step reports the wait
+    /// rather than treating it as a success, and `drive`'s unmet-required check
+    /// keeps the run off `Completed` until it lands.
+    pub certificate_pem: Option<String>,
 }
 
 impl ExecutionRequest<'_> {
@@ -172,8 +180,17 @@ pub struct Transports<'a> {
 /// Applies a plan to a key.
 pub struct Executor<'a> {
     transports: Transports<'a>,
-    /// Secrets generated for this run, kept only until it ends.
+    /// Secrets this run holds, kept only until it ends: the ones the operator
+    /// supplied first, then the ones it generated.
     secrets: Vec<Secret>,
+    /// How many of the above the operator supplied.
+    ///
+    /// The boundary matters at exactly one point — [`Executor::take_secrets`],
+    /// which feeds the show-once panel. A PIN the operator has just typed must not
+    /// be handed back as though this run had produced it: the panel says *write
+    /// these down, nothing keeps a copy*, and a value they already hold does not
+    /// belong under that sentence.
+    supplied: usize,
 }
 
 impl<'a> Executor<'a> {
@@ -181,7 +198,23 @@ impl<'a> Executor<'a> {
         Self {
             transports,
             secrets: Vec::new(),
+            supplied: 0,
         }
+    }
+
+    /// Hand the executor a secret the operator typed, before the run starts.
+    ///
+    /// This is what makes a **resume** possible at all. Nothing is retained
+    /// (custody model B), so a run that stopped after setting the PIV PIN cannot
+    /// authenticate to the applet on the next attempt unless somebody supplies
+    /// that PIN — and while the key is waiting for its certificate it is still on
+    /// the operator's desk, with the transport PIN written down beside it.
+    ///
+    /// Steps look up secrets by kind, so a supplied one is simply found instead of
+    /// generated; a step whose secret is already present never mints a second.
+    pub fn supply(&mut self, secret: Secret) {
+        self.secrets.push(secret);
+        self.supplied = self.secrets.len();
     }
 
     /// Execute a plan from the beginning.
@@ -305,6 +338,7 @@ impl<'a> Executor<'a> {
                 holder_display: &request.holder_display,
                 certificate_subject: &request.certificate_subject,
                 certificate_email: &request.certificate_email,
+                certificate_pem: request.certificate_pem.as_deref(),
             };
 
             // The plan carries the rendered command; the template carries the
@@ -436,12 +470,12 @@ impl<'a> Executor<'a> {
         // it counts a skip as neither failure nor pending, so the run would
         // report `Completed`.
         //
-        // That would be a false record, and the case is not hypothetical. The
-        // certificate import is required by the standard procedure and skips on
-        // every run today, because the issuing CA is still an open question
-        // (`features/ca-integration.md`). A key handed over as "Completed" with
-        // no signing certificate on it is exactly the wrong thing for this
-        // register to claim.
+        // That would be a false record, and the case is not hypothetical — it is
+        // the *designed* shape of the certificate import. The issuer is manual
+        // (`features/ca-integration.md` phase 1, decided 2026-08-13), so a first
+        // run produces a request and skips the import, and the certificate lands
+        // on a resume. A key handed over as "Completed" with no signing
+        // certificate on it is exactly the wrong thing for this register to claim.
         let unmet: Vec<&str> = run
             .steps
             .iter()
@@ -486,12 +520,15 @@ impl<'a> Executor<'a> {
         Ok(run.clone())
     }
 
-    /// The secrets this run generated, moved out for the show-once panel.
+    /// The secrets this run **generated**, moved out for the show-once panel.
     ///
     /// Takes them rather than lending them: once handed to the panel, the
-    /// executor holds nothing, so there is one owner to wipe and not two.
+    /// executor holds nothing of them, so there is one owner to wipe and not two.
+    /// Anything the operator supplied stays here and is wiped when the executor
+    /// drops — it was never this run's to show.
     pub fn take_secrets(&mut self) -> Vec<Secret> {
-        std::mem::take(&mut self.secrets)
+        self.secrets
+            .split_off(self.supplied.min(self.secrets.len()))
     }
 }
 
@@ -524,4 +561,22 @@ pub fn irreversible_steps(commands: &[PlannedCommand]) -> Vec<&PlannedCommand> {
 /// Errors that mean the key is in an unknown state and needs looking at.
 pub fn leaves_key_in_unknown_state(error: &WriteError) -> bool {
     matches!(error, WriteError::Detached { .. })
+}
+
+/// The PEM marker a certification request opens with.
+const CSR_MARKER: &str = "-----BEGIN CERTIFICATE REQUEST-----";
+
+/// The certificate request a run produced, if it produced one.
+///
+/// The CSR step keeps its request in the step's detail, which is what makes this
+/// possible after a restart: the operator saves the request, walks it to the CA,
+/// and comes back — possibly days later, on a register that has been closed and
+/// reopened. Reading it out of the persisted run is the difference between that
+/// and generating a second key.
+pub fn certificate_request(run: &BootstrapRun) -> Option<&str> {
+    run.steps
+        .iter()
+        .filter(|step| step.kind == StepKind::PivCsr)
+        .find_map(|step| step.detail.find(CSR_MARKER).map(|at| &step.detail[at..]))
+        .map(str::trim)
 }

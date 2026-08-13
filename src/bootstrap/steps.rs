@@ -30,6 +30,13 @@ pub struct StepContext<'a> {
     pub holder_display: &'a str,
     pub certificate_subject: &'a str,
     pub certificate_email: &'a str,
+    /// The issued certificate, when the operator has one to import.
+    ///
+    /// `None` is the normal state of a first run: the CSR has to exist before a CA
+    /// can sign anything, so the certificate arrives on a **later** run or resume
+    /// (`features/ca-integration.md` phase 1, the manual/offline issuer decided on
+    /// 2026-08-13). The import step says so rather than pretending it succeeded.
+    pub certificate_pem: Option<&'a str>,
 }
 
 /// How a step ended, short of failing.
@@ -341,21 +348,80 @@ pub fn perform(
                 transports
                     .backend
                     .create_csr(serial, &slot, &subject, &san, &secrets[pin])?;
+            // The request itself is kept, not just its size. It has to leave this
+            // workstation to reach a CA, and a request nobody can retrieve is a
+            // step that has to be run again — which means generating a second key
+            // and abandoning the first. It is a public document by construction:
+            // a public key, a name and a signature, and no secret.
             Ok(StepOutcomeKind::applied(format!(
-                "[native] CSR produced for {subject} with rfc822Name={san} ({} bytes)",
-                csr.len()
+                "[native] CSR produced for {subject} with rfc822Name={san} ({} bytes)\n{}",
+                csr.len(),
+                csr.trim()
             )))
         }
 
         StepKind::PivCertImport => {
-            // The one step blocked on a decision rather than on code. Open
-            // question 1 in roadmap.md: which CA issues the signing certificate?
-            // Until that is answered there is no issued certificate to import, so
-            // the step reports why rather than failing as if something broke.
-            Ok(StepOutcomeKind::skip(
-                "no certificate to import: the issuing CA is not decided yet \
-                 (features/ca-integration.md, roadmap open question 1)",
-            ))
+            const OP: &str = "piv.import_certificate";
+            let slot = text(params, "slot").unwrap_or_else(|| "9c".into());
+            let Some(pin) = find(secrets, SecretKind::PivPin) else {
+                return Ok(StepOutcomeKind::skip(
+                    "importing a certificate needs the PIV PIN, which this run did not set",
+                ));
+            };
+
+            // No certificate is the normal state of a *first* run: the CSR has to
+            // exist before a CA can sign anything. The decision of 2026-08-13 is
+            // that the operator carries it — so this says what to do next instead
+            // of naming an undecided CA (`features/ca-integration.md` phase 1).
+            let Some(pem) = ctx
+                .certificate_pem
+                .map(str::trim)
+                .filter(|pem| !pem.is_empty())
+            else {
+                return Ok(StepOutcomeKind::skip(
+                    "no certificate supplied: save the request this run produced, have it signed, \
+                     then resume the run with the certificate loaded",
+                ));
+            };
+
+            // Everything checkable is checked before the write. A certificate is
+            // the one input to a run that comes from outside it, by hand, and a
+            // wrong one installs cleanly and fails at the holder's first
+            // signature.
+            let der = crate::device::certificate::der_from_pem(pem).ok_or(WriteError::Failed {
+                operation: OP,
+                reason: "what was supplied is not a PEM or DER certificate — a certificate \
+                         request or a chain file is the usual mix-up"
+                    .into(),
+            })?;
+            let summary = crate::device::certificate::summarise(&der, OP)?;
+
+            // The `rfc822Name` is the reason this whole step is native. A CA that
+            // dropped it, or a certificate belonging to another holder, is caught
+            // here rather than by the holder.
+            if !ctx.certificate_email.trim().is_empty()
+                && !summary.covers_email(ctx.certificate_email)
+            {
+                return Err(WriteError::Failed {
+                    operation: OP,
+                    reason: format!(
+                        "this certificate does not carry {} as an rfc822Name — it holds [{}]. \
+                         Nothing was written: a signing certificate without the holder's address \
+                         does not validate the signatures it was issued for",
+                        ctx.certificate_email,
+                        summary.email_sans.join(",")
+                    ),
+                });
+            }
+
+            transports
+                .backend
+                .import_certificate(serial, &slot, pem, &secrets[pin])?;
+
+            Ok(StepOutcomeKind::applied(format!(
+                "[native] certificate imported into slot {slot} — {}",
+                summary.one_line()
+            )))
         }
 
         StepKind::Verify => {

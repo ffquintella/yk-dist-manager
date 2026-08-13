@@ -146,15 +146,23 @@ term is the only mechanism.
 
 ### 7. PIV management key — *required*
 
-Replaces the default TDES management key with a **random AES-256 key stored on the key
-itself, guarded by the PIN**, so there is nothing to hold in custody.
+Replaces the default management key with a **random key stored on the key itself,
+guarded by the PIN**, so there is nothing to hold in custody.
 
 ```
-native:  yubikey → MgmKey::set_protected
+native:  device::piv_mgm → GENERAL AUTHENTICATE (AES) + SET MANAGEMENT KEY + PUT DATA 5FC109
 ykman:   ykman piv access change-management-key --algorithm aes256 --protect --generate --force --pin <PIN>
 ```
 
-Parameters: `algorithm` (`aes256`), `protect` (`true`).
+**Not `MgmKey::set_protected`, and not AES-256.** Two measured corrections: the slot
+takes 24 bytes, so the key is AES-192 on current firmware; and the `yubikey` crate
+cannot authenticate to a 5.7 management slot at all, because its `MgmKey` sends a 3DES
+algorithm identifier and 5.7 removed 3DES. The algorithm is **read** from the card
+rather than chosen, because guessing it fails in a way indistinguishable from a wrong
+key. The run records which algorithm was used.
+
+Parameters: `protect` (`true`). `algorithm` is not honoured — the slot's own algorithm
+wins.
 
 ### 8. PIV key generation, slot 9c — *required*
 
@@ -162,9 +170,13 @@ Generates the signing key **on the device**. The private key never exists anywhe
 and `piv::attest` can prove that afterwards.
 
 ```
-native:  yubikey → piv::generate(slot 9c, ECCP256, pin_policy, touch_policy)
+native:  device::piv_session → GENERATE ASYMMETRIC KEY PAIR (slot 9c, ECCP256, policies)
 ykman:   ykman piv keys generate -a eccp256 --pin-policy once --touch-policy cached 9c pubkey.pem
 ```
+
+Generation needs management-key authentication, and that authentication belongs to the
+**card session** — so it is issued on the same connection that authenticated, rather
+than through the crate, for the reason given in step 7.
 
 Slot 9c is *Digital Signature*: it requires the PIN for **every** signature by design, which
 is what you want for signing and what the wizard should say plainly (the slot overrides a
@@ -192,21 +204,32 @@ deprecated `emailAddress` RDN gets the certificate offered for nothing. A unit t
 the DN contains no `@`.
 
 Then the CSR goes to a CA ([`../features/ca-integration.md`](../features/ca-integration.md)).
-If issuance is offline, the run suspends and resumes when the certificate comes back.
+**The operator takes it there** (decided 2026-08-13): the run keeps the request, the
+wizard offers *Save the certification request…*, and the run stops with the import
+pending — recorded as **not** completed, because a key with no signing certificate is
+not ready to hand over.
 
 ### 10. Certificate import, slot 9c — *required*
 
 Writes the issued certificate into the slot, verifying it matches the slot's key.
 
 ```
-native:  yubikey → certificate::Certificate::write
+native:  device::piv_session → PUT DATA (certificate object for the slot, chained)
 ykman:   ykman piv certificates import --verify 9c cert.pem
 ```
 
-Before importing, check: public key matches slot 9c, `rfc822Name` equals the holder's
-e-mail exactly, subject matches what was requested, `digitalSignature` key usage,
-`emailProtection` EKU where S/MIME is the use case, and the chain builds. A certificate
-failing any of those is refused with the specific reason.
+The certificate arrives **by hand** — loaded from a file or pasted into the wizard —
+so this is where the checking happens rather than at an API boundary. The operator
+sees what the certificate says (subject, issuer, serial, validity, every
+`rfc822Name`) before the write, and the run is **resumed** to perform it: the
+pre-flight refuses a fresh run on a key that is already configured.
+
+Enforced before the write today: the public key matches slot 9c
+(`device::certificate::must_match_public_key`), the `rfc822Name` includes the holder's
+e-mail, and the validity window is read and recorded. Still to do: subject DN,
+`digitalSignature` key usage, `emailProtection` EKU, and the chain — see
+`features/ca-integration.md` phase 2. A certificate failing any check that *is*
+enforced is refused with the specific reason, and nothing reaches the key.
 
 ### 11. Verification — *required*
 

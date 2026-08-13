@@ -108,6 +108,7 @@ Minimum set, kept in sync with the feature files:
 | `key.distributed`, `key.returned` | distribution |
 | `bootstrap.dry_run` | wizard |
 | `bootstrap.started`, `bootstrap.step.done`, `bootstrap.step.failed`, `bootstrap.finished` | executor (Wave 1) |
+| `key.reset.started`, `key.applet_reset`, `key.reset.skipped`, `key.reset.failed`, `key.reset.finished` | factory reset — `key.applet_reset` only where an applet actually was reset, and every entry names the applet and the transport |
 | `template.created`, `template.changed`, `template.retired`, `template.reinstated`, `template.removed` | Templates screen — a new version, or a withdrawal (`template.seeded` is logged, not audited) |
 | `term.generated`, `term.saved`, `term.signed_uploaded` | consignment terms — `term.saved` names the format (`format=pdf path=…`), since the two outputs are filed differently |
 | `term.template_edited`, `term.template_added` | Terms screen — a new version of the wording |

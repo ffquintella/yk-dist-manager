@@ -103,6 +103,36 @@ rather than dropped: "slot 9c is empty" and "PIV was not read" lead to opposite 
 and the pre-flight refusal of an already-configured key would be unsound if it could not
 tell them apart.
 
+**Destroying what is on a key is its own trait, and it takes no secret.**
+[`device::reset`](../src/device/reset.rs) is deliberately not part of `WriteBackend`:
+every method there borrows a `Secret`, and a factory reset destroys the credential rather
+than presenting it — it is the path for a key whose PIN nobody has. Separating them means
+no implementation can be tempted to ask for a PIN in the one operation that must work
+without one, and it means no reset detail can carry a secret because none is ever supplied.
+The engine borrows the executor's two rules — an unforgeable `Confirmation` re-checked
+against the request, and no record before the first write — and adds one of its own: a
+single applet's failure does not stop the others, because a half-reset key is worse than a
+reset one.
+
+**Management-key authentication belongs to a card session, so the writes that need
+it live with it.** [`device::piv_session`](../src/device/piv_session.rs) is one PC/SC
+connection that selects the PIV applet, reads the management slot's *actual* cipher,
+authenticates with AES, and then issues `GENERATE ASYMMETRIC KEY PAIR` and `PUT DATA`
+of a certificate. It exists because the [`yubikey`] crate cannot authenticate to a
+firmware-5.7 management slot at all — its `MgmKey` is a 3DES type, and 5.7 removed
+3DES — and because authenticating on one connection and then calling the crate on
+another authenticates nothing. Everything that needs *no* such authentication
+(`change_pin`, `change_puk`, `sign_data`, `attest`, the metadata reads) stays with the
+crate: this is one exchange plus its two dependents, not a second PIV implementation.
+
+**A certificate that arrives by hand is checked before the write, by pure code.**
+[`device::certificate`](../src/device/certificate.rs) parses PEM or DER, summarises
+what the certificate claims, and refuses one whose public key is not the slot's. It is
+compiled into every build, including the `ykman`-only one, because reading a
+certificate needs no card — and it is where the check lives rather than in the wizard
+so that it is covered by tests (`src/ui/` is outside the coverage gate, and §4 of
+`AGENTS.md` makes that a contract rather than an amnesty).
+
 **The certificate request is pure code with the signature injected.**
 [`device::csr`](../src/device/csr.rs) assembles PKCS#10 — subject, `SubjectPublicKeyInfo`,
 the `rfc822Name` SAN wrapped in an `extensionRequest` attribute — and takes a closure that

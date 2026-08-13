@@ -163,6 +163,47 @@ pub fn parse_otp_info(stdout: &str) -> Result<crate::device::write::OtpState> {
     Ok(state)
 }
 
+/// Return the FIDO2 applet to factory default, through `ykman fido reset`.
+///
+/// **A labelled fallback, and the only implementation there is.** No crate in
+/// this dependency graph sends CTAP's `authenticatorReset`: `ctap-hid-fido2`
+/// exposes `get_info`, the PIN commands, credential management and
+/// `make_credential`, and nothing that resets. Writing the command by hand would
+/// mean hand-rolling CTAP framing for the one operation whose failure mode is
+/// "every credential on this key is gone" — so this shells out, and
+/// `device::reset` shows the operator which transport ran.
+///
+/// The authenticator refuses a reset that does not arrive within a few seconds of
+/// power-up and that is not confirmed by touch. That is CTAP, not `ykman`, and it
+/// is why [`crate::device::reset::Applet::instruction`] exists.
+pub fn reset_fido2(backend: &YkmanBackend, serial: u32) -> Result<String> {
+    let serial = serial.to_string();
+    backend.run(&["--device", &serial, "fido", "reset", "--force"])
+}
+
+/// Return the PIV applet to factory default, through `ykman piv reset`.
+///
+/// The fallback for a session that does not read through the native transport —
+/// `device::native_piv::NativePiv::reset_applet` is the in-process path, and
+/// `device::reset::route` decides between them.
+pub fn reset_piv(backend: &YkmanBackend, serial: u32) -> Result<String> {
+    let serial = serial.to_string();
+    backend.run(&["--device", &serial, "piv", "reset", "--force"])
+}
+
+/// Clear one OTP slot, through `ykman otp delete`.
+///
+/// There is no "reset the OTP applet": the applet *is* its two slots, so
+/// returning it to factory default means deleting each programmed one. A slot
+/// protected by an access code refuses, and the refusal is the transport's own
+/// message — this tool records custody of an access code and never the value, so
+/// there is nothing here to supply.
+pub fn delete_otp_slot(backend: &YkmanBackend, serial: u32, slot: u8) -> Result<String> {
+    let serial = serial.to_string();
+    let slot = slot.to_string();
+    backend.run(&["--device", &serial, "otp", "delete", &slot, "--force"])
+}
+
 /// Parse `ykman list --serials`: one decimal serial per line.
 pub fn parse_serials(stdout: &str) -> Vec<u32> {
     stdout

@@ -538,7 +538,7 @@ What to do:
    serial. If it was handed over, the holder is relying on what is on it — start the
    return, do not reset it.
 2. If it is genuinely a key to reissue, **reset it to factory default**. That is the system
-   operator's action, outside this tool, and it destroys the credentials on the key.
+   operator's action, and it destroys the credentials on the key — see the runbook below.
 3. Read the key again and start the run.
 
 A changed PIV **management key** on its own is not treated as evidence and will not refuse
@@ -548,6 +548,42 @@ bootstrapped.
 If the refusal seems wrong, the pre-flight names the evidence it found — quote that line.
 An applet reported as *not read* is worth checking too: the refusal only speaks for the
 applets that answered.
+
+## Runbook: returning a key to factory default
+
+The action for a key coming back into stock, a key that refuses a run because it is already
+configured, and a key nobody can account for. **It destroys what is on the key and nothing
+that is on file**: the inventory row, the hand-overs, the runs and the reset itself all
+stay in the register.
+
+Before you start, be sure this key is not in service. Check Inventory and Distribution for
+the serial — if it is out with a holder, start the return instead. A reset does **not**
+revoke the certificate that was on it; that is still a manual step with the issuing CA
+(`features/ca-integration.md`).
+
+1. **Inventory** → *Attached now* → the row for the key → **factory reset…**. Nothing is
+   written by opening the panel; it reads the applets and shows what it found.
+2. Read the two lists per applet: what a reset of it destroys, and what this key is
+   holding. Untick any applet you want to keep. An applet reported as *not read* is an
+   applet whose contents are unknown — the reset still destroys them.
+3. If FIDO2 is ticked, **unplug the key and plug it back in now**, and be ready to touch
+   it. CTAP refuses a reset that does not arrive within a few seconds of power-up, which is
+   the usual reason a FIDO2 reset fails.
+4. Type the serial into the confirmation field, then **Reset serial N to factory
+   default**.
+5. Read the result table. Each applet says *reset*, *nothing to do*, or *refused* with the
+   transport's own words, and the applets are read again afterwards so the panel shows the
+   key as it now is.
+6. If an applet refused: a FIDO2 timing failure is retried by starting again at step 1 with
+   only FIDO2 ticked. A protected **OTP** slot cannot be cleared without its access code,
+   which this tool records custody of and never stores — that slot stays as it is, and the
+   key is reusable for everything except reprogramming it.
+7. **Read attached key** to refresh the inventory row before bootstrapping it again.
+
+Everything is recorded: `key.reset.started`, one `key.applet_reset` per applet that was
+actually reset, `key.reset.failed` for each refusal, and `key.reset.finished` with the
+counts. There is no undo, and nothing here can be restored from a backup — the register's
+backups hold the register, and what a reset destroys lived only on the key.
 
 ## Runbook: the consignment term
 

@@ -26,10 +26,22 @@ the native path.
 
 ## Current state
 
-**Planned, not executed.** Four plan entries: `PivKeygen`, `PivCsr`,
-`PivCertImport`, `Verify`. Native operations: `yubikey::piv::generate`,
-`piv::sign_data` over a CSR we build, `certificate::Certificate::write`. The `ykman`
-fallback commands are in the plan, with the SAN limitation stated on the step.
+**Built end to end, not hardware-verified.** All four plan entries execute:
+`PivKeygen` generates on the card with `PinPolicy::Always`, `PivCsr` assembles the
+PKCS#10 with the `rfc822Name` SAN and signs it through the slot, `PivCertImport`
+takes the certificate the operator brings back and refuses it unless it belongs to
+this key and this holder, and `Verify` reads the applets back.
+
+Two of those no longer go through the [`yubikey`] crate, and the reason is the same
+one for both: generation and import need **management-key authentication**, which the
+crate cannot do on firmware 5.7 (its `MgmKey` is a 3DES type). They run on
+[`device::piv_session`](../src/device/piv_session.rs) instead — one session that
+authenticates with AES and issues the write, because that authentication belongs to
+the session. `piv::sign_data` and `piv::attest` need no such authentication and stay
+with the crate.
+
+**No key was attached when the write paths were written.** The AES authentication was
+verified on 2026-08-11; `GENERATE` and `PUT DATA` were not.
 
 ## Design
 
@@ -104,8 +116,8 @@ test enforces that.
 | 1 | Plan entries with subject rendering and the SAN stated on the step | Done | |
 | 2 | Native on-device key generation with PIN/touch policy | **Built** (not hardware-verified) | `piv::generate` with `PinPolicy::Always` — consent per signature is the point of this slot |
 | 3 | CSR construction with the `rfc822Name` SAN, signed on-device | **Built** (not hardware-verified) | [`device::csr`](../src/device/csr.rs) — option A, `x509-cert` + `piv::sign_data`. Pure assembly with the signature injected, so the ASN.1 is testable with no key; `openssl` reads the SAN back in `tests/interop_csr_san.rs` and verifies the signature. ECDSA only: RSA needs PKCS#1 v1.5 padding applied by the caller and is refused rather than guessed |
-| 4 | Submit to a CA and retrieve the certificate | Todo | `features/ca-integration.md` |
-| 5 | Import with `--verify` semantics (certificate matches the slot key) | Todo | refuse a mismatch |
+| 4 | Submit to a CA and retrieve the certificate | **Done, as the manual round trip (2026-08-13)** | There is no submission *from* the tool by design: the operator takes the request to whichever CA the deployment uses and brings the certificate back (`features/ca-integration.md` phase 1). The run keeps its request so it can be saved, and the wizard takes the certificate as a file or pasted text |
+| 5 | Import with `--verify` semantics (certificate matches the slot key) | **Built** (not hardware-verified) | [`device::certificate::must_match_public_key`](../src/device/certificate.rs) compares the certificate's `SubjectPublicKeyInfo` against the one the slot reports, **before** the write, and the import step refuses a certificate that does not carry the holder's `rfc822Name`. A mismatch imports cleanly and then fails every signature the holder makes, which is the worst place to find out |
 | 6 | Attestation capture and storage on the run | **Built** (not hardware-verified) | read at generation time, not later — the proof has to bind to *this* generation. Stored in the step detail; a firmware that cannot attest is recorded as unproven rather than omitted |
 | 7 | Verification: read the slot back, check subject, SAN, EKU, chain | Todo | the `Verify` step's real content |
 | 8 | Expiry tracking and renewal reminder | Todo | `features/reports-and-export.md` |

@@ -70,13 +70,19 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 # libpcsclite/hidraw on Linux, WinSCard on Windows), so the transports live
 # behind a feature flag while the roadmap's Wave 1 lands them.
 yubikey = { version = "0.8", optional = true }
-# The SubjectPublicKeyInfo that `piv::generate` returns, so a generated public
-# key can be encoded. Pinned to the version `yubikey` already resolves, so this
-# adds a name to the build rather than a package.
+# X.509 and PKCS#10: the SubjectPublicKeyInfo a generated key is reported as, the
+# CSR this tool assembles, and the certificate the operator brings back from the
+# CA. Pinned to the version `yubikey` already resolves, so this adds a name to the
+# build rather than a package.
 # Must match the version `yubikey` resolves (0.2.x), or `piv::generate` returns
 # a `SubjectPublicKeyInfo` from a *different* crate version and the types do not
 # unify — which is exactly what happened when this was first pinned to 0.3.
-x509-cert = { version = "0.2.5", optional = true }
+#
+# Not optional, unlike the transports: `device::certificate` reads and checks a
+# certificate with no card involved, and a build without PIV writes still has to
+# be able to say what an operator just pasted in. Pure Rust, so it costs a
+# compile and no system library.
+x509-cert = "0.2.5"
 # The PIV management key, which the `yubikey` crate cannot set on firmware 5.7+:
 # its MgmKey is a 24-byte 3DES type, and 5.7 removed 3DES and defaults the slot
 # to AES-192. `mod transaction` is private there, so the GENERAL AUTHENTICATE
@@ -159,7 +165,7 @@ encrypted-db = ["rusqlite/bundled-sqlcipher-vendored-openssl"]
 # dead. Turned on deliberately, with the reasoning and the alternatives recorded
 # in `features/step-piv-pin-puk-management-key.md`, and every operation
 # exercised against a dedicated test key before it is relied on.
-native-piv = ["dep:yubikey", "dep:x509-cert", "dep:pcsc", "dep:aes", "yubikey/untested"]
+native-piv = ["dep:yubikey", "dep:pcsc", "dep:aes", "yubikey/untested"]
 # FIDO2 / CTAP2 over USB HID.
 native-fido = ["dep:ctap-hid-fido2"]
 # Yubico OTP slot configuration over USB HID.

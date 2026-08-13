@@ -32,12 +32,22 @@ leaves the PIN's protection nominal.
 
 ## Current state
 
-**Planned, not executed.** Two plan entries:
+**Phases 1–4 done; 2, 3 and the AES management-key write hardware-verified on
+2026-08-11.** The PIN and the PUK are changed through the [`yubikey`] crate; the
+management key is set by [`device::piv_mgm`](../src/device/piv_mgm.rs) on
+[`device::piv_session`](../src/device/piv_session.rs), which reads the slot's real
+algorithm and speaks AES to it — the crate cannot, and the measurement that proved
+that is below. Since 2026-08-13 the same session also carries on-device key
+generation and certificate import, which had been failing on 5.7 for exactly the same
+reason. Phases 6 and 7 (the inventory badge, and unblocking a returned key) are open.
+
+The two plan entries:
 
 - `StepKind::PivPinPuk` → `yubikey::YubiKey::change_pin / change_puk`
   (fallback: `ykman piv access change-pin --pin <old> --new-pin <new>`, then
   `change-puk`).
-- `StepKind::PivManagementKey` → `yubikey::MgmKey::set_protected`
+- `StepKind::PivManagementKey` → `device::piv_mgm::set_management_key`, **not**
+  `yubikey::MgmKey::set_protected`, for the measured reason below
   (fallback: `ykman piv access change-management-key --algorithm aes256 --protect
   --generate --force`).
 
@@ -70,8 +80,15 @@ Three options, in descending order of preference:
 3. **Random and escrowed** — maximum flexibility, but creates a secret store with a
    per-device value, which is the custody problem this tool would rather not have.
 
-Algorithm: AES-256 where the firmware supports it (5.4+), TDES otherwise. The
-step reads the firmware and picks, rather than failing on older keys.
+Algorithm: **read from the slot, not chosen.** This paragraph used to say "AES-256
+where the firmware supports it (5.4+), TDES otherwise", and the hardware result below
+overtook it twice: the slot takes 24 bytes, so AES-256 is not reachable at all, and
+firmware 5.7 defaults the slot to AES-192 while removing 3DES. So the implementation
+asks the card (`GET METADATA` on `9B`) and speaks whatever it answers — guessing the
+cipher fails in a way indistinguishable from a wrong key, which is how an hour was
+spent proving a good key was good. The `algorithm` template parameter below is
+therefore **not** honoured today; the slot's own algorithm wins, and the run records
+which it was.
 
 Consequence of option 1 worth stating: if the PIN is blocked *and* the PUK is
 blocked, the protected management key is unrecoverable and the applet must be reset.
@@ -92,9 +109,9 @@ operator should know it.
 | # | Phase | State | Notes |
 |---|---|---|---|
 | 1 | Plan entries for PIN/PUK and management key | Done | |
-| 2 | Read PIV state: retries remaining, management-key algorithm, whether protected | Todo | never probe by trying |
-| 3 | Change PIN and PUK natively | Todo | ordering: retries → PIN → PUK |
-| 4 | Set a protected random management key (AES-256, TDES fallback) | Todo | default path |
+| 2 | Read PIV state: retries remaining, management-key algorithm, whether protected | **Done** | `GET METADATA`, so idempotency never costs a retry. Retries and the PIN default flag through the crate; the **management** slot's algorithm and default flag through [`device::piv_session`](../src/device/piv_session.rs), because the crate's read of that slot disagreed with `ykman` after a successful change — the write was right and the read was wrong |
+| 3 | Change PIN and PUK natively | **Done** | hardware-verified 2026-08-11 on a 5C NFC 5.7.4: both no longer default, counters back to 3/3. Ordering as specified — retries read, then PIN, then PUK |
+| 4 | Set a protected random management key (AES-192 on current firmware) | **Done** | hardware-verified 2026-08-11, and **moved on 2026-08-13** into the shared session with no behavioural change intended — the APDUs are the same ones; the TLV parser under them now also handles multi-byte tags and long lengths, and has not been re-run against a key. [`device::piv_mgm`](../src/device/piv_mgm.rs) on [`device::piv_session`](../src/device/piv_session.rs): the slot's algorithm is read rather than assumed, the authentication is mutual, and the new key is written into the PIN-protected object so nothing is retained. **AES-256 is not reachable** and the note below says why — the slot takes 24 bytes |
 | 5 | Optional escrowed management key | Todo | only with `features/secrets-custody.md` |
 | 6 | Warn clearly when a default is still present | Todo | inventory badge, not just the wizard |
 | 7 | PIN/PUK unblock flow for a returned key | Todo | `features/key-lifecycle-and-revocation.md` |
@@ -260,13 +277,47 @@ Three decisions in it worth keeping:
   read were measured working through the crate and stay there. This is not a
   reimplementation of PIV.
 
+### Both remaining gaps closed 2026-08-13, and the decision that closed them
+
+The two items recorded here as still open were the same bug seen twice, and
+fixing them settled the transport question this file had been holding for the ESI
+(`roadmap.md` decision log, 2026-08-13): **the exchange is written here**, rather
+than choosing between a crate that cannot perform it and a CLI that takes a PIN
+on its command line.
+
+* **`generate_key` and `import_certificate` authenticated through the crate's
+  `MgmKey::get_protected`**, which reads the right object and then sends a 3DES
+  algorithm identifier — so both failed on any 5.7 key for the original reason,
+  not for a reason of their own.
+
+  The fix follows the protocol fact that made the first one necessary:
+  **management-key authentication belongs to the card session, not to the
+  process.** Authenticating correctly on one connection and then calling the crate
+  on another authenticates nothing. So [`device::piv_session`](../src/device/piv_session.rs)
+  is a *session* — it authenticates and then carries the two writes that need that
+  authentication, `GENERATE ASYMMETRIC KEY PAIR` and `PUT DATA` of a certificate
+  (the latter with command chaining, since a certificate does not fit in a short
+  APDU).
+
+* **`piv_state` reported `management_key_changed: false` after a successful
+  change.** Moved to the same session's `GET METADATA` read of slot `9B`, tag
+  `0x05`. This is the read the pre-flight uses to decide whether a key still
+  carries a factory management key, so one that under-reports is the one that
+  matters.
+
+The scope is still deliberately narrow. `change_pin`, `change_puk`,
+`piv::sign_data` and `piv::attest` were measured working through the crate and
+stay there; what moved is the exchange the crate gets wrong plus the two
+operations that are unreachable without it.
+
+**Not hardware-verified.** The AES authentication and `SET MANAGEMENT KEY` were
+verified on 2026-08-11 against the test key. The `GENERATE` and `PUT DATA` paths
+were written with **no key attached** — stated plainly because this whole section
+is about a failure that looked like success.
+
 ### Still open
 
-* `piv_state` reports `management_key_changed: false` even after a successful
-  change, because that flag comes from the crate's `piv::metadata` on the
-  management slot, which disagrees with `ykman`. The write is right and the
-  *read* is wrong; it should move to `piv_mgm` alongside the rest.
-* `generate_key` and `import_certificate` still authenticate through the crate's
-  `MgmKey::get_protected`, so they fail on 5.7 for the original reason. They need
-  the same treatment — the exchange now exists, so it is a rewiring rather than
-  new protocol work.
+* Phase 6: a key still holding a factory default should say so on the inventory
+  row, not only in the wizard.
+* Phase 7: the PIN/PUK unblock flow for a returned key
+  (`features/key-lifecycle-and-revocation.md`).

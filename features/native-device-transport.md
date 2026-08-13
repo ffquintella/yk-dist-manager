@@ -24,6 +24,13 @@ A subprocess transport has four concrete problems for this tool:
 
 ## Current state
 
+**Phases 1, 2 and 6 shipped; phase 3 built and reachable since 2026-08-13.** That
+last word is the whole of what changed: the PIV *writes* were shipped in a state
+where two of them — on-device key generation and certificate import — could not
+succeed on current firmware, because they authenticated through the crate's 3DES
+`MgmKey` and firmware 5.7 removed 3DES. They now run on
+[`device::piv_session`](../src/device/piv_session.rs). Not hardware-verified.
+
 **Phases 1, 2 and 6 shipped.** Phase 6 is the one that matters most for the other
 two: until it landed, `YkDistApp::new` held a hardcoded `YkmanBackend::default()`, so
 a build compiled with `--features native-device` — whose FIDO2 transport is
@@ -147,7 +154,7 @@ paperwork.
 |---|---|---|---|---|
 | 1 | PIV identification over PC/SC | 0 | Done | serial + firmware, hardware-verified |
 | 2 | FIDO2 transport (`get_info`, PIN, credential) | 1 | **Done** | [`src/device/native_fido.rs`](../src/device/native_fido.rs) — **hardware-verified on a 5.7.4 key**, reads and writes, including the resident credential `ykman` cannot create |
-| 3 | PIV write operations (PIN/PUK/mgmt key, keygen, cert import, attest) | 1 | **Built** (not hardware-verified) | the CSR was the last gap and [`device::csr`](../src/device/csr.rs) closes it — PKCS#10 with the `rfc822Name` SAN, assembled purely and signed through the slot, checked against `openssl`. `attest` added for `device-detection.md` phase 6. **No key was attached when these were written** |
+| 3 | PIV write operations (PIN/PUK/mgmt key, keygen, cert import, attest) | 1 | **Built** (not hardware-verified) | **Reachable on current firmware since 2026-08-13**: `generate` and certificate import authenticated through the crate's 3DES `MgmKey`, which a 5.7 slot refuses, so both were shipped and unusable. They now run on [`device::piv_session`](../src/device/piv_session.rs) — one session that authenticates with AES and then issues the write, because PIV authentication belongs to the session. Before that, the CSR was the last gap and [`device::csr`](../src/device/csr.rs) closed it — PKCS#10 with the `rfc822Name` SAN, assembled purely and signed through the slot, checked against `openssl`. `attest` added for `device-detection.md` phase 6. **No key was attached when these were written** |
 | 4 | OTP slot HID config frames | 1 | Todo — **read done via the fallback, writes blocked on hardware** | `ykman otp info` now answers which slots are programmed (`device::ykman::parse_otp_info`, unit-tested), which is what this phase requires *before* any write. The frames themselves are unwritten: no crate exposes them, and hand-rolling a write whose failure mode is an access code nobody holds is not something to do without a key to try it on |
 | 5 | Management applet APDU (form factor, capabilities, FIPS) | 1 | Todo | removes the last read-only dependency on `ykman` |
 | 6 | Backend auto-selection + Settings override | 1 | **Done** | [`src/device/select.rs`](../src/device/select.rs); `via: …` in the status bar, override in Settings, `device.transport.selected` audited. **This is what made phases 1–2 reachable** — until it landed, `YkDistApp::new` said `YkmanBackend::default()` and no build flag or setting could change it |

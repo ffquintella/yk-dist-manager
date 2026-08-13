@@ -19,6 +19,131 @@ Maintenance instructions (see AGENTS.md §5):
 
 ### Added
 
+- **AES management-key authentication, so every PIV write is reachable on current
+  firmware** ([`features/step-piv-pin-puk-management-key.md`](features/step-piv-pin-puk-management-key.md)
+  phases 2–4, [`features/native-device-transport.md`](features/native-device-transport.md)
+  phase 3).
+
+  Setting the management key with AES already worked. What did not was everything
+  *behind* it: `generate_key` and `import_certificate` still authenticated through
+  the `yubikey` crate's `MgmKey::get_protected`, which reads the right object and
+  then sends a **3DES** algorithm identifier — and firmware 5.7 removed 3DES and
+  defaults the slot to AES-192. Both operations therefore failed on current
+  hardware for a reason that had nothing to do with the operation, which is the
+  same trap recorded in the phase notes on 2026-08-11.
+
+  The fix follows the protocol fact that made it necessary: **management-key
+  authentication belongs to the card session, not to the process**, so it is not
+  enough to authenticate correctly somewhere and then call the crate. The new
+  [`device::piv_session`](src/device/piv_session.rs) is one PC/SC session that
+  reads the management slot's *actual* algorithm, does the mutual-authentication
+  exchange with AES-128/192/256, and then carries the two writes that need that
+  authentication on the same connection: `GENERATE ASYMMETRIC KEY PAIR` and
+  `PUT DATA` of a certificate (with command chaining, because a certificate does
+  not fit in a short APDU). `change_pin`, `change_puk`, `sign_data` and `attest`
+  were measured working through the crate and stay there — this is still not a
+  reimplementation of PIV.
+
+  Also fixed by the move: `piv_state` reported `management_key_changed: false`
+  after a **successful** change, because that flag came from the crate's
+  `piv::metadata` on slot `9B`, which disagreed with `ykman`. The pre-flight uses
+  it to decide whether a key still carries a factory management key, so a read
+  that under-reports there is the one that matters.
+
+  **Not hardware-verified.** The AES exchange and `SET MANAGEMENT KEY` were
+  verified against a 5C NFC 5.7.4 on 2026-08-11; the `GENERATE` and `PUT DATA`
+  paths added here were written with no key attached.
+
+- **The operator brings the certificate: a manual CA round trip**
+  ([`features/ca-integration.md`](features/ca-integration.md) phase 1,
+  [`features/step-piv-signing-certificate.md`](features/step-piv-signing-certificate.md)
+  phases 4 and 5, decided 2026-08-13).
+
+  The issuing CA was an open question, and the certificate import skipped on every
+  run naming it. The answer is that **the tool asks the operator for the
+  certificate** rather than integrating with an issuer: the run produces the
+  request, whoever runs the deployment has it signed by whichever CA they use, and
+  the certificate comes back through the wizard as a file or pasted text. Every
+  other issuer (an internal pilot CA, BastionVault, an enterprise CA) is a special
+  case of this one, so it is the mode that had to exist first.
+
+  What that meant in practice, beyond a text box:
+
+  * the CSR step now **keeps** its request rather than reporting its size, so the
+    operator can save it from the run — a request nobody can retrieve means
+    generating a second key and abandoning the first, and the round trip can take
+    days across a register that gets closed and reopened;
+  * a new [`device::certificate`](src/device/certificate.rs) parses PEM or DER,
+    summarises subject, issuer, serial, validity and every `rfc822Name`, and
+    refuses a certificate whose public key is **not the key in the slot**. It is
+    always compiled, because a certificate can be checked without a card;
+  * the import step refuses a certificate that does not carry the address this run
+    was built for, naming both what was expected and what the certificate holds.
+    A certificate for the wrong holder installs cleanly and then fails at every
+    signature they make;
+  * the wizard shows what was parsed **before** the write, and says plainly when
+    the certificate belongs to somebody else.
+
+- **A run can be finished after it stopped short**
+  ([`features/gui-bootstrap-wizard.md`](features/gui-bootstrap-wizard.md) phase 5).
+
+  Not a convenience — without it the decision above could not work at all. The
+  pre-flight refuses a *fresh* run on a key that is already configured, with no
+  override ([`features/device-detection.md`](features/device-detection.md) phase
+  5), so a run whose import step skipped could never be completed. Resuming leaves
+  every `Done` step alone and attempts the rest.
+
+  Because nothing is retained (custody model B), a resume cannot authenticate to
+  the applet with a secret the first run no longer has, so the operator types the
+  PIV PIN they wrote down — the key is still on their desk while it waits for its
+  certificate. `Executor::supply` takes it, and `take_secrets` deliberately does
+  **not** hand it back to the show-once panel: that panel says *write these down,
+  nothing keeps a copy*, and a value the operator already holds does not belong
+  under that sentence.
+
+- **Any plugged key can be returned to factory default, after confirmation**
+  ([`features/key-lifecycle-and-revocation.md`](features/key-lifecycle-and-revocation.md)
+  phase 5 — **out of turn**, and the reason is in [`roadmap.md`](roadmap.md)).
+
+  This is the exit the tool was already pointing at. The decision of 2026-08-13 is that a
+  configured key is **only ever returned to factory default** — no override, no in-place
+  re-bootstrap — and the pre-flight refuses such a key with a message naming the reset. The
+  reset was not an action the application had, so the refusal named a way forward that
+  meant leaving for a command line.
+
+  From *Attached now* on the Inventory screen, per attached key — including one that
+  enumerated but would not describe itself, which is the state a reset is most for. The
+  applets are ticked **individually**, because "reset FIDO2" and "destroy the signing key
+  in slot 9c" are different decisions. The loss is named **twice**: what that applet's
+  reset destroys in general, and what this key was read to be carrying ("slot 9c holds a
+  certificate and the private key behind it"). An applet that did not answer is reported as
+  unknown and never as empty. The button stays disabled until the **serial is typed back**,
+  because the action is a row button in a table of attached keys and a mis-click should not
+  be able to destroy a certificate.
+
+  The engine ([`device::reset`](src/device/reset.rs)) borrows the executor's rules for the
+  same reasons: an unforgeable `Confirmation` re-checked against the request, so an
+  agreement about FIDO2 does not authorise a PIV reset the operator ticked afterwards; and
+  **no record, no write** — the opening entry is written before the first reset and a
+  register that cannot take it abandons the whole thing. One applet's failure does not stop
+  the others, because a half-reset key is worse than a reset one; a key that has been
+  unplugged does stop it, and the applets that never ran say so rather than being left out
+  of the answer. Recorded as `key.reset.started`, `key.applet_reset` per applet,
+  `key.reset.skipped`, `key.reset.failed` and `key.reset.finished` — and `key.applet_reset`
+  is written only when something actually was reset, so an OTP slot pair that was already
+  empty does not leave a false entry in an immutable trail.
+
+  FIDO2 is reset first, because CTAP only accepts a reset within seconds of power-up and
+  the panel says so — the other two will wait. FIDO2 and OTP go through **`ykman`, labelled
+  as the fallback it is** in the panel: no crate in this build sends `authenticatorReset`,
+  and the OTP configuration frames are still unimplemented. PIV is native where the session
+  is, and the native path deliberately blocks the PIN and the PUK first, because the applet
+  accepts `RESET` only once both are exhausted.
+
+  What this does **not** do, deliberately: it does not revoke the certificate that was on
+  the key, does not remove the credential at the relying party, and does not gate
+  reassignment. Those are phases 3, 4 and 6 of the same spec.
+
 - **A key's applets are read before a run, and an already-configured key is refused**
   ([`features/device-detection.md`](features/device-detection.md) phases 4 and 5).
 

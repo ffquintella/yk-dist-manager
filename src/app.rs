@@ -440,6 +440,31 @@ pub struct InventoryPanel {
     pub error: Option<String>,
 }
 
+/// The factory reset waiting for the operator to confirm it, and what it found
+/// (`features/key-lifecycle-and-revocation.md` phase 5).
+///
+/// Separate from [`InventoryPanel`] because the two confirmations are about
+/// different things and must not be able to be open at once: removing a row
+/// deletes a record and leaves the key alone; a reset leaves the record and
+/// destroys what is on the key.
+#[derive(Default)]
+pub struct ResetPanel {
+    /// Serial the operator asked to reset. `None` while the panel is closed.
+    pub serial: Option<u32>,
+    /// Which applets are ticked, in the order they will be reset.
+    pub applets: Vec<crate::device::reset::Applet>,
+    /// The serial typed back by hand. The button stays disabled until it matches:
+    /// a reset destroys credentials on hardware, so agreeing to it should cost
+    /// more than a click landing on the wrong row.
+    pub typed: String,
+    /// What the applets held when the panel opened — read once, read-only, so the
+    /// preview names this key's actual loss rather than a generic one.
+    pub observed: crate::device::AppletStates,
+    /// What the run did, per applet, once it has run.
+    pub outcomes: Vec<crate::device::reset::Outcome>,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Inventory,
@@ -611,6 +636,29 @@ impl crate::bootstrap::RunRecorder for StoreRecorder {
     }
 }
 
+/// The same recorder serves the factory reset, which has no run to persist and
+/// the same absolute requirement that its trail be written.
+impl crate::device::reset::Recorder for StoreRecorder {
+    fn audit(&mut self, event: &str, target: &str, detail: &str) -> Result<(), String> {
+        crate::bootstrap::RunRecorder::audit(self, event, target, detail)
+    }
+}
+
+/// Whether a run is starting or being finished.
+///
+/// One driver for both, because everything either side of the executor call — the
+/// signature gate, the SAN, the transport, the recorder — is the same, and a
+/// second copy of it would be a second place for the gate to be forgotten.
+enum RunMode {
+    Fresh(crate::bootstrap::Confirmation),
+    Resume {
+        run: crate::domain::BootstrapRun,
+        /// The PIV PIN the operator typed, because nothing was retained: a resume
+        /// cannot authenticate to the applet with a secret this run no longer has.
+        piv_pin: Option<crate::secret::Secret>,
+    },
+}
+
 /// Bootstrap wizard state.
 #[derive(Default)]
 pub struct Wizard {
@@ -630,6 +678,23 @@ pub struct Wizard {
     ///
     /// Not `Clone` and never persisted — see [`crate::secret::ShowOnce`].
     pub secrets: Option<crate::secret::ShowOnce>,
+    /// The issued certificate the operator has pasted or loaded, waiting to be
+    /// imported (`features/ca-integration.md` phase 1).
+    ///
+    /// A plain `String` and deliberately not a [`crate::secret::Secret`]: a
+    /// certificate is a public document, and treating it as a secret would mean it
+    /// could not be shown, checked or kept as evidence — which is the opposite of
+    /// what it is for.
+    pub certificate_pem: String,
+    /// What was read out of that certificate, so the operator sees whose it is
+    /// before it reaches the key.
+    pub certificate_preview: Option<Result<crate::device::certificate::Summary, String>>,
+    /// The PIV PIN, typed for a resume only.
+    ///
+    /// A `String` in the wizard and a [`crate::secret::Secret`] the moment it is
+    /// used: it has to live in a text field to be typed at all. Cleared as soon as
+    /// the run that needed it has been driven, and never recorded.
+    pub resume_pin: String,
 }
 
 impl std::fmt::Debug for Wizard {
@@ -728,6 +793,8 @@ pub struct YkDistApp {
     pub holder_form: HolderForm,
     pub dist_form: DistForm,
     pub inventory: InventoryPanel,
+    /// The factory reset waiting to be confirmed, and what it did.
+    pub reset: ResetPanel,
     pub wizard: Wizard,
     pub template_editor: TemplateEditor,
     pub term_panel: TermPanel,
@@ -845,6 +912,7 @@ impl YkDistApp {
             holder_form: HolderForm::default(),
             dist_form: DistForm::default(),
             inventory: InventoryPanel::default(),
+            reset: ResetPanel::default(),
             wizard: Wizard::default(),
             template_editor: TemplateEditor::default(),
             term_panel: TermPanel::default(),
@@ -2002,6 +2070,9 @@ impl YkDistApp {
     pub fn request_key_removal(&mut self, serial: u32) {
         self.inventory.error = None;
         self.inventory.note_serial = None;
+        // A reset asked for and not answered is closed rather than left behind
+        // this one: two destructive confirmations on one screen is one too many.
+        self.reset.serial = None;
         self.inventory.pending_removal = Some(serial);
     }
 
@@ -2037,6 +2108,173 @@ impl YkDistApp {
                 self.status = format!("refused: {e}");
             }
         }
+    }
+
+    /// Ask to return a plugged key to factory default. **Nothing is written
+    /// here** (`features/key-lifecycle-and-revocation.md` phase 5).
+    ///
+    /// Opening the panel reads the applets, which is a read and only a read —
+    /// AGENTS.md forbids a hardware write as a side effect of opening a screen,
+    /// and this is the screen that would be worst to break that on. The read is
+    /// what lets the confirmation name *this* key's loss ("slot 9c holds a
+    /// certificate") instead of a generic one, and it is recorded for the same
+    /// reason the pre-flight records its own: a destructive act justified by what
+    /// the tool saw should leave behind what the tool saw.
+    pub fn request_key_reset(&mut self, serial: u32) {
+        // The two confirmations are mutually exclusive by construction: whichever
+        // is asked for last closes the other, so no frame can show both.
+        self.inventory.pending_removal = None;
+        self.inventory.note_serial = None;
+
+        self.reset.serial = Some(serial);
+        self.reset.applets = crate::device::reset::Applet::ALL.to_vec();
+        self.reset.typed.clear();
+        self.reset.outcomes.clear();
+        self.reset.error = None;
+        self.reset.observed = crate::device::applets::read(serial, &self.transport);
+
+        if !self.reset.observed.is_empty() {
+            self.record(
+                "device.applets.read",
+                &serial.to_string(),
+                &self.reset.observed.describe().join(" | "),
+            );
+        }
+        self.status = format!("serial {serial}: nothing has been written — read the preview");
+    }
+
+    /// Abandon a reset the operator asked about and then declined.
+    pub fn cancel_key_reset(&mut self) {
+        self.reset.serial = None;
+        self.reset.typed.clear();
+        self.reset.error = None;
+        self.status = "nothing was written".into();
+    }
+
+    /// Tick or untick one applet.
+    ///
+    /// The list is kept in [`crate::device::reset::Applet::ALL`] order rather
+    /// than click order, because that order is the order the hardware calls go
+    /// out in and the preview should read as the run will happen.
+    pub fn toggle_reset_applet(&mut self, applet: crate::device::reset::Applet, wanted: bool) {
+        self.reset.applets.retain(|a| *a != applet);
+        if wanted {
+            self.reset.applets.push(applet);
+        }
+        self.reset.applets = crate::device::reset::Applet::ALL
+            .iter()
+            .copied()
+            .filter(|a| self.reset.applets.contains(a))
+            .collect();
+    }
+
+    /// The preview: what each applet's reset would destroy, and how.
+    ///
+    /// **All three, whatever is ticked.** The preview is how an operator decides
+    /// what to tick, and one that showed only the current selection would hide
+    /// what unticking an applet spares — which is the comparison they are making.
+    pub fn reset_plan(&self) -> Vec<crate::device::reset::PlanItem> {
+        crate::device::reset::plan(
+            &crate::device::reset::Applet::ALL,
+            &self.reset.observed,
+            &self.transport,
+        )
+    }
+
+    /// May the reset button be enabled?
+    ///
+    /// Two conditions, both the operator's: something is selected, and the serial
+    /// has been typed back. The second is not ceremony — the panel is opened from
+    /// a row in a table of attached keys, and re-typing the number is what
+    /// distinguishes "reset this key" from "click landed on the wrong row".
+    pub fn reset_is_confirmable(&self) -> bool {
+        let Some(serial) = self.reset.serial else {
+            return false;
+        };
+        !self.reset.applets.is_empty() && self.reset.typed.trim() == serial.to_string()
+    }
+
+    /// Run the confirmed reset against the attached key.
+    ///
+    /// The confirmation is built here, from the same two values the button was
+    /// enabled on, and re-checked inside the engine against the request.
+    pub fn confirm_key_reset(&mut self) {
+        use crate::device::reset::{self, Confirmation, HardwareResetter, Request};
+
+        self.reset.error = None;
+        let Some(serial) = self.reset.serial else {
+            return;
+        };
+        if !self.reset_is_confirmable() {
+            self.reset.error = Some(
+                "type the serial back and choose at least one applet — nothing was written".into(),
+            );
+            return;
+        }
+
+        // Nothing else touches the key while this runs, for the reason the
+        // executor stops it too: enumerating readers while another handle holds
+        // the card is not a thing to discover half way through a reset. The next
+        // frame restarts it.
+        self.stop_device_watch("a factory reset is about to write to a key");
+
+        let applets = self.reset.applets.clone();
+        let request = Request::new(serial, &applets, &self.operator);
+        let confirmation = Confirmation::given(serial, &applets);
+        let mut resetter = HardwareResetter::for_key(serial, &self.transport);
+
+        let outcome = {
+            let Some(store) = self.store.take() else {
+                self.reset.error = Some("no database is open, so nothing was written".into());
+                return;
+            };
+            let mut recorder = StoreRecorder {
+                store,
+                operator: self.operator.clone(),
+                failure: None,
+            };
+            let result = reset::perform(&request, &confirmation, &mut resetter, &mut recorder);
+            let failure = recorder.failure.clone();
+            self.store = Some(recorder.store);
+            (result, failure)
+        };
+
+        match outcome {
+            (Ok(outcomes), failure) => {
+                let done = outcomes
+                    .iter()
+                    .filter(|o| o.status == reset::Status::Done)
+                    .count();
+                let failed = outcomes
+                    .iter()
+                    .filter(|o| o.status == reset::Status::Failed)
+                    .count();
+                self.status = if failed == 0 {
+                    format!("serial {serial}: {done} applet(s) returned to factory default")
+                } else {
+                    format!(
+                        "serial {serial}: {done} applet(s) reset, {failed} refused — read the \
+                         detail below"
+                    )
+                };
+                tracing::warn!(event = "key.reset", serial, done, failed);
+                self.reset.outcomes = outcomes;
+                // Re-read, so the panel shows the key as it is now rather than as
+                // it was when the operator opened the panel. A reset that claims
+                // to have worked and a key that still holds a certificate is
+                // exactly the disagreement this makes visible.
+                self.reset.observed = crate::device::applets::read(serial, &self.transport);
+                if let Some(failure) = failure {
+                    self.reset.error = Some(format!("AUDIT FAILURE: {failure}"));
+                }
+            }
+            (Err(e), _) => {
+                tracing::error!(event = "key.reset.refused", serial, reason = %e);
+                self.reset.error = Some(e.to_string());
+                self.status = format!("refused: {e}");
+            }
+        }
+        self.refresh();
     }
 
     /// What history refers to a serial, for the confirmation warning.
@@ -3614,6 +3852,124 @@ impl YkDistApp {
         }
     }
 
+    // ------------------------------------------------- the certificate exchange
+    //
+    // The issuer is the operator (`features/ca-integration.md` phase 1, decided
+    // 2026-08-13): the run produces a request, somebody signs it at whichever CA
+    // the deployment uses, and the certificate comes back through this pair of
+    // methods. Two steps, both explicit, because the round trip leaves this
+    // workstation and may take days.
+
+    /// Save the certification request this run produced.
+    ///
+    /// Read out of the persisted run rather than held in memory, so it survives
+    /// the register being closed and reopened while the CA does its work. A
+    /// request nobody can retrieve means generating a second key and abandoning
+    /// the first, which is why this is not a "copy to clipboard".
+    pub fn save_certificate_request(&mut self) {
+        let Some(csr) = self
+            .wizard
+            .run
+            .as_ref()
+            .and_then(crate::bootstrap::certificate_request)
+            .map(str::to_owned)
+        else {
+            self.wizard.error =
+                Some("this run produced no certification request to save".to_owned());
+            return;
+        };
+
+        let serial = self.wizard.serial.trim().to_owned();
+        let filename = format!("csr-{serial}.pem");
+        if let Some(path) = self.save_bytes(&filename, csr.as_bytes()) {
+            let display = path.display().to_string();
+            // Audited: this is the point at which a request for a certificate in a
+            // holder's name leaves the tool, and "who asked for that certificate"
+            // is a question an audit does ask.
+            self.record(
+                // The name this event has in `features/ca-integration.md`.
+                "ca.csr.exported",
+                &format!("serial:{serial}"),
+                &display,
+            );
+            self.status = format!("certification request written to {display}");
+        }
+    }
+
+    /// Load an issued certificate from a file, ready for the import step.
+    pub fn load_certificate(&mut self) {
+        let Some((name, bytes)) = self.read_certificate_file() else {
+            return;
+        };
+        // Lossy on purpose: a DER file is not UTF-8, and `device::certificate`
+        // accepts raw DER as well as PEM. A file that is neither fails at the
+        // preview, with a sentence, rather than here.
+        self.wizard.certificate_pem = String::from_utf8_lossy(&bytes).into_owned();
+        self.preview_certificate();
+        self.status = match &self.wizard.certificate_preview {
+            Some(Ok(summary)) => format!("{name}: {}", summary.one_line()),
+            _ => format!("{name} was loaded, but it is not a certificate this tool can read"),
+        };
+    }
+
+    /// Parse what is in the certificate box, so the operator sees whose it is
+    /// before it reaches the key.
+    pub fn preview_certificate(&mut self) {
+        self.wizard.certificate_preview = Some(crate::device::certificate::preview(
+            &self.wizard.certificate_pem,
+        ));
+    }
+
+    /// Does the loaded certificate carry the address this run is building for?
+    ///
+    /// The wizard shows the answer before the run. The import step checks it again
+    /// and refuses — this is the warning, not the gate.
+    pub fn certificate_matches_holder(&self) -> Option<bool> {
+        let summary = match self.wizard.certificate_preview.as_ref()? {
+            Ok(summary) => summary,
+            Err(_) => return None,
+        };
+        let holder = self.holders.get(self.wizard.holder_index)?;
+        let ctx = RenderContext::for_holder(
+            holder,
+            self.wizard.serial.trim().parse().unwrap_or_default(),
+            &self.operator,
+            &self.org,
+        );
+        let expected = self.settings.san.render(&ctx).ok()?;
+        Some(summary.covers_email(&expected))
+    }
+
+    #[cfg(feature = "file-dialog")]
+    fn read_certificate_file(&mut self) -> Option<(String, Vec<u8>)> {
+        let path = rfd::FileDialog::new()
+            .set_title("Choose the issued certificate")
+            .add_filter("Certificate", &["pem", "crt", "cer", "der"])
+            .pick_file()?;
+        match std::fs::read(&path) {
+            Ok(content) => Some((
+                path.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "certificate".into()),
+                content,
+            )),
+            Err(e) => {
+                self.status = format!("could not read {}: {e}", path.display());
+                None
+            }
+        }
+    }
+
+    #[cfg(not(feature = "file-dialog"))]
+    fn read_certificate_file(&mut self) -> Option<(String, Vec<u8>)> {
+        // Not a dead end: the certificate can still be pasted into the box, which
+        // is what a PEM document is for.
+        self.status = "choosing a file needs a build with `--features file-dialog` — paste the \
+                       certificate instead"
+            .into();
+        None
+    }
+
     // ------------------------------------------------------------ file access
 
     #[cfg(feature = "file-dialog")]
@@ -3990,6 +4346,74 @@ impl YkDistApp {
     /// Returns without writing when this build has no transport — the button is
     /// disabled in that case, and this is the second guard behind it.
     pub fn execute_run(&mut self, confirmation: crate::bootstrap::Confirmation) {
+        self.drive_run(RunMode::Fresh(confirmation));
+    }
+
+    /// Finish a run that stopped short, with the certificate the operator has now.
+    ///
+    /// This is the second half of the manual issuer
+    /// (`features/ca-integration.md` phase 1) and it is not optional: the
+    /// pre-flight refuses a *fresh* run on a key that is already configured, with
+    /// no override (`features/device-detection.md` phase 5), so a run whose import
+    /// step skipped could otherwise never be completed at all. Resuming leaves
+    /// every `Done` step alone and attempts the rest.
+    pub fn resume_run(&mut self) {
+        let Some(run) = self.wizard.run.clone() else {
+            self.wizard.error = Some("there is no run in progress to finish".into());
+            return;
+        };
+
+        // The plan is rebuilt from the template on screen, and the executor
+        // indexes the run's steps against it — so a plan that no longer lines up
+        // is refused rather than resumed against the wrong commands.
+        if run.steps.len() != self.wizard.plan.len() {
+            self.wizard.error = Some(format!(
+                "this run has {} step(s) and the plan on screen has {} — select the procedure and \
+                 version this run used ({} {}) and build the plan again before finishing it",
+                run.steps.len(),
+                self.wizard.plan.len(),
+                run.template_id,
+                run.template_version
+            ));
+            return;
+        }
+        let selected = self
+            .selected_template()
+            .map(|t| (t.id.clone(), t.version.clone()));
+        if selected != Some((run.template_id.clone(), run.template_version.clone())) {
+            self.wizard.error = Some(format!(
+                "this run applied {} version {}, and that is not what is selected — a resume must \
+                 continue the same procedure",
+                run.template_id, run.template_version
+            ));
+            return;
+        }
+
+        // The PIV PIN, if the operator typed one. Not required in general — a
+        // resume may be finishing an OTP step that needs no PIN — but the
+        // certificate import cannot authenticate without it, and it says so.
+        let piv_pin = match self.wizard.resume_pin.trim() {
+            "" => None,
+            typed => match crate::secret::Secret::from_operator_input(
+                crate::secret::SecretKind::PivPin,
+                typed,
+            ) {
+                Ok(secret) => Some(secret),
+                Err(e) => {
+                    self.wizard.error = Some(format!("that PIV PIN is not usable: {e}"));
+                    return;
+                }
+            },
+        };
+        // Wiped from the text field before the run rather than after: the run may
+        // fail, and the field is not where a PIN should wait.
+        self.wizard.resume_pin.clear();
+
+        self.drive_run(RunMode::Resume { run, piv_pin });
+    }
+
+    /// The shared path: gate, build the request, and hand it to the executor.
+    fn drive_run(&mut self, mode: RunMode) {
         use crate::bootstrap::{ExecutionRequest, Executor, Transports};
 
         let Ok(serial) = self.wizard.serial.trim().parse::<u32>() else {
@@ -4074,6 +4498,8 @@ impl YkDistApp {
                 .unwrap_or_default(),
             certificate_email: san,
             holder_display: holder.as_ref().map(|h| h.display()).unwrap_or_default(),
+            certificate_pem: Some(self.wizard.certificate_pem.clone())
+                .filter(|pem| !pem.trim().is_empty()),
         };
 
         let mut backend = match Self::write_backend(serial) {
@@ -4104,7 +4530,21 @@ impl YkDistApp {
                 let mut executor = Executor::new(Transports {
                     backend: backend.as_mut(),
                 });
-                let run = executor.run(&request, &confirmation, &mut recorder);
+                let run = match mode {
+                    RunMode::Fresh(confirmation) => {
+                        executor.run(&request, &confirmation, &mut recorder)
+                    }
+                    // No `Confirmation` here because the engine's `resume` takes
+                    // none: it re-attempts steps the operator already agreed to,
+                    // and the button that reaches this is itself the consent —
+                    // shown next to what the certificate says.
+                    RunMode::Resume { run, piv_pin } => {
+                        if let Some(pin) = piv_pin {
+                            executor.supply(pin);
+                        }
+                        executor.resume(&request, run, &mut recorder)
+                    }
+                };
                 // Take the secrets out whatever happened: a failed run may still
                 // have generated one, and it must not outlive this call.
                 self.wizard.secrets = Some(crate::secret::ShowOnce::new(executor.take_secrets()));

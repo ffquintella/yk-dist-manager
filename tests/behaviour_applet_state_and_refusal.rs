@@ -66,6 +66,7 @@ fn request<'a>(
         certificate_subject: "CN=Ana Silva,OU=ESI".into(),
         certificate_email: "ana@example.org".into(),
         holder_display: "Ana Silva".into(),
+        certificate_pem: None,
     }
 }
 

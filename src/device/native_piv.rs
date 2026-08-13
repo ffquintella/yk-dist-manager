@@ -38,8 +38,8 @@
 //! hand over, escrow or lose. That is the default; `protect = false` falls back
 //! to `set_manual`, which produces a key somebody then has to keep.
 
+use yubikey::YubiKey;
 use yubikey::piv::{self, AlgorithmId, ManagementSlotId, SlotId};
-use yubikey::{MgmKey, PinPolicy, TouchPolicy, YubiKey};
 
 use super::write::{KeygenEvidence, PivState, PivWriter, Result, WriteError};
 use crate::secret::Secret;
@@ -178,16 +178,100 @@ impl NativePiv {
         }
     }
 
-    /// Authenticate with the management key, preferring the PIN-protected one.
+    /// Return the PIV applet to factory default
+    /// (`features/key-lifecycle-and-revocation.md` phase 5).
+    ///
+    /// **Destroys the private key and certificate in every slot**, and puts the
+    /// PIN, PUK and management key back to the applet's published defaults. Not
+    /// on [`PivWriter`] on purpose: that trait is the bootstrap's write surface,
+    /// where every method borrows a secret, and a reset is the one operation that
+    /// needs none — it is the path for a key whose PIN nobody has.
+    ///
+    /// ## Why it blocks the PIN and the PUK first
+    ///
+    /// The applet only accepts `RESET` once **both** counters are exhausted. That
+    /// is the PIV card-edge's own protection against a reset being the easiest
+    /// way past a PIN, and it means the sequence below is what every tool does,
+    /// `ykman` included: present a wrong PIN until there are no attempts left,
+    /// block the PUK, then send the command.
+    ///
+    /// It is therefore *deliberately destructive before it is destructive*, and
+    /// an interruption between the blocking and the command leaves the applet
+    /// locked. That state is recoverable — a locked applet is exactly the state
+    /// `RESET` is accepted in, so running this again finishes the job — and it is
+    /// why the caller confirms first.
+    ///
+    /// The two candidate PINs alternate for one reason: if the first happened to
+    /// *be* the key's PIN, verifying it would succeed and reset the counter to
+    /// three, and a loop that kept presenting it would never finish.
+    pub fn reset_applet(&self, serial: u32) -> Result<String> {
+        const OP: &str = "piv.reset";
+        /// Enough attempts for both candidates against the maximum retry count a
+        /// YubiKey allows, and a bound so a firmware that answers unexpectedly
+        /// cannot spin here for ever.
+        const MAX_ATTEMPTS: usize = 32;
+        /// Two values that are not each other, so at least one is wrong.
+        const WRONG: [&[u8]; 2] = [b"00000000", b"11111111"];
+
+        let mut key = self.open(serial, OP)?;
+
+        let mut which = 0;
+        let mut blocked = false;
+        for _ in 0..MAX_ATTEMPTS {
+            match key.verify_pin(WRONG[which]) {
+                // That was the PIN. One in a hundred million, and cheaper to
+                // handle than to argue about: switch, and the next one fails.
+                Ok(()) => which = 1 - which,
+                Err(yubikey::Error::WrongPin { tries: 0 }) | Err(yubikey::Error::PinLocked) => {
+                    blocked = true;
+                    break;
+                }
+                Err(yubikey::Error::WrongPin { .. }) => continue,
+                Err(e) => return Err(Self::classify(OP, e, None)),
+            }
+        }
+        if !blocked {
+            return Err(WriteError::Failed {
+                operation: OP,
+                reason: format!(
+                    "the PIN retry counter did not reach zero in {MAX_ATTEMPTS} attempts, so the \
+                     applet would refuse the reset — nothing further was tried"
+                ),
+            });
+        }
+
+        key.block_puk()
+            .map_err(|e| Self::classify(OP, e, Some(0)))?;
+        key.reset_device()
+            .map_err(|e| Self::classify(OP, e, Some(0)))?;
+
+        Ok(
+            "PIV applet reset: slots cleared, PIN, PUK and management key back to the applet's \
+            factory defaults"
+                .to_owned(),
+        )
+    }
+
+    /// Open a session that is authenticated with the management key.
     ///
     /// A key configured by this tool has its management key protected on the
     /// card, so it is fetched with the PIN rather than held anywhere.
-    fn authenticate(key: &mut YubiKey, pin: &Secret, operation: &'static str) -> Result<()> {
-        key.verify_pin(pin.expose().as_bytes())
-            .map_err(|e| Self::classify(operation, e, None))?;
-        let mgm = MgmKey::get_protected(key).map_err(|e| Self::classify(operation, e, None))?;
-        key.authenticate(mgm)
-            .map_err(|e| Self::classify(operation, e, None))
+    ///
+    /// **Not the crate.** `MgmKey::get_protected` reads the right object and then
+    /// authenticates with a 3DES algorithm identifier, which a firmware-5.7 slot
+    /// refuses — so every operation behind it (`generate`, certificate import)
+    /// failed on current hardware for a reason that had nothing to do with the
+    /// operation. [`super::piv_session`] reads the slot's real algorithm and
+    /// speaks that, and because PIV authentication belongs to the *session*, the
+    /// write has to go out on the same connection that authenticated.
+    fn authenticated(
+        serial: u32,
+        pin: &Secret,
+        operation: &'static str,
+    ) -> Result<super::piv_session::Session> {
+        let mut session = super::piv_session::Session::open(serial, operation)?;
+        session.authenticate_management(pin.expose(), FACTORY_MANAGEMENT_KEY, operation)?;
+        Ok(session)
     }
 }
 
@@ -207,13 +291,27 @@ impl PivWriter for NativePiv {
         // `Some(true)` and `None` both leave the executor to try.
         let pin_changed_from_default =
             Self::is_default(&mut key, ManagementSlotId::Pin) == Some(false);
-        let management_key_changed =
-            Self::is_default(&mut key, ManagementSlotId::Management) == Some(false);
 
         // Read, never reset. `get_pin_retries` reports what is left; a failure to
         // read it is `None` rather than an error, because a retry counter is context
         // for the operator and not a reason to refuse to describe the applet.
         let pin_retries = key.get_pin_retries().ok();
+
+        // The management slot is read on our own session rather than through the
+        // crate. Measured reason: after this tool had successfully changed the
+        // key, `piv::metadata` on slot 9B still reported *default*, disagreeing
+        // with `ykman`. The write was right and the read was wrong, and a read
+        // that under-reports here is the one that matters — it is what the
+        // pre-flight uses to decide whether a key still carries a factory
+        // management key.
+        //
+        // The crate's handle is dropped first: two connections to one reader at
+        // the same time is how a session gets refused.
+        drop(key);
+        let management_key_changed = super::piv_session::Session::open(serial, "piv.metadata")
+            .ok()
+            .and_then(|mut session| session.management_key_is_default("piv.metadata"))
+            == Some(false);
 
         Ok(PivState {
             occupied_slots,
@@ -315,23 +413,29 @@ impl PivWriter for NativePiv {
         pin: &Secret,
     ) -> Result<KeygenEvidence> {
         const OP: &str = "piv.generate_key";
-        let mut key = self.open(serial, OP)?;
         let slot_id = Self::parse_slot(slot, OP)?;
-        let algorithm_id = Self::parse_algorithm(algorithm, OP)?;
+        // Validated before anything is opened, so a template with a name the
+        // transport cannot generate fails without touching the key.
+        let key_algorithm = super::piv_session::KeyAlgorithm::from_name(algorithm, OP)?;
 
-        Self::authenticate(&mut key, pin, OP)?;
+        // The session is scoped: it authenticates, generates, and is dropped
+        // before the crate opens its own connection for the attestation below.
+        // Two handles on one reader at once is how a session gets refused.
+        let public_key_der = {
+            let mut session = Self::authenticated(serial, pin, OP)?;
+            session.generate_key(
+                u8::from(slot_id),
+                key_algorithm,
+                // The signing key must require the PIN every time: this slot signs
+                // documents in the holder's name, so consent per signature is the
+                // point (`features/step-piv-signing-certificate.md`).
+                super::piv_session::PinPolicy::Always,
+                super::piv_session::TouchPolicy::Cached,
+                OP,
+            )?
+        };
 
-        let public = piv::generate(
-            &mut key,
-            slot_id,
-            algorithm_id,
-            // The signing key must require the PIN every time: this slot signs
-            // documents in the holder's name, so consent per signature is the
-            // point (`features/step-piv-signing-certificate.md`).
-            PinPolicy::Always,
-            TouchPolicy::Cached,
-        )
-        .map_err(|e| Self::classify(OP, e, None))?;
+        let mut key = self.open(serial, OP)?;
 
         // Attest immediately, while this generation is the one in the slot. A proof
         // read later would prove whatever is there then, which is a different claim.
@@ -354,7 +458,7 @@ impl PivWriter for NativePiv {
         Ok(KeygenEvidence {
             slot: slot.to_owned(),
             algorithm: algorithm.to_owned(),
-            public_key_pem: encode_public_key(&public, OP)?,
+            public_key_pem: pem_encode("PUBLIC KEY", &public_key_der),
             attestation_pem,
         })
     }
@@ -415,25 +519,43 @@ impl PivWriter for NativePiv {
         pin: &Secret,
     ) -> Result<()> {
         const OP: &str = "piv.import_certificate";
-        let mut key = self.open(serial, OP)?;
         let slot_id = Self::parse_slot(slot, OP)?;
 
-        let der = pem_decode(certificate_pem).ok_or_else(|| WriteError::Failed {
-            operation: OP,
-            reason: "the certificate is not PEM".into(),
+        let der = super::certificate::der_from_pem(certificate_pem).ok_or_else(|| {
+            WriteError::Failed {
+                operation: OP,
+                reason: "the certificate is not a PEM `CERTIFICATE` document".into(),
+            }
         })?;
-        let certificate =
-            yubikey::Certificate::from_bytes(der).map_err(|e| Self::classify(OP, e, None))?;
 
-        Self::authenticate(&mut key, pin, OP)?;
+        // `--verify` semantics, before the write rather than after
+        // (`features/step-piv-signing-certificate.md` phase 5): the certificate
+        // has to belong to the key that is in this slot. A mismatch imports
+        // cleanly and then fails at every signature the holder tries to make,
+        // which is the worst place to find out.
+        {
+            let mut key = self.open(serial, OP)?;
+            let metadata =
+                piv::metadata(&mut key, slot_id).map_err(|e| Self::classify(OP, e, None))?;
+            let public = metadata.public.ok_or_else(|| WriteError::Failed {
+                operation: OP,
+                reason: format!(
+                    "PIV slot {slot} holds no key, so nothing can be said about whether this \
+                     certificate belongs to it — generate the key before importing"
+                ),
+            })?;
+            let slot_key_der = {
+                use x509_cert::der::Encode;
+                public.to_der().map_err(|e| WriteError::Failed {
+                    operation: OP,
+                    reason: format!("the slot's public key could not be encoded: {e}"),
+                })?
+            };
+            super::certificate::must_match_public_key(&der, &slot_key_der, OP)?;
+        }
 
-        certificate
-            .write(
-                &mut key,
-                slot_id,
-                yubikey::certificate::CertInfo::Uncompressed,
-            )
-            .map_err(|e| Self::classify(OP, e, None))
+        let mut session = Self::authenticated(serial, pin, OP)?;
+        session.import_certificate(u8::from(slot_id), &der, OP)
     }
 }
 
@@ -461,18 +583,11 @@ fn pem_encode(label: &str, der: &[u8]) -> String {
     out
 }
 
-fn pem_decode(pem: &str) -> Option<Vec<u8>> {
-    let body: String = pem
-        .lines()
-        .filter(|l| !l.starts_with("-----"))
-        .collect::<Vec<_>>()
-        .join("");
-    unbase64(body.trim())
-}
-
-/// Base64, written here rather than pulled in: the only consumers are the two
-/// functions above, and a dependency for forty lines is one to keep updated
-/// forever.
+/// Base64, written here rather than pulled in: the only consumer is the function
+/// above, and a dependency for forty lines is one to keep updated forever.
+///
+/// Decoding lives in [`super::certificate`], which is where the documents that
+/// arrive from outside are read.
 fn base64(data: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
@@ -499,56 +614,45 @@ fn base64(data: &[u8]) -> String {
     out
 }
 
-fn unbase64(text: &str) -> Option<Vec<u8>> {
-    let value = |c: u8| -> Option<u32> {
-        Some(match c {
-            b'A'..=b'Z' => (c - b'A') as u32,
-            b'a'..=b'z' => (c - b'a') as u32 + 26,
-            b'0'..=b'9' => (c - b'0') as u32 + 52,
-            b'+' => 62,
-            b'/' => 63,
-            _ => return None,
-        })
-    };
-    let cleaned: Vec<u8> = text.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
-    let mut out = Vec::with_capacity(cleaned.len() / 4 * 3);
-    for chunk in cleaned.chunks(4) {
-        let pad = chunk.iter().filter(|b| **b == b'=').count();
-        let mut n = 0u32;
-        for (i, b) in chunk.iter().enumerate() {
-            n |= if *b == b'=' { 0 } else { value(*b)? } << (18 - 6 * i);
-        }
-        out.push((n >> 16) as u8);
-        if pad < 2 {
-            out.push((n >> 8) as u8);
-        }
-        if pad < 1 {
-            out.push(n as u8);
-        }
-    }
-    Some(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn base64_round_trips() {
-        let cases: [&[u8]; 6] = [b"", b"a", b"ab", b"abc", b"abcd", &[0u8, 255, 128, 1]];
-        for case in cases {
-            let encoded = base64(case);
-            assert_eq!(unbase64(&encoded).as_deref(), Some(case), "case {case:?}");
-        }
+    fn base64_matches_the_published_encodings() {
+        // RFC 4648's own examples, including every padding case. Checked against
+        // fixed strings rather than round-tripped through a decoder in this file,
+        // so a matching pair of bugs cannot pass.
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+        assert_eq!(base64(&[0xFF, 0xFF, 0xFF]), "////");
     }
 
     #[test]
-    fn pem_round_trips_through_the_line_wrapping() {
+    fn pem_wraps_at_sixty_four_columns_under_its_label() {
         let der: Vec<u8> = (0u8..=200).collect();
         let pem = pem_encode("PUBLIC KEY", &der);
         assert!(pem.starts_with("-----BEGIN PUBLIC KEY-----"));
+        assert!(pem.trim_end().ends_with("-----END PUBLIC KEY-----"));
         assert!(pem.lines().all(|l| l.len() <= 64));
-        assert_eq!(pem_decode(&pem), Some(der));
+
+        // The document has to be readable by something that is not this code:
+        // `x509-cert` is what the CSR builder parses a public key with.
+        let body: String = pem
+            .lines()
+            .filter(|l| !l.starts_with("-----"))
+            .collect::<Vec<_>>()
+            .join("");
+        assert_eq!(
+            super::super::certificate::der_from_pem(&format!(
+                "-----BEGIN CERTIFICATE-----\n{body}\n-----END CERTIFICATE-----"
+            )),
+            Some(der),
+            "the base64 body has to decode back to the same DER"
+        );
     }
 
     #[test]
