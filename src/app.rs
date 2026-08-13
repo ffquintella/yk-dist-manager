@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::audit::AuditEntry;
-use crate::device::{DeviceInfo, YkmanBackend, YubiKeyBackend};
+use crate::device::{DeviceInfo, YubiKeyBackend};
 use crate::domain::{
     BootstrapRun, DeliveryMethod, DistributionRecord, Holder, KeyStatus, StepOutcome, StepStatus,
     YubiKeyRecord,
@@ -688,6 +688,10 @@ pub struct YkDistApp {
     pub operator: String,
     pub org: String,
     pub backend: Box<dyn YubiKeyBackend>,
+    /// Which transport this session reads through, and why
+    /// (`features/native-device-transport.md` phase 6). Decided once at startup, and
+    /// again when the operator changes it in Settings.
+    pub transport: crate::device::TransportChoice,
     pub detected: Vec<DeviceInfo>,
     /// The background watch, while a screen that shows attached keys is open
     /// (`features/device-detection.md` phase 2). `None` means nothing is polling.
@@ -787,6 +791,22 @@ impl YkDistApp {
             settings.org.clone()
         };
 
+        // Which transport reads the hardware, decided once here rather than fixed at
+        // compile time (`features/native-device-transport.md` phase 6). Before this,
+        // `ykman` was hardcoded — so a build with the hardware-verified native
+        // transport compiled in still shelled out to a subprocess for every read.
+        let transport = crate::device::select::decide(
+            settings.transport,
+            crate::device::select::probe(settings.transport),
+        );
+        let backend = crate::device::select::backend_for(&transport);
+        tracing::info!(
+            event = "device.transport.selected",
+            transport = transport.transport.slug(),
+            disabled = transport.disabled,
+            reason = transport.reason.as_str()
+        );
+
         let config = StoreConfig::new(path);
         let mut app = Self {
             config,
@@ -807,7 +827,8 @@ impl YkDistApp {
             tab: Tab::Inventory,
             operator,
             org,
-            backend: Box::new(YkmanBackend::default()),
+            backend,
+            transport,
             watch: None,
             attached: crate::device::Attached::default(),
             selected_serial: None,
@@ -3723,6 +3744,54 @@ impl YkDistApp {
         }
     }
 
+    /// Change the transport the operator reads through, and say what happened.
+    ///
+    /// Re-decided rather than assumed: choosing *native* on a machine whose PC/SC is
+    /// dead has to report itself as chosen-and-failing rather than as working, and
+    /// the only way to know is to probe again.
+    ///
+    /// Audited as `device.transport.selected`, because which transport wrote to a key
+    /// is part of the story of that key — and because a session that silently changed
+    /// transport mid-way is the first thing to check when two runs of the same
+    /// template behave differently.
+    pub fn set_transport(&mut self, requested: crate::device::Transport) {
+        if self.settings.transport == requested {
+            return;
+        }
+        self.settings.transport = requested;
+        self.settings.save_quietly();
+
+        let choice =
+            crate::device::select::decide(requested, crate::device::select::probe(requested));
+        self.backend = crate::device::select::backend_for(&choice);
+        tracing::info!(
+            event = "device.transport.selected",
+            transport = choice.transport.slug(),
+            disabled = choice.disabled,
+            reason = choice.reason.as_str()
+        );
+        // Recorded when there is a register to record it in; at startup there is
+        // not, which is why the log line above is unconditional and this is not.
+        self.record(
+            "device.transport.selected",
+            "device",
+            &format!(
+                "requested={} using={} disabled={}",
+                requested.slug(),
+                choice.transport.slug(),
+                choice.disabled
+            ),
+        );
+        self.status = format!("transport: {}", choice.describe());
+        self.transport = choice;
+
+        // The watch holds a backend of its own, made when it started. Stopping it
+        // makes the next frame build one through the new choice — otherwise the
+        // screen would show one transport while the watch polled through another.
+        self.stop_device_watch("the transport changed");
+        self.detected.clear();
+    }
+
     // ------------------------------------------------- watching for hardware
 
     /// Which screens want to know what is plugged in.
@@ -3751,13 +3820,18 @@ impl YkDistApp {
 
     /// Begin watching, with a backend of its own.
     pub fn start_device_watch(&mut self) {
-        let native = crate::device::composite::NativeBackend::is_available();
-        let interval = crate::device::watch::interval_for(native);
+        // The tick follows the *live* transport, not what the build could do: a
+        // native build demoted to the subprocess at startup must poll at the
+        // subprocess rate, or it forks a Python process every 1.5s for as long as
+        // the screen is open.
+        let interval = crate::device::watch::interval_for(
+            self.transport.transport == crate::device::Transport::Native,
+        );
         // A second backend, not the one the GUI holds: read-on-demand and the watch
-        // must not be two callers of one handle. Today both are `ykman`; when the
-        // transport becomes selectable (`features/native-device-transport.md`
-        // phase 6) this is the one place that has to learn about it.
-        let backend: Box<dyn YubiKeyBackend> = Box::new(YkmanBackend::default());
+        // must not be two callers of one handle. Built through the same choice the
+        // GUI reads by — a watch polling a different transport from the one the
+        // status bar names would make the status bar a lie.
+        let backend = crate::device::select::backend_for(&self.transport);
         tracing::debug!(
             event = "device.watch.started",
             interval_ms = interval.as_millis() as i64
@@ -4801,6 +4875,26 @@ impl YkDistApp {
                             IndicatorState::On,
                         );
                     }
+                    // Which transport is reading the hardware. In the status bar because
+                    // it is the first thing to establish when a key behaves differently
+                    // from the last one — and because an operator who overrode it in
+                    // Settings needs to see, without going back there, whether the
+                    // override took (`features/native-device-transport.md` phase 6).
+                    pill = pill.item(
+                        if self.transport.disabled {
+                            "via: none".to_owned()
+                        } else {
+                            format!("via: {}", self.transport.transport.label())
+                        },
+                        if self.transport.disabled {
+                            // Amber, not red: nothing is broken. The register works,
+                            // and keys can still be recorded by serial — what is
+                            // unavailable is reading from hardware.
+                            IndicatorState::Connecting
+                        } else {
+                            IndicatorState::On
+                        },
+                    );
                     // What is plugged in, while something is watching for it. In the
                     // status bar rather than only on the screen that owns the list,
                     // because "which key is this application about to act on" is the

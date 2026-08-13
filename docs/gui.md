@@ -17,7 +17,7 @@ The API differs from older tutorials in two ways that matter:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ ⇤18⇥ ▣ YubiKey Distribution Manager 0.10.0 | Inventory …  ⇤18⇥ │  Panel::top
+│ ⇤18⇥ ▣ YubiKey Distribution Manager 0.12.0 | Inventory …  ⇤18⇥ │  Panel::top
 │      Bootstrap Terms Audit Settings                          │
 ├──────────────────────────────────────────────────────────────┤
 │      CentralPanel, inside ScrollArea::vertical               │
@@ -25,7 +25,7 @@ The API differs from older tutorials in two ways that matter:
 │      │ card — always the page width                   │      │
 │      └────────────────────────────────────────────────┘      │
 ├──────────────────────────────────────────────────────────────┤
-│ ⇤18⇥ operator: felipe | db: share | 5 NFC 20423633 attached | … │  Panel::bottom
+│ ⇤18⇥ operator: felipe | db: share | via: native | 20423633 … │  Panel::bottom
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -337,6 +337,15 @@ the sentence about there being no recovery is on screen while the operator types
 removal asks for a confirmation of its own that names what becomes readable. The
 register is backed up first and reopened under the new password afterwards. In a build
 without `encrypted-db` the card says which build would do it instead of hiding.
+
+A **Device transport** card says which transport reads the hardware and lets the
+operator override it. It reports what is *actually* in use rather than only what was
+asked for: a native transport forced on a workstation whose reader does not answer is
+described as forced and failing, because the person using the override is usually the
+person diagnosing the machine. The status bar carries the same answer as `via: native`,
+`via: ykman`, or an amber `via: none` when nothing on this machine can reach hardware —
+which is a state, not a fault: the register still works and keys can still be recorded by
+serial.
 
 A **Template signatures** card holds the public keys this deployment accepts on a
 bootstrap procedure, and the switch that makes a signature mandatory. Public keys only:

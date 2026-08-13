@@ -62,7 +62,7 @@ fn scenario_keys_are_noticed_as_they_are_plugged_in_and_never_chosen_for_the_ope
     assert!(app.store.is_some(), "{:?}", app.db_form.error);
 
     // The watch runs on the screens that show attached keys, and nowhere else: in
-    // the default build every poll is a `ykman` subprocess, and paying that while
+    // a build without the native transport every poll is a subprocess, and paying that while
     // somebody reads the audit trail buys nothing.
     app.tab = Tab::Audit;
     app.sync_device_watch();

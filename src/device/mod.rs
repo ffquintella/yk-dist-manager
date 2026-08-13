@@ -26,6 +26,7 @@ pub mod native_fido;
 pub mod native_piv;
 #[cfg(feature = "native-piv")]
 pub mod piv_mgm;
+pub mod select;
 pub mod watch;
 pub mod write;
 pub mod ykman;
@@ -33,6 +34,7 @@ pub mod ykman;
 pub use mock::MockBackend;
 #[cfg(feature = "native-piv")]
 pub use native::NativeBackend;
+pub use select::{Availability, Transport, TransportChoice};
 pub use watch::{Attached, DeviceWatch};
 pub use ykman::YkmanBackend;
 

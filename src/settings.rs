@@ -232,6 +232,13 @@ pub struct AppSettings {
     /// being run: every template on a given deployment wants the same answer.
     /// See [`crate::san`].
     pub san: crate::san::SanPolicy,
+    /// Which transport reads the hardware, when the operator has an opinion
+    /// (`features/native-device-transport.md` phase 6).
+    ///
+    /// `Automatic` — the default — probes at startup. An explicit choice is an escape
+    /// hatch for the case no heuristic can see: PC/SC held by something else, or two
+    /// transports disagreeing while somebody diagnoses it.
+    pub transport: crate::device::Transport,
     /// Whether a responsibility term is expected for every hand-over, and how long
     /// one may sit unsigned before it is called overdue
     /// (`features/receipts-and-terms.md` phase 4).
@@ -312,6 +319,7 @@ impl AppSettings {
             retention: RetentionPolicy::default(),
             window: WindowState::default(),
             san: crate::san::SanPolicy::default(),
+            transport: crate::device::Transport::default(),
             signatures: crate::receipt::SignaturePolicy::default(),
             template_keys: Vec::new(),
             templates_must_be_signed: false,

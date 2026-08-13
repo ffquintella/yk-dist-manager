@@ -119,10 +119,10 @@ per key with its serial, model, firmware and applications, and *Use this one*.
 | # | Phase | Wave | State | Notes |
 |---|---|---|---|---|
 | 1 | Read on demand, insert/refresh inventory | 0 | Done | Inventory + wizard |
-| 2 | Background hot-plug polling | 0 | **Done** | [`device::watch`](../src/device/watch.rs) — a thread enumerates on a tick and publishes a snapshot the GUI clones; identification runs **only when the set of serials changes**. 1.5s with a native transport, 4s when every poll is a `ykman` subprocess, and only while a screen that shows attached keys is open |
+| 2 | Background hot-plug polling | 0 | **Done** | [`device::watch`](../src/device/watch.rs) — a thread enumerates on a tick and publishes a snapshot the GUI clones; identification runs **only when the set of serials changes**. 1.5s with a native transport, 4s when every poll is a `ykman` subprocess — chosen from the *live* transport, not the compiled one — and only while a screen that shows attached keys is open |
 | 3 | Explicit picker when several keys are attached | 0 | **Done** | serial, model, firmware and applications per row, with *Use this one*; on the Inventory screen and above the wizard's serial field. Nothing is chosen for the operator, `device.selected` records which one was, and a selection is dropped when that key is unplugged |
 | 4 | Per-applet state read (PIN retries, PIV slots, FIDO PIN set?) | 1 | Todo | needed by `StepKind::Verify` |
-| 5 | "This key is already bootstrapped" warning | 1 | Todo | detect an occupied 9c slot or an existing FIDO PIN before re-running a template |
+| 5 | "This key is already bootstrapped" **refusal** | 1 | Todo | detect an occupied 9c slot or an existing FIDO PIN and **refuse the run**, naming the reset as the way forward. *(Decided 2026-08-13: a configured key is only ever returned to factory default, and only by the system operator — there is no in-place re-bootstrap and no override.)* |
 | 6 | Attestation read (`piv keys attest 9c`) | 1 | Todo | proves on-device generation; stored with the run |
 
 ## Audit events
@@ -165,9 +165,22 @@ interlock, asserted rather than assumed.
 
 ## Open questions and gates
 
-- Phase 5 needs a policy: is re-bootstrapping an already-configured key allowed,
-  and does it require a second operator? That is an operational decision, not a
-  code one.
+- ~~Phase 5 needs a policy: is re-bootstrapping an already-configured key allowed?~~
+  **Answered 2026-08-13: no.** A configured key is only ever returned to factory
+  default, and only by the system operator; then it is prepared as if new.
+
+  So phase 5 is a **refusal**, not a warning with an override — which is a simpler
+  thing to build and a stronger thing to have. Writing over what is on a key would
+  replace a PIN the holder chose (model B *tells* them to change it), invalidate a
+  certificate somebody may have signed with, and leave the register claiming a
+  procedure was applied to a key whose previous state nobody recorded. A reset
+  destroys all of it at once, visibly, and the register can say so.
+
+  Two obligations follow. Detection has to *recognise* a configured key — which is
+  phase 4, the per-applet read — so this phase cannot land before it. And the reset
+  itself is an operator action of its own
+  (`features/key-lifecycle-and-revocation.md` phase 5), previewed and confirmed like
+  every hardware write, naming what it destroys before it runs.
 
 ## References
 

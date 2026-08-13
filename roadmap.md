@@ -125,9 +125,9 @@ of the job: choosing or creating the database file, recording serials from a bar
 generating the consignment term in the holder's language, and filing the signed copy
 against the hand-over — and, from the Terms screen, editing that term's wording per
 language. The Templates screen now does the same for the bootstrap procedure itself.
-**702 tests** pass with the default features and **719** with `--all-features` (plus 4
-read-only hardware tests and one ignored `openssl` interop test), with **85.2%**
-(region 84.6%) line coverage of the headless core — enforced by CI against a floor of
+**725 tests** pass with the default features and **730** with `--all-features` (plus 4
+read-only hardware tests and one ignored `openssl` interop test), with **86.1%**
+(region 85.5%) line coverage of the headless core — enforced by CI against a floor of
 80% rather than reported. The register can also
 be opened from the unit's **SMB share**, connected by the application itself, and its
 password can be set, changed or removed from Settings.
@@ -202,7 +202,8 @@ they are grouped here because "the specs are full of Todos, so how is Wave 0 clo
 is the first reasonable question a reader has.
 
 **Phases that gate a later wave.** The bootstrap engine's PIV and OTP steps, the
-PIV/OTP/management native transports, per-applet reads, the wizard's resume and
+PIV/OTP/management native transports (the *selection* between transports is done),
+per-applet reads, the wizard's resume and
 post-run summary, template applicability rules and retry policy, unlocking with a
 YubiKey: all **Wave 1**, all in the Wave 1 table below. A Windows `.ico` and a Linux
 `hicolor` icon are **Wave 3**, with the packaging they attach to. Concurrency,
@@ -216,9 +217,7 @@ specs. They are also in [Open questions](#open-questions), with the reasoning:
 | Question | Owner | What it holds |
 |---|---|---|
 | The approved cipher and KDF parameter set | **ESI** | [db-password](features/db-password-and-encryption.md) phase 4, marked `—`: explicit `kdf_iter` and cipher page size. The defaults are SQLCipher's until then, which is reasonable and not the same thing as approved |
-| The key that signs a bootstrap procedure, and what protects it | **ESI** | nothing in the code — the mechanism shipped in 0.9.0. It holds the *switch-on*: until there is a key, every deployment runs in pilot mode ([bootstrap-templates](features/bootstrap-templates.md) phase 5) |
 | Whether Ed25519 is the signature algorithm the organisation wants | **ESI** | likewise nothing: the algorithm is named inside every signature, so a second one is additive. Recorded so it is ratified rather than inherited |
-| May an already-configured key be re-bootstrapped, and by whom? | operational | [device-detection](features/device-detection.md) phase 5, which is **Wave 1** rather than `—`, so it is not holding this wave either way |
 
 The interface language was the third of these until 2026-08-12: it is **English**,
 which closes [gui-shell](features/gui-shell.md) phase 9 as *not needed* rather than
@@ -297,7 +296,7 @@ Everything needed before a single byte is written to a key.
 
 | Status | Feature | Notes |
 |---|---|---|
-| `[x]` | Native device transport | [spec](features/native-device-transport.md) — `yubikey` over PC/SC reads serial + firmware from a real key today (verified against 5 NFC / fw 5.4.3, agrees with `ykman`). FIDO2 and OTP transports are Wave 1. |
+| `[x]` | Native device transport | [spec](features/native-device-transport.md) — `yubikey` over PC/SC reads serial + firmware from a real key today (verified against 5 NFC / fw 5.4.3, agrees with `ykman`). FIDO2 and OTP transports are Wave 1, and so is the selection that makes any of them reachable — see the Wave 1 row. |
 | `[x]` | `ykman` fallback + parsers | [spec](features/ykman-fallback.md) — argv-only subprocess, typed errors, parsers unit-tested against recorded output of ykman 5.9.2. |
 | `[x]` | Device detection | [spec](features/device-detection.md) — read-on-demand, plus a **background watch** that notices a key being plugged in or pulled out (identifying only when the set of serials changes; 1.5s natively, 4s when every poll is a subprocess, and only while a screen that needs it is open) and a **picker** for when several are attached. Nothing is ever chosen for the operator, and the watch is stopped — thread joined — before a run writes to a key. Per-applet reads, the "already bootstrapped" warning and attestation are Wave 1. |
 | `[x]` | Single-file SQLite storage | [spec](features/storage-sqlite-single-file.md) — schema **v5** (per-step run rows), `user_version` migrations (v1→v5 tested), WAL locally / rollback journal on a share, `VACUUM INTO` backup **on a schedule with rotation**, `integrity_check`, **CSV import** of the spreadsheet this replaces, and the SMB share connected by the application itself. Every wave-0 phase done. Concurrency is Wave 2; archival and retention (phase 7, gating no wave) has its decision — one year, configurable — and needs the archive-then-remove path that may break and rebuild the audit trigger. |
@@ -316,7 +315,7 @@ Everything needed before a single byte is written to a key.
 | `[x]` | GUI shell | [spec](features/gui-shell.md) — eight screens, unlock screen, status bar, egui 0.36 `App::ui`, themed with `egui-elegance` (four palettes, the choice persisted) and laid out fluidly (one gutter, full-width cards, columns that split the page, tables that contain their own overflow). Search, sortable columns, window-state persistence, keyboard flow, hardware-write confirmation, the log panel and the accessibility pass are all done — every wave-0 phase. Localisation (phase 9) is closed as not needed: the interface is English (2026-08-12). |
 | `[x]` | Bootstrap wizard | [spec](features/gui-bootstrap-wizard.md) — selection (the newest version of each template in use), per-step opt-out, plan review, dry run, and a link to the Templates screen — the whole of wave 0. The live run view, the secret panels and the pre-flight checks landed with the executor in 0.7.1; resume and the post-run summary are Wave 1, batch mode Wave 2. |
 | `[x]` | Application icon | [spec](features/application-icon.md) — one SVG (a box truck carrying a YubiKey), `make icons` rendering the PNGs, the macOS `.icns` and the RGBA blob the binary embeds; window, dock and bundle icons done, plus **three placements in the application** (top bar, database chooser, About box) and an **About box** on the version badge carrying the copyable `--diagnose` report. A Windows `.ico` resource and a Linux `hicolor` install are **Wave 3**, with the packaging they attach to. |
-| `[x]` | Testing strategy | [spec](features/testing-strategy.md) — **702 tests** (719 with `--all-features`) across unit + behaviour suites, a mock device backend and a mock share connector, recorded fixtures, and tests ignored by default for what needs hardware or `openssl`; **85.2%** core line coverage. **CI enforces the gate** on every push, with a macOS/Windows/Linux build matrix. **Property tests** for the audit chain and the RFC 4514 escaper, each verified by breaking the code it covers. Mock write transports and the secret-leak sweep wait on Wave 1. |
+| `[x]` | Testing strategy | [spec](features/testing-strategy.md) — **725 tests** (730 with `--all-features`) across unit + behaviour suites, a mock device backend and a mock share connector, recorded fixtures, and tests ignored by default for what needs hardware or `openssl`; **86.1%** core line coverage. **CI enforces the gate** on every push, with a macOS/Windows/Linux build matrix. **Property tests** for the audit chain and the RFC 4514 escaper, each verified by breaking the code it covers. Mock write transports and the secret-leak sweep wait on Wave 1. |
 
 ### Paperwork
 
@@ -339,6 +338,7 @@ The point of the tool: apply the template to a key, safely, with evidence.
 | `[ ]` | Step: PIV PIN / PUK / management key | [spec](features/step-piv-pin-puk-management-key.md) — leave no factory default; prefer a PIN-protected random management key so nothing needs custody. **Blocked on a transport decision (ESI):** every PIV *write* in the `yubikey` crate sits behind its `untested` feature, and the worst failure here — a management key nobody holds — kills the applet. Options and a recommendation are in the spec. |
 | `[ ]` | Step: PIV signing certificate | [spec](features/step-piv-signing-certificate.md) — on-device key in slot 9c, CSR **with `rfc822Name` SAN**, issued certificate imported, attestation stored. The SAN is why this step goes native. |
 | `[ ]` | CA integration | [spec](features/ca-integration.md) — internal CA for pilots, BastionVault PKI, and an enterprise CA profile; SAN and EKU requirements per option. |
+| `[/]` | Native device transport (Wave 1 phases) | [spec](features/native-device-transport.md) — **phase 6 done, and `native-device` is now the default build**: which transport reads the hardware is decided at startup by probing, overridable in Settings, shown as `via: native` / `via: ykman` in the status bar, reported by `--diagnose`, and recorded as `device.transport.selected`. This is the row that made the other two reachable — `YkDistApp::new` previously held a hardcoded `ykman`, so the hardware-verified native PIV and FIDO2 transports were shipped and unused. **FIDO2 (phase 2) is done and hardware-verified**, writes included. Remaining: PIV writes (phase 3, blocked on the CSR builder), OTP config frames (phase 4), management applet APDU (phase 5). |
 | `[/]` | Secrets custody | [spec](features/secrets-custody.md) — **model B decided (2026-08-10)**: transport secret + forced change, nothing retained. `CustodyModel` fixes the vocabulary, the standard template carries the forced-change step, and **the generate / show-once / zeroise machinery is built** (`crate::secret`: no `Clone`, no `Serialize`, `Debug` prints `<redacted>`, OS CSPRNG with unbiased digits). The sealed-envelope slip and the custody report are still Todo. |
 
 ## Wave 2 — Operations at scale
@@ -383,7 +383,7 @@ Full text in [AGENTS.md](AGENTS.md). The short version:
 
 Decisions that change what gets built, and are not the implementer's to make.
 
-Four, and **none of them holds Wave 0** — each is a phase marked `—` (gating no
+Two, and **neither holds Wave 0** — each is a phase marked `—` (gating no
 wave), a later wave, or a control that is built and waiting to be switched on. They
 were dropped from this list when the big questions were settled on 2026-08-11, which
 was an error: an unanswered question that blocks nothing today still blocks something
@@ -397,41 +397,65 @@ eventually, and a list that says "None" invites nobody to answer it.
    in `docs/security-and-compliance.md` §7. Everything else about the password is
    built.
 
-2. **Whose key signs a bootstrap procedure, and what protects it?** *Owner: ESI.*
-   Holds nothing in the code — signing and verification shipped in 0.9.0
-   ([`features/bootstrap-templates.md`](features/bootstrap-templates.md) phase 5) —
-   but it holds the **switch-on**: until a deployment has a key, every template reads
-   as unsigned and the application runs in *pilot mode*, which is visible on screen
-   and recorded per run rather than silent. Two halves to answer: which key, and what
-   protects it. A signing key in a file on the workstation that edits templates makes
-   the signature worth exactly what that workstation is worth, so an HSM, a smartcard
-   or an offline machine is the point of the exercise.
-
-   Worth stating plainly because it is the failure mode: a control that is never
-   switched on is documentation. The mechanism cost nothing to build and buys nothing
-   until somebody owns the key.
-
-3. **Is Ed25519 the signature algorithm the organisation wants?** *Owner: ESI.* Also
-   holds nothing: the algorithm is named inside every signature, so a build meeting
-   one it does not know refuses rather than treating the template as unsigned, and
-   adding a second is additive. Chosen for having no parameters to get wrong.
-   Recorded so it is **ratified rather than inherited** — the same class of decision
-   as the database cipher above, and listed beside it in
+2. **Is Ed25519 the signature algorithm the organisation wants?** *Owner: ESI.*
+   Holds nothing in the code: the algorithm is named inside every signature, so a
+   build meeting one it does not know refuses rather than treating the template as
+   unsigned, and adding a second is additive. Chosen for having no parameters to get
+   wrong. Recorded so it is **ratified rather than inherited** — the same class of
+   decision as the database cipher above, and listed beside it in
    `docs/security-and-compliance.md` §7.
 
-4. **May an already-configured key be re-bootstrapped, and by whom?** *Owner:
-   operational.* Holds [`features/device-detection.md`](features/device-detection.md)
-   phase 5, which is Wave 1. Under custody model B the holder is *told* to change
-   the transport PIN, so a second run that silently set one would replace a PIN the
-   holder chose without their knowing — which is why the executor already treats
-   "already applied" as a skip. What needs deciding is whether an operator may
-   override that deliberately, and whether the record should distinguish a re-issue
-   from a first issue.
+
 
 Every question below has an owner's answer; re-open one by moving it back up here
 with the date and the reason.
 
 ### Answered
+
+- **May an already-configured key be re-bootstrapped, and by whom?** *(2026-08-13)*
+  **No — a configured key is only ever returned to factory default, and only by the
+  system operator.** There is no in-place re-bootstrap: a key that already carries a
+  PIN, a credential or a certificate is reset first, deliberately, and then prepared
+  as if new.
+
+  That is a stronger answer than the question asked for, and it removes an ambiguity
+  rather than adding a feature. The alternative — writing over what is on a key —
+  would replace a PIN the holder chose (custody model B *tells them* to change it),
+  invalidate a certificate somebody may have signed with, and leave the register
+  claiming a procedure was applied to a key whose previous state nobody recorded. A
+  reset destroys all of it at once, visibly, and the register can say so.
+
+  What it obliges, in [`features/device-detection.md`](features/device-detection.md)
+  phase 5 and [`features/key-lifecycle-and-revocation.md`](features/key-lifecycle-and-revocation.md)
+  phase 5: detection must *recognise* a configured key and **refuse the run**, naming
+  the reset as the way forward rather than offering an override; and the reset is an
+  operator action of its own, previewed and confirmed like every hardware write, with
+  what it destroys named before it runs.
+
+- **What signs a bootstrap procedure?** *(2026-08-13)* **A key the application
+  generates by default, with an interface to import an external one.** The owner's
+  decision, and it reverses the shape 0.9.0 shipped with — verification only, no
+  private key anywhere near the tool.
+
+  The consequence is stated here rather than discovered later: **whatever the
+  application can sign with, anybody who can open the register can sign with.** The
+  control moves from "only the holder of the organisation's key approves a procedure"
+  to "an operator with the register and its password approves a procedure". That is a
+  real reduction, and it is the owner's to make — a signing key that nobody has is a
+  control that is never switched on, which is worth less than a weaker control that
+  is.
+
+  What it obliges, and what the implementation has to carry:
+  - the generated private key is **encrypted at rest**, never in a log, an audit
+    entry or an error message, and never exported by accident;
+  - **signing is audited** — which key, which procedure, which operator;
+  - the **import path** exists for a deployment that has an HSM, a smartcard or an
+    offline machine, so the stronger arrangement stays available to whoever wants it;
+  - the public half is still what verification uses, so a procedure signed by an
+    imported key verifies on a workstation that has never held the private half.
+
+  Tracked in [`features/bootstrap-templates.md`](features/bootstrap-templates.md)
+  phase 5's notes as a follow-up, not yet built.
 
 - **Is the interface English or pt-BR?** *(2026-08-12)* **English.** The screens stay
   as they are, so [`features/gui-shell.md`](features/gui-shell.md) phase 9 is closed

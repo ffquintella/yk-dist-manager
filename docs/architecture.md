@@ -95,6 +95,15 @@ when it introduces real secret input.
 operations and their availability; the plan shows which transport each step will use. A
 step's transport is not a global mode.
 
+**Which transport the session reads through** is a separate question, answered once at
+startup by [`device::select`](../src/device/select.rs): `probe()` asks the machine, and a
+pure `decide()` maps `(requested, availability)` to a transport plus the reason to show
+for it. The separation is what makes every branch a unit test on a machine with no
+reader. Two rules hold the design together — the *probe* decides rather than the feature
+flag, because a flag cannot say whether PC/SC is actually answering; and the probe may
+demote but nothing silently promotes, because a wrong native choice fails every read for
+the life of the process while a wrong `ykman` choice only costs a subprocess.
+
 ## Dependencies, and why
 
 | Crate | Why this one |

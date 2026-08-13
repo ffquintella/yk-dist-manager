@@ -78,8 +78,9 @@ Edit the SVG, run the target, commit both — a stale blob fails
 Feature combinations that must keep compiling:
 
 ```bash
-cargo check                                  # default: no native, no encryption
-cargo check --features native-device
+cargo check                                  # default: native transports + camera
+cargo check --no-default-features --features file-dialog,camera   # the ykman-only build
+cargo check --no-default-features --features file-dialog          # no camera either
 cargo check --features encrypted-db          # builds vendored OpenSSL; slow
 cargo check --all-features
 ```
@@ -87,7 +88,7 @@ cargo check --all-features
 Hardware check (read-only, needs a key):
 
 ```bash
-cargo test --features native-device --test hardware_native -- --ignored --nocapture
+cargo test --test hardware_native -- --ignored --nocapture
 ```
 
 ## Conventions

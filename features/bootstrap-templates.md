@@ -336,11 +336,35 @@ cargo test --test interop_template_signing -- --ignored --nocapture
   procedure.
 - Should a template be pinned per batch, so a whole procurement batch is guaranteed
   to have had the identical procedure?
-- **Whose key signs a procedure, and where does it live?** *(ESI)* The mechanism is
-  built and the trust store is a setting, so this is now a question with somewhere to
-  put the answer rather than a blocker. It has two halves: which key, and what
-  protects it — an HSM or a smartcard rather than a file on the workstation that
-  edits templates, or the signature is only as good as that workstation.
+- ~~**Whose key signs a procedure, and where does it live?**~~ **Answered by the
+  owner, 2026-08-13: the application generates one by default, and offers an
+  interface to import an external key.** That reverses the shape this phase shipped
+  with — verification only, no private key anywhere near the tool — and it is the
+  owner's call to make.
+
+  **The consequence, stated rather than discovered:** whatever the application can
+  sign with, anybody who can open the register can sign with. The control goes from
+  "only the holder of the organisation's key approves a procedure" to "an operator
+  with the register and its password approves a procedure". Against that: a signing
+  key nobody has is a control that is never switched on, and a weaker control that is
+  actually on beats a stronger one that is not.
+
+  **Not yet built.** What the implementation has to carry, so it is not decided
+  again later:
+
+  1. The generated private key is **encrypted at rest** — the obvious home is the
+     register, which can itself be SQLCipher-encrypted, under a key derived from a
+     passphrase the operator types rather than one sitting beside it. It is never in a
+     log, an audit entry, an error message or a `Debug` output, and it is never
+     exported except by an explicit, confirmed action.
+  2. **Signing is audited**: which key, which procedure and version, which operator.
+     The one thing that makes "an operator approved this" answerable afterwards.
+  3. The **import path** is what keeps the stronger arrangement available: a
+     deployment with an HSM, a smartcard or an offline machine imports the public half
+     only and signs out of band, exactly as this phase does today. That path must not
+     regress — it is the one the ESI would choose.
+  4. Verification is unchanged and still uses the public half, so a procedure signed
+     by an imported key verifies on a workstation that has never held a private one.
 - **Is Ed25519 the algorithm the organisation wants?** *(ESI)* Chosen here for having
   no parameters to get wrong; named inside every signature, so a build meeting an
   algorithm it does not know refuses rather than treating the template as unsigned.

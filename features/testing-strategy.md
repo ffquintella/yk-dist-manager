@@ -18,9 +18,12 @@ whole even though every part passes.
 
 **Suites in place, and CI now enforces the gate.**
 
-- **702 tests** pass on the default features (`cargo test`), **719** with
+- **725 tests** pass on the default features (`cargo test`), **730** with
   `--all-features` — the encrypted-database paths account for the difference, minus
-  the one test that exists only when `encrypted-db` is *off*. Plus tests ignored by
+  the one test that exists only when `encrypted-db` is *off*. The default figure now
+  includes the native-transport tests, because `native-device` became a default
+  feature (`features/native-device-transport.md` phase 6); a
+  `--no-default-features` run is smaller and is compiled, not just run, in CI. Plus tests ignored by
   default for what a build machine need not have: 4 read-only hardware tests, and
   the `openssl` interop test that proves the documented template-signing commands
   produce a signature this build accepts
@@ -43,9 +46,13 @@ whole even though every part passes.
 - `cargo check --no-default-features` is part of the pre-commit sweep, because the
   no-camera build is a supported configuration
   (`make check-all`).
-- Core line coverage **86.91%** (region 85.79%), above the 80% floor. It fell from
-  88.25% when `device/native_fido.rs` joined the build: like `native.rs`, it is
-  reachable only with hardware, so it counts against the gate at 0%.
+- Core line coverage **86.14%** (region 85.50%), above the 80% floor. It has fallen
+  twice for the same structural reason rather than through neglect: from 88.25% when
+  `device/native_fido.rs` joined the build, and again when `device/select.rs` brought
+  the native transports into a default build. Both are reachable only with hardware
+  attached, so they count against the gate at close to 0% — `select.rs` is the
+  exception, since its decision is pure and every branch is unit-tested; what cannot
+  be covered is the probe that talks to PC/SC.
 - Unit suites: `unit_domain.rs` (15), `unit_template.rs` (50), `unit_audit.rs` (17),
   `unit_ykman_parse.rs` (8), `unit_store.rs` (30), `unit_device_backends.rs` (9),
   `unit_records.rs` (16), `unit_logging_format.rs` (6), `unit_term.rs` (45),

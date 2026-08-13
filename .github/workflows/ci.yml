@@ -112,10 +112,13 @@ jobs:
         run: cargo check --all-targets
 
       # PC/SC and USB HID are linked per platform, and they are the parts most
-      # likely to break on a platform nobody develops on. Compiling them here is
-      # the cheapest way to find that out.
-      - name: Build with the native transports
-        run: cargo check --features native-device
+      # likely to break on a platform nobody develops on — which is why the step
+      # above, a plain default build, now covers them: `native-device` is on by
+      # default as of 0.12.0. What needs its own step is the *other* direction:
+      # the `ykman`-only build is still supported, and nothing in a native-by-
+      # default world would notice it stopped compiling.
+      - name: The ykman-only build, without the native transports
+        run: cargo check --no-default-features --features file-dialog,camera
 
       - name: Tests
         run: cargo test

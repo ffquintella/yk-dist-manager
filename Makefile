@@ -51,9 +51,9 @@ check: ## Fast compile check, default features
 	cargo check
 
 check-all: ## Compile every feature combination that ships
-	cargo check                                              # defaults: file-dialog + camera
-	cargo check --no-default-features --features file-dialog # no camera code
-	cargo check --features native-device
+	cargo check                                                            # defaults: file-dialog + camera + native-device
+	cargo check --no-default-features --features file-dialog               # no camera, no native transport
+	cargo check --no-default-features --features file-dialog,camera        # the ykman-only build, still supported
 	cargo check --all-features
 
 fmt: ## Format

@@ -57,9 +57,14 @@ pub const POLL_INTERVAL: Duration = Duration::from_millis(1_500);
 /// magnitude more expensive than a PC/SC enumeration. At 1.5s that is 40 processes
 /// a minute for the whole time a screen is open; at 4s it is 15, and the operator
 /// cannot tell the difference between the two while walking a key from a box to a
-/// port. When the native transport is selectable
-/// (`features/native-device-transport.md` phase 6) this stops applying to most
-/// builds.
+/// port.
+///
+/// Since `native-device` became the default build
+/// (`features/native-device-transport.md` phase 6) this applies to two cases rather
+/// than to everybody: a deliberate `--no-default-features` build, and a machine whose
+/// reader did not answer the startup probe. Which one is live decides the tick — the
+/// *compiled* transport does not, because a demoted native build still polls through
+/// the subprocess.
 pub const POLL_INTERVAL_SUBPROCESS: Duration = Duration::from_millis(4_000);
 
 /// The tick used to notice a stop request, so dropping the watch is prompt rather

@@ -153,6 +153,14 @@ pub struct Report {
     /// Never a password — there is none stored to report.
     pub smb_shares: Vec<String>,
     pub settings: String,
+    /// Which transport would read the hardware right now, and why
+    /// (`features/native-device-transport.md` phase 6).
+    ///
+    /// The decision, not the feature list: the two disagree exactly when the
+    /// interesting fault is present — a build that *has* the native transport on a
+    /// machine whose reader does not answer — and that is the case a support request
+    /// is usually about.
+    pub transport: String,
     pub ykman: Option<String>,
     pub cameras: Vec<String>,
 }
@@ -204,6 +212,14 @@ impl Report {
                 })
                 .collect(),
             settings: crate::settings::AppSettings::path().display().to_string(),
+            // Probed, because the compiled feature list cannot answer this. Read-only:
+            // enumerating readers opens a PC/SC context and writes nothing, which is
+            // the same rule the hardware tests hold to.
+            transport: crate::device::select::decide(
+                settings.transport,
+                crate::device::select::probe(settings.transport),
+            )
+            .describe(),
             ykman: which_ykman(),
             cameras: list_cameras(),
         }
@@ -288,6 +304,7 @@ impl Report {
             let _ = writeln!(out, "                   {share}");
         }
         let _ = writeln!(out, "settings:          {}", self.settings);
+        let _ = writeln!(out, "device transport:  {}", self.transport);
         let _ = writeln!(
             out,
             "ykman:             {}",
@@ -381,6 +398,7 @@ mod tests {
             smb_can_connect: true,
             smb_shares: Vec::new(),
             settings: "/tmp/settings.json".into(),
+            transport: "native — a reader answered, and this build talks to it in process".into(),
             ykman: Some("/opt/homebrew/bin/ykman".into()),
             cameras: vec!["0: FaceTime HD Camera".into()],
         }
@@ -546,6 +564,27 @@ mod tests {
         limited.smb_connector = "system mounts only".into();
         limited.smb_can_connect = false;
         assert!(limited.render().contains("must be mounted by the system"));
+    }
+
+    #[test]
+    fn the_report_names_the_transport_that_would_actually_be_used() {
+        // The feature list already says what was compiled. What a support request
+        // needs is the *decision*, because the two disagree exactly when the
+        // interesting fault is present: a native build on a machine whose reader does
+        // not answer.
+        let rendered = report().render();
+        assert!(
+            rendered.contains("device transport:"),
+            "the report has to name the transport: {rendered}"
+        );
+        assert!(
+            rendered.contains("a reader answered"),
+            "and the reason with it, or it cannot be diagnosed from a paste: {rendered}"
+        );
+
+        // And a real gather decides something rather than leaving it blank — this is
+        // the field an operator is asked to paste.
+        assert!(!Report::gather().transport.trim().is_empty());
     }
 
     #[test]

@@ -18,8 +18,10 @@ Camera scanning is compiled in by default. For a build with no camera code at al
 cargo build --no-default-features --features file-dialog
 ```
 
-For the `ykman` fallback, `ykman` 5.x must be on `PATH`
-(`brew install ykman`, or your distribution's package).
+The native transports are compiled in by default. `ykman` is the **fallback** — install
+`ykman` 5.x on `PATH` (`brew install ykman`, or your distribution's package) so a
+workstation whose reader does not answer still has a path to the hardware, and so the
+management-applet fields (form factor, capabilities, FIPS state) can be read at all.
 
 First run:
 
@@ -53,6 +55,38 @@ terminal.
 
 Set the operator name and organisation in **Settings**. Check that the status bar shows the
 database path and whether it is local or on a share.
+
+### Which transport is reading the hardware
+
+The status bar says: `via: native` reads keys in process, `via: ykman` shells out to the
+command, and `via: none` (amber) means nothing on this machine can reach hardware —
+the register still works, and keys can still be recorded by serial from a barcode or by
+hand.
+
+The choice is made once at startup, by *asking* rather than by inspecting the build:
+the native transports are compiled in by default, and a build that has them still falls
+back to `ykman` when no reader answers, because PC/SC exists on machines where the
+service is stopped. The fallback says which service to check.
+
+`ykman` therefore matters as a fallback rather than as the normal path. A build that
+deliberately excludes the native transports — for a workstation with no smartcard
+service, or no HID permission — is still supported:
+
+```bash
+cargo build --no-default-features --features file-dialog,camera
+```
+
+**Settings → Device transport** overrides it. Reach for it in two situations:
+
+* the transports disagree about the same key and you are working out which is right;
+* something else on the workstation is holding the reader.
+
+The override is honoured even when the probe disagrees — an application that quietly
+overrules the person diagnosing it is an application that cannot be diagnosed — but the
+card reports what is *actually* in use, so a forced choice that cannot work reads as
+forced and failing rather than as working. Changing it restarts device detection and is
+recorded as `device.transport.selected`; the trail therefore says which transport was
+live when a key was prepared.
 
 ## Choosing, creating and switching databases
 
@@ -463,7 +497,7 @@ itself. That is a driver or a permission, not a missing key — on Linux check t
 on macOS and Windows check that nothing else has the reader open.
 
 Two things worth knowing about the watching itself: it runs only while one of those two
-screens is open (each poll is a `ykman` subprocess in the default build, so polling for a
+screens is open (a poll is cheap with the native transport and a subprocess without it, so polling for a
 screen nobody is looking at is pure cost), and it is **stopped for the duration of a
 bootstrap run** — nothing else touches the key while a run is writing to it.
 
@@ -649,7 +683,10 @@ Restore is a file copy. Afterwards, open the copy and run **Audit → Verify cha
 1. Is exactly one key plugged in? Two attached keys are refused deliberately.
 2. Is the smartcard service running (Windows *Smart Card*, Linux `pcscd`)?
 3. Does `ykman list --serials` see it? If `ykman` sees it and the tool does not, that is a
-   transport bug worth reporting with the log.
+   transport bug worth reporting with the log. Say which transport was live — the status
+   bar's `via:` item — because "native does not see it and `ykman` does" and "neither
+   sees it" are different faults. Switching transport in **Settings → Device transport**
+   is the fastest way to tell them apart.
 4. On Linux, check the udev rule for HID access.
 5. Is another application holding the reader exclusively (a browser mid-WebAuthn, GnuPG's
    scdaemon)? Close it and retry.

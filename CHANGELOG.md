@@ -17,6 +17,106 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-08-13
+
+### Changed
+
+- **The native transports are compiled in by default.** `default` is now
+  `file-dialog, camera, native-device`. They were opt-in while they were being
+  written, which was right then and wrong once they worked: the build people actually
+  run was forking a Python process for every hardware read while the in-process
+  transport sat compiled out. The feature flag was guarding against a machine with no
+  reader — a case `device::select` now handles at runtime, by demoting to `ykman` and
+  saying so — so the flag was buying nothing and costing everyone the good path.
+
+  What it costs: a default build links PC/SC and USB HID, so Linux needs
+  `libpcsclite-dev` and `libudev-dev` to build (it already needed `libudev-dev` and
+  the X11/GTK headers for `eframe`) and `pcscd` running to use them. `ykman` is now
+  genuinely a **fallback** rather than the normal path — still worth installing,
+  because it is what a workstation with a dead smartcard service falls back to, and
+  it is still the only source for the management-applet fields until phase 5.
+
+  The `ykman`-only build remains supported and is compiled on all three platforms in
+  CI, which is the step that would otherwise be the first to rot:
+
+  ```bash
+  cargo build --no-default-features --features file-dialog,camera
+  ```
+
+  One consequence is worth stating plainly: `native-piv` enables `yubikey/untested`,
+  upstream's own name for the feature gating every mutating PIV call, so those calls
+  are now compiled into the shipped build. Today they are unreachable — `MockWriter` is
+  still the only implementation of the write traits and the PIV write path returns
+  `WriteError::Unsupported` — but the ESI gate recorded in
+  [`features/step-piv-pin-puk-management-key.md`](features/step-piv-pin-puk-management-key.md)
+  now applies to the default build, not to an opt-in one, and the phase that makes
+  those writes reachable must not ship on the strength of already being compiled in.
+
+- **The hot-plug poll interval follows the live transport, not the compiled one.** A
+  native build demoted to the subprocess at startup was polling at the native 1.5s
+  rate — 40 Python processes a minute for as long as an inventory screen was open. It
+  now uses the 4s subprocess rate in exactly the two cases that call for it: a
+  deliberate `--no-default-features` build, and a machine whose reader did not answer.
+
+- **`--diagnose` (and the in-app About box) report the transport decision**, not just
+  the compiled feature list. The two disagree precisely when the interesting fault is
+  present, so `device transport: native — a reader answered, and this build talks to
+  it in process` is now one line in the report an operator pastes into a ticket.
+
+### Added
+
+- **The hardware transport is chosen, instead of assumed**
+  ([`features/native-device-transport.md`](features/native-device-transport.md)
+  phase 6). Until now `YkDistApp::new` held a hardcoded `YkmanBackend::default()`, so
+  a build compiled with `--features native-device` — whose FIDO2 transport is
+  hardware-verified for reads *and* writes, and whose PIV read agrees with `ykman` on
+  a real key — still shelled out to a Python subprocess for every enumeration. The
+  native code was shipped and unreachable, and no build flag or setting could reach
+  it.
+
+  Now [`src/device/select.rs`](src/device/select.rs) decides, and the decision is
+  split so it can be tested without a reader: `probe()` asks the machine, and a pure
+  `decide()` turns `(requested, availability)` into a choice with a reason attached.
+  Four things about it are deliberate:
+
+  - **The probe decides, not the feature flag.** A flag says what was compiled. It
+    cannot say whether `pcscd` is running, whether the Smart Card service was disabled
+    by policy, or whether another process is holding the reader.
+  - **An empty reader list counts as reachable** — the question is whether PC/SC
+    answers, not whether a key is plugged in. Otherwise an operator who opens the
+    application before reaching for a key is demoted to the subprocess for the rest of
+    the session.
+  - **The probe may demote; nothing silently promotes.** The costs are asymmetric:
+    picking `ykman` when native would have worked costs a subprocess per read, while
+    picking native when PC/SC is dead costs *every* read failing until the application
+    is restarted.
+  - **The interesting fallback names itself.** A native build whose reader does not
+    answer says *"no reader answered the native probe — is pcscd or the Smart Card
+    service running?"*, because a silent fallback there is an afternoon spent
+    suspecting the build.
+
+  Visible where it matters: `via: native` / `via: ykman` in the status bar (amber when
+  nothing can reach hardware), a **Device transport** card in Settings that reports
+  what is *actually* in use rather than only what was asked for, and
+  `device.transport.selected` in the trail — which transport wrote to a key is part of
+  that key's story, and a session that changed transport half-way is the first thing to
+  check when two runs of one template behave differently.
+
+  An operator override is honoured even when the probe disagrees, and reported as
+  forced *and* failing rather than as working: the person using the override is
+  usually the person diagnosing the machine, and an application that quietly overrules
+  them makes the diagnosis impossible. Choosing native in a build that has none names
+  the feature to rebuild with. Nothing available at all remains a **state, not a
+  panic** — the register opens, keys are still recorded by serial from a barcode or by
+  hand, and the screens say what is missing.
+
+  Changing the transport stops a running device watch, so a thread cannot go on
+  polling one transport while the status bar names another.
+
+  Measured on the developer's machine: a `--features native-device` build now decides
+  *"native — a reader answered, and this build talks to it in process"*; the default
+  build decides `ykman` and says why.
+
 ## [0.11.0] - 2026-08-13
 
 ### Added
@@ -1262,7 +1362,8 @@ become rows.
 - Uploaded filenames are treated as data: any directory component is stripped, so a
   name like `../../etc/passwd.pdf` cannot escape.
 
-[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.8.0...v0.9.0

@@ -1,6 +1,6 @@
 [package]
 name = "yk-dist-manager"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2024"
 description = "YubiKey distribution and bootstrap manager (egui desktop app)"
 license = "MIT"
@@ -119,7 +119,20 @@ core-foundation = "0.10"
 core-foundation-sys = "0.8"
 
 [features]
-default = ["file-dialog", "camera"]
+# Native hardware access is the **default** as of 0.12.0. It was opt-in while the
+# transports were being written; keeping it opt-in after they worked meant the
+# shipped build shelled out to a Python subprocess for every read while the
+# in-process transport sat compiled-out. `device::select` demotes to `ykman` at
+# runtime when no reader answers, so the flag was protecting against a case the
+# probe already handles — at the cost of making the good path the one nobody got.
+#
+# What this costs: a default build now links PC/SC and USB HID, so Linux needs
+# `libpcsclite-dev` and `libudev-dev` at build time (already true for `eframe`'s
+# X11/GTK headers) and `pcscd` at run time. The `ykman`-only build is still
+# supported and still tested in CI:
+#
+#     cargo build --no-default-features --features file-dialog,camera
+default = ["file-dialog", "camera", "native-device"]
 # Choose or create the database file through a native dialog. Without it the
 # path is still typeable, so the feature is convenience, not capability.
 file-dialog = ["dep:rfd"]

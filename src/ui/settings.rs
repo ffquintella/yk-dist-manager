@@ -23,6 +23,8 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
     ui.add_space(16.0);
     signature_tracking(app, ui);
     ui.add_space(16.0);
+    transport_card(app, ui);
+    ui.add_space(16.0);
     maintenance(app, ui);
 
     ui.add_space(16.0);
@@ -574,6 +576,57 @@ fn signature_tracking(app: &mut YkDistApp, ui: &mut egui::Ui) {
         // trail records that once each — so the check runs here rather than waiting
         // for the next time the register is opened.
         app.check_overdue_signatures();
+    }
+}
+
+/// Which transport reads and writes the hardware
+/// (`features/native-device-transport.md` phase 6).
+///
+/// Automatic is the answer for every normal workstation. The override exists for the
+/// case the probe cannot see: PC/SC claimed by another application, or two transports
+/// disagreeing about the same key while somebody works out why. It is a diagnostic
+/// control, so it says what it is currently using and why — a picker that only showed
+/// the *request* would hide a native choice that is silently falling back.
+fn transport_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
+    let before = app.settings.transport;
+    let mut chosen = before;
+
+    super::titled_card(ui, "Device transport", |ui| {
+        ui.add(
+            Select::new("settings-transport", &mut chosen)
+                .label("Read keys through")
+                .options(
+                    crate::device::Transport::ALL.map(|transport| (transport, transport.label())),
+                )
+                .width(260.0),
+        );
+
+        ui.add_space(8.0);
+        super::faint(ui, &format!("Now using: {}.", app.transport.describe()));
+
+        if app.transport.disabled {
+            ui.add_space(8.0);
+            super::notice(
+                ui,
+                CalloutTone::Warning,
+                "The requested transport is not usable in this session, so the fallback above is \
+                 what reads the hardware. Anything a key reports — and anything written to one — \
+                 comes through that fallback, not through what is selected here.",
+            );
+        }
+
+        ui.add_space(8.0);
+        super::hint(
+            ui,
+            "Automatic prefers the native transport when this build has it compiled in and the \
+             reader is reachable, and falls back to the ykman command otherwise. Changing this \
+             restarts device detection and is recorded in the trail, because which transport \
+             wrote to a key is part of that key's story.",
+        );
+    });
+
+    if chosen != before {
+        app.set_transport(chosen);
     }
 }
 
