@@ -114,6 +114,28 @@ pub struct DatabaseForm {
     pub locked: Option<LockedDatabase>,
 }
 
+/// How often a share-hosted register is confirmed still reachable.
+///
+/// Five seconds: long enough that the check is invisible, short enough that an
+/// operator who has just walked back to the desk is told before they start typing
+/// into a register that is no longer there.
+pub const SHARE_CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The share that went away, and what it takes to get back on it.
+///
+/// **No password.** A named account's password was used once and dropped, which is
+/// the rule the whole share feature is built on; that is exactly why a named-account
+/// share cannot be reconnected automatically and the operator is asked.
+#[derive(Debug, Clone)]
+pub struct LostShare {
+    pub location: String,
+    /// The identity as it read in the status bar — for the message, not for reuse.
+    pub identity: String,
+    pub access: crate::store::smb::Access,
+    /// `DOMAIN\user`, remembered; never a password.
+    pub user: String,
+}
+
 /// The SMB share card's form state.
 ///
 /// The password lives here rather than in
@@ -635,6 +657,11 @@ pub struct YkDistApp {
     /// system had already mounted — that one is not this session's to take down.
     pub share: Option<crate::store::smb::ShareConnection>,
     pub share_form: ShareForm,
+    /// When the share-hosted register was last confirmed reachable
+    /// (`features/smb-share-hosting.md` phase 9).
+    pub share_checked: Option<std::time::Instant>,
+    /// The share this session lost, while it is lost. `None` the rest of the time.
+    pub share_lost: Option<LostShare>,
     /// Setting, changing or removing the database password.
     pub password_form: PasswordForm,
     /// The public key being added to the template trust store.
@@ -769,6 +796,8 @@ impl YkDistApp {
             db_request: None,
             share: None,
             share_form: ShareForm::default(),
+            share_checked: None,
+            share_lost: None,
             password_form: PasswordForm::default(),
             key_form: TemplateKeyForm::default(),
             throttle: crate::password::Throttle::new(),
@@ -1505,6 +1534,229 @@ impl YkDistApp {
     /// Called once per frame. Cheap: the lock file is only rewritten every
     /// [`crate::store::cloud::RENEW_EVERY`], and a database that needs no lock
     /// answers immediately.
+    /// Notice a share that has gone away, and offer the way back
+    /// (`features/smb-share-hosting.md` phase 9).
+    ///
+    /// Until now a dropped share surfaced as whatever SQLite error the next
+    /// operation happened to hit — mid-hand-over, in the middle of recording a
+    /// distribution — and the operator had to work out that the file server had gone
+    /// and reconnect by hand. The register was never lost, but nothing said so.
+    ///
+    /// The check is **one `is_file`**, every [`SHARE_CHECK_EVERY`], and only for a
+    /// register that is actually on a share. That is deliberately the cheapest thing
+    /// that answers the question: a dropped mount makes the path stop resolving, and
+    /// anything cleverer (a read, a pragma) would be an I/O operation on a
+    /// filesystem that may be hanging.
+    pub fn tick_share_health(&mut self) {
+        // Only a register this session reached over a share can be dropped by a
+        // share going away. A local file that vanished is a different problem with a
+        // different answer, and one this function must not claim to fix.
+        if self.store.is_none() || self.share.is_none() {
+            return;
+        }
+        let now = std::time::Instant::now();
+        if let Some(last) = self.share_checked
+            && now.duration_since(last) < SHARE_CHECK_EVERY
+        {
+            return;
+        }
+        self.share_checked = Some(now);
+
+        if self.config.path.is_file() {
+            return;
+        }
+        self.handle_dropped_share();
+    }
+
+    /// The share is gone: let go of the register, then try to get it back.
+    fn handle_dropped_share(&mut self) {
+        let Some(share) = self.share.as_ref() else {
+            return;
+        };
+        let target = share.target().clone();
+        let identity = share.describe();
+        let location = target.location();
+        let access = self
+            .settings
+            .recent_shares
+            .iter()
+            .find(|entry| entry.location == location)
+            .map(|entry| entry.access)
+            .unwrap_or_default();
+        let user = self
+            .settings
+            .recent_shares
+            .iter()
+            .find(|entry| entry.location == location)
+            .map(|entry| entry.user.clone())
+            .unwrap_or_default();
+
+        tracing::error!(
+            event = "db.share.dropped",
+            share = %target.describe(),
+            path = %self.config.path.display(),
+        );
+
+        // **Abandoned, not closed.** The polite close writes `db.closed` into the
+        // register first, and the register is exactly what is no longer reachable —
+        // the write would fail and report an audit failure for a fault that is not
+        // one. There is nothing to record *in* the file about the file being gone;
+        // the log line above is where this belongs.
+        self.abandon_current_database();
+
+        self.share_lost = Some(LostShare {
+            location: location.clone(),
+            identity: identity.clone(),
+            access,
+            user,
+        });
+
+        // A share reached as the signed-in user or as a guest needs no password, so
+        // one attempt to get straight back on is free and is what an operator would
+        // do anyway. A named account cannot be retried: the password was used once
+        // and dropped, which is the whole point of never storing it.
+        if access == crate::store::smb::Access::Named {
+            self.open_error = Some(format!(
+                "{location} is no longer reachable — the share went away. The register itself is \
+                 on the file server and is intact. Reconnect below: the share and the user name \
+                 are remembered, so only the password has to be typed again."
+            ));
+            self.fill_share_form(&location);
+            return;
+        }
+
+        self.status = format!("{location} went away — reconnecting…");
+        self.reconnect_dropped_share();
+    }
+
+    /// Try to reconnect the share this session lost, and reopen the register.
+    ///
+    /// Separate from [`Self::connect_share`] because it is not the operator filling
+    /// in a card: the target and the identity come from what was connected, and
+    /// failing leaves the card filled so they can take over.
+    pub fn reconnect_dropped_share(&mut self) {
+        use crate::store::smb::{Access, Credential, ShareConnection};
+
+        let Some(lost) = self.share_lost.clone() else {
+            return;
+        };
+        // Re-parsed from the canonical location the connection reported, which is
+        // the same string the settings file remembers — so a reconnection reaches
+        // the share by name rather than by the mount point the last connection
+        // happened to land on.
+        let target = match crate::store::smb::parse(&lost.location) {
+            Ok(parsed) => parsed.target,
+            Err(e) => {
+                self.open_error = Some(format!("{} cannot be parsed again: {e}", lost.location));
+                return;
+            }
+        };
+        let credential = match lost.access {
+            Access::LoggedOnUser => Credential::logged_on_user(),
+            Access::Anonymous => Credential::anonymous(),
+            // Reached only from the button, where the operator has just typed it.
+            Access::Named => Credential::named(&lost.user, &self.share_form.take_password()),
+        };
+
+        match ShareConnection::open(&target, &credential, (self.share_connector)()) {
+            Ok(connection) => {
+                let database = connection.database_path();
+                let config = connection
+                    .store_config()
+                    .with_operator(&self.operator)
+                    .with_password(self.take_password());
+                match Store::open_existing(&config) {
+                    Ok(store) => {
+                        self.adopt(store, config);
+                        self.share = Some(connection);
+                        self.share_lost = None;
+                        self.share_checked = None;
+                        // Audited on both sides of the gap: the connection, and that
+                        // it was a *re*connection. A register that went away and came
+                        // back is a fact about the session worth reading later.
+                        self.record("db.share.connected", "database", &lost.identity);
+                        self.record(
+                            "db.share.reconnected",
+                            "database",
+                            &format!("share={} identity={}", lost.location, lost.identity),
+                        );
+                        self.record("app.opened", "database", &database.display().to_string());
+                        self.note_unlock_success();
+                        self.refresh();
+                        self.status =
+                            format!("{} is back — the register is open again", lost.location);
+                    }
+                    Err(crate::store::StoreError::Missing(path)) => {
+                        // The connector said yes and the register is still not
+                        // there. That is the share not being *fully* back — a mount
+                        // that has reappeared before the server is serving it, which
+                        // is what a flapping link looks like — so the message stays
+                        // the one about the share rather than becoming "no database
+                        // file at …", which would send the operator looking for a
+                        // register they never moved.
+                        drop(connection);
+                        self.open_error = Some(format!(
+                            "{} answered, but {} is not reachable on it yet. The register is on                              the file server and is intact — try again in a moment.",
+                            lost.location,
+                            path.display()
+                        ));
+                        self.fill_share_form(&lost.location);
+                    }
+                    Err(e) => {
+                        // Any other refusal *is* about the register — a password, a
+                        // schema from a newer build, another workstation's lock — and
+                        // the operator gets the real reason rather than
+                        // "reconnect failed".
+                        drop(connection);
+                        self.report_open_failure(&database, e);
+                        self.fill_share_form(&lost.location);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(event = "db.share.reconnect.failed", reason = %e);
+                self.open_error = Some(format!(
+                    "{} is still not reachable: {e}. The register is on the file server and is \
+                     intact — reconnect below when the share is back.",
+                    lost.location
+                ));
+                self.fill_share_form(&lost.location);
+            }
+        }
+    }
+
+    /// Let go of a register whose file is no longer reachable.
+    ///
+    /// The counterpart to [`Self::release_current_database`], for the one case that
+    /// one cannot handle: there is no file to write the closing audit entry into. It
+    /// records nothing, releases nothing on the share (the connection is as dead as
+    /// the file), and clears the cached views so no screen shows rows from a register
+    /// this session can no longer read.
+    fn abandon_current_database(&mut self) {
+        if let Some(store) = self.store.take() {
+            // Dropped without `close()`: that path waits for a sync client and
+            // removes a lock file, both of which need the filesystem that just went
+            // away. On a share there is no lock file anyway.
+            drop(store);
+        }
+        // The connection object goes too, without `close()` — disconnecting a mount
+        // that is already gone is at best a no-op and at worst a hang.
+        let _ = self.share.take();
+
+        self.keys.clear();
+        self.holders.clear();
+        self.distributions.clear();
+        self.runs.clear();
+        self.audit_view.clear();
+        self.templates.clear();
+        self.template_catalogue.clear();
+        self.document_counts.clear();
+        self.filed_documents.clear();
+        self.db_form.error = None;
+        self.db_form.locked = None;
+        self.db_form.path = self.config.path.display().to_string();
+    }
+
     pub fn tick_lease(&mut self) {
         let Some(store) = self.store.as_mut() else {
             return;
@@ -4146,6 +4398,9 @@ impl eframe::App for YkDistApp {
         // Says "this workstation still has the register" to the other operators
         // sharing a sync folder, and notices when one of them took it anyway.
         self.tick_lease();
+        // Notices a file server that has gone away under a share-hosted register,
+        // rather than letting the next write be the thing that finds out.
+        self.tick_share_health();
         // Start or stop the hardware watch for the screen we are on, then take one
         // snapshot for this frame. Both are cheap and neither touches the hardware:
         // the looking happens on the watch's own thread.

@@ -149,12 +149,12 @@ password, on any path, in any file.
 
 ## Current state
 
-**Shipped**, phases 1–8. A location parses, a credential is built, `ShareConnection`
-attaches and releases, all three platform backends exist, the chooser has an
-*Open from a network share (SMB)* card, Settings shows which share is held and as
-whom, and `--diagnose` reports how this build reaches a share. What is left is
-reconnecting a share that drops mid-session (phase 9) and Kerberos on macOS
-(phase 10).
+**Done for Wave 0**, phases 1–9. A location parses, a credential is built,
+`ShareConnection` attaches and releases, all three platform backends exist, the
+chooser has an *Open from a network share (SMB)* card, Settings shows which share is
+held and as whom, `--diagnose` reports how this build reaches a share, and a share
+that **drops mid-session** is noticed and offered back. What is left is Kerberos on
+macOS (phase 10), which gates no wave and which nobody has asked for.
 
 ## Phases
 
@@ -168,8 +168,51 @@ reconnecting a share that drops mid-session (phase 9) and Kerberos on macOS
 | 6 | Linux / other: probe only, with the instruction that names the alternative | 0 | Done | refusal, not a silent failure |
 | 7 | GUI: the share card in the chooser, remembered shares, share state and *Close and disconnect* in Settings | 0 | Done | the identity is a radio with a sentence each, and the password field appears only for a named account |
 | 8 | `--diagnose` reports the connector this build has and the shares this workstation used | 0 | Done | |
-| 9 | Reconnect a dropped share mid-session | 0 | Todo | today a share that goes away surfaces as an SQLite error and a close; the register is not lost, but the operator has to reconnect by hand |
+| 9 | Reconnect a dropped share mid-session | 0 | **Done** | a five-second `is_file` check notices; the register is **abandoned rather than closed** (there is no file to write `db.closed` into); an identity that needs no password is retried immediately, a named account is asked; and the way back is one button on the chooser. `db.share.reconnected` records the round trip |
 | 10 | Kerberos / explicit domain-controller selection on macOS | — | Todo | NetFS can be told to use Kerberos; nobody has asked, and it needs a domain to test against |
+
+### A share that goes away mid-session (Phase 9)
+
+Before this, a dropped share surfaced as whatever SQLite error the next operation
+happened to hit — mid-hand-over, in the middle of recording a distribution — and the
+operator had to work out from it that the file server had gone, then find the share
+card and retype the location. The register was never lost; nothing said so.
+
+**Noticing** is one `is_file` every [`SHARE_CHECK_EVERY`](../src/app.rs) (five
+seconds), and only for a register this session reached over a share. Deliberately the
+cheapest thing that answers the question: a dropped mount makes the path stop
+resolving, and anything cleverer — a read, a pragma — would be an I/O operation on a
+filesystem that may be hanging.
+
+**Letting go is not closing.** The polite close writes `db.closed` into the register
+*first*, and the register is exactly what is unreachable: the write fails and the
+operator is shown an audit failure for a fault that is not one. So there is a second
+path, `abandon_current_database`, which records nothing, disconnects nothing (the
+mount is as gone as the file), and clears every cached view — no screen may keep
+showing rows from a register this session can no longer read. There is nothing to
+record *in* the file about the file being gone; the log line is where that belongs.
+
+**Reconnecting depends on the identity, and that follows from the password rule.** A
+share reached as the signed-in user or as a guest needs nothing typed, so one attempt
+is made immediately — which is what the operator would do anyway, and a share that
+blipped comes back by itself. A **named account** cannot be retried: its password was
+used for one connection and dropped, which is the rule the whole feature is built on,
+so the card asks for it again and says why.
+
+**Two failures are told apart**, because they send the operator to different places:
+
+| What happened | What is said |
+|---|---|
+| The share is still not reachable | it is not back yet; the register is on the file server and is intact |
+| The share answered but the register is not on it | the mount is back and the file is not — a link that has flapped, not a register somebody moved |
+| Anything else (a password, a newer schema, another workstation's lock) | the real reason, unchanged |
+
+That middle row is the one worth having: without it the operator reads
+"no database file at …" and goes looking for a register they never moved.
+
+**The round trip is audited on the register that came back** — the only place it can
+be written: `db.share.connected` again, plus `db.share.reconnected` naming the share
+and the identity. The gap itself has no entry, and cannot.
 
 ## Audit events
 
@@ -177,6 +220,7 @@ reconnecting a share that drops mid-session (phase 9) and Kerberos on macOS
 |---|---|
 | `db.share.connected` | Written immediately after the database on a freshly connected share opens. Names the share and the identity used (`the signed-in user`, `guest`, or the user name) — never a password |
 | `db.share.disconnected` | Written **before** the database closes, while there is still a database to write to, whenever this session is about to take down a connection it made |
+| `db.share.reconnected` | The share came back and the register reopened on it. Written on the register that came back, naming the share and the identity — the gap itself has no entry and cannot have one |
 
 A connection that **fails** has no audit entry and cannot have one: there is no
 open database to write it to. It is logged (`db.share.connect.failed`,
@@ -244,6 +288,25 @@ nothing opened; and quitting releases the share.
 
 `src/diagnostics.rs` covers the report line, for both a build that can connect and
 one that cannot.
+
+### Phase 9
+
+`tests/behaviour_app_share_dropped.rs` drives the application through the whole
+round trip, with the mock connector and no file server: a register is opened on a
+share and a key recorded on it, the mount is **moved aside** — a rename, not a
+delete, because that is what a dropped share is: the path stops resolving and the
+register keeps existing on the server — and then
+
+- the health tick lets go of the register and the dead connection, and clears the
+  cached rows;
+- the message names the share and says the register is **intact**, and is *not* the
+  raw "no database file at …" that the automatic attempt would otherwise have left
+  behind;
+- nothing reports an audit failure, which is what closing politely would have done;
+- renaming the mount back and reconnecting reopens the register **with its rows**,
+  writes `db.share.reconnected`, and leaves the chain verifying across the gap;
+- a share whose identity is a **named account** is left waiting for the password
+  instead of being retried.
 
 ## Open questions and gates
 

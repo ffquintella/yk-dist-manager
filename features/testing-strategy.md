@@ -18,13 +18,19 @@ whole even though every part passes.
 
 **Suites in place, and CI now enforces the gate.**
 
-- **693 tests** pass on the default features (`cargo test`), **710** with
+- **702 tests** pass on the default features (`cargo test`), **719** with
   `--all-features` — the encrypted-database paths account for the difference, minus
   the one test that exists only when `encrypted-db` is *off*. Plus tests ignored by
   default for what a build machine need not have: 4 read-only hardware tests, and
   the `openssl` interop test that proves the documented template-signing commands
   produce a signature this build accepts
   ([`interop_template_signing.rs`](../tests/interop_template_signing.rs)).
+- **Property tests** for the two pieces of pure logic whose risk is the *space of
+  inputs* rather than the logic: the audit chain and the RFC 4514 escaper
+  ([`property_audit_and_escaping.rs`](../tests/property_audit_and_escaping.rs),
+  phase 9). Seven properties and one documented limit — and each property was
+  checked by **breaking the code it covers**, because a property test that has never
+  failed proves nothing. See below.
 - **CI runs on every push and pull request**
   ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)): fmt, clippy with
   `-D warnings`, the no-default-features build, the full test suite, and the
@@ -157,8 +163,59 @@ make coverage-html    # browsable report
 | 6 | Decide on Cucumber for stakeholder-readable scenarios | — | Todo | only if someone outside the team needs to read them |
 | 7 | Mock write transports for the executor's steps | 1 | **Done** | `device::write::MockWriter` — records that a call carried a secret, never which |
 | 8 | Secret-leak sweep over every sink | 1 | **Done** for the engine | `scenario_no_secret_reaches_the_run_record_or_the_audit_trail` greps every persisted snapshot and audit entry of a full mock run against every value it generated. Extends to the log sink once the executor is wired to the GUI |
-| 9 | Property tests for the audit chain and the RFC 4514 escaper | 0 | Todo | `proptest`; the escaper is exactly the kind of code that benefits |
+| 9 | Property tests for the audit chain and the RFC 4514 escaper | 0 | **Done** | [`tests/property_audit_and_escaping.rs`](../tests/property_audit_and_escaping.rs) — 7 properties and one documented limit. Each property was **verified by breaking the code it covers**: dropping `;` from the escaper and dropping `details` from the digest both fail it, shrunk to `";"` and to a one-entry chain |
 | 10 | Cross-platform CI (macOS / Windows / Linux), including the native features | 0 | **Done** | the matrix compiles `native-device` on all three; it cannot *run* the hardware tests — see below |
+
+## Property tests, and how they were shown to work (Phase 9, 2026-08-12)
+
+Two targets, chosen because in both the **input space** is the risk rather than the
+logic:
+
+**The audit chain** is what this register's credibility rests on, and its example
+tests all use plausible entries — `felipe`, `key.added`, `serial:20423633`. A hash
+chain does not fail on plausible input. It fails on an actor containing a newline,
+on details that happen to look like the next field, on an empty string where a
+concatenation loses a boundary. Those get generated, not imagined.
+
+**The RFC 4514 escaper** takes the one field this application has no control over: a
+person's name, as they spell it. `Ana Silva` proves nothing; `#Ana`, `Ana,`, a lone
+backslash, a name that is one space, a name ending in a space — each has a rule, and
+the rules interact at the ends of the string.
+
+The properties:
+
+| Property | What it would catch |
+|---|---|
+| any chain built by appending verifies | the baseline; a broken digest fails everything else too |
+| **editing any field of any entry is detected** | an entry edited after the fact — and a field left out of the digest |
+| reordering entries is detected | "marked lost, then handed over" rewritten as its reverse |
+| removing an entry from the middle is detected | a gap in the history |
+| escaping is reversible | a holder's name silently altered on its way into a `CN` |
+| no bare separator survives | a `,` or `+` that ends the attribute value early, so the CA reads one RDN as two |
+| the positional rules hold at both ends | ` Ana` and `Ana ` and `#Ana` — the cases that work on a tidy name and fail on a pasted one |
+
+**Each was verified by breaking the code**, which is the only way to know a property
+is load-bearing rather than decorative:
+
+- Dropping `;` from the escaper's match arm fails `no_bare_separator_survives`,
+  shrunk to the minimal input `";"`.
+- Dropping `details` from the hashed payload fails
+  `editing_any_field_of_any_entry_is_detected` at entry 0, field 3 — the field that
+  stopped being covered.
+
+Both breakages were reverted; the point was the demonstration.
+
+**One documented limit, as an example test rather than a property.** A prefix of a
+valid chain is itself a valid chain, so `verify` cannot detect truncation at the
+**tail**. That is a property of a hash chain, not a bug to fix here, and it is why
+the register's protection against deletion is the `DELETE` trigger on the audit
+table plus the segregated mirror whose divergence is an alert
+(`features/audit-trail.md`). It is pinned here so a reader finds the limit written
+down beside the properties that hold.
+
+**If a property ever fails in CI**, `proptest` writes the shrunken counterexample to
+`tests/property-regressions/`. **Commit that file**: it turns the counterexample into
+a permanent example test, which is the whole point of the machinery.
 
 ## Commands
 

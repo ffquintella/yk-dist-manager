@@ -1,0 +1,20 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+#
+# Provenance, because it matters here: neither seed below is a bug that ever
+# existed in this code. Both come from *deliberately* breaking the code to prove
+# the properties were load-bearing rather than decorative — `;` was removed from
+# the escaper's match arm, and `details` was dropped from the hashed payload
+# (`features/testing-strategy.md` phase 9). Both breakages were reverted
+# immediately.
+#
+# They are kept anyway: they are the minimal inputs for the two rules most worth
+# never losing — a separator that must not survive escaping, and a field that must
+# not fall out of the digest — so replaying them first on every run costs nothing
+# and guards exactly the right two things.
+cc 4f8c760f1f7740c787edb1e9142979295e0d25c39a41de0119c28249788abf8a # shrinks to value = ";"
+cc c9a0b85318fa7691e41355ed0717ae40048107db7053b5313f282811ef4c4650 # shrinks to fields = [("", "", "", "")], victim = 0, which = 3, replacement = " "

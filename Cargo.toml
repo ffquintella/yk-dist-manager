@@ -156,3 +156,9 @@ native-device = ["native-piv", "native-fido", "native-otp"]
 
 [dev-dependencies]
 tempfile = "3"
+
+# Property tests for the two pieces of pure logic whose failure modes are shaped
+# like inputs nobody thinks to write down: the audit chain and the RFC 4514
+# escaper (`features/testing-strategy.md` phase 9). A dev-dependency, so it is in
+# no shipped binary.
+proptest = { version = "1", default-features = false, features = ["std"] }

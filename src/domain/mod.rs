@@ -16,7 +16,11 @@ pub use bootstrap::{BootstrapRun, RunStatus, StepKind, StepOutcome, StepStatus};
 pub use custody::{ChangeEnforcement, CustodyModel};
 pub use distribution::{DeliveryMethod, DistributionRecord};
 pub use document::{AttachedDocument, DocumentError, DocumentKind};
-pub use holder::Holder;
+// `escape_rfc4514` is re-exported for the property test that pins its
+// reversibility (`features/testing-strategy.md` phase 9): the escaper is what
+// stands between a person's name as they spell it and the `CN` of a certificate
+// issued to them, so it is worth testing from outside the module that owns it.
+pub use holder::{Holder, escape_rfc4514};
 pub use key::{KeyStatus, SerialSource, YubiKeyRecord};
 
 /// Maximum accepted length for any free-text field arriving from the UI.

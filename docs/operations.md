@@ -411,6 +411,38 @@ downgraded by a later scan.
 If the tool refuses a scan: two different serials in shot are rejected rather than guessed
 (scan one label at a time), and a barcode that is not a serial says so.
 
+## Runbook: the share went away while you were working
+
+The application checks every five seconds that a share-hosted register is still
+reachable. When the file server goes — a dropped VPN, a laptop that changed network, a
+server rebooted — you get a card saying so instead of an SQLite error on your next
+click.
+
+**The register is intact.** It is on the file server, not on your workstation, and
+everything you recorded before the share dropped was committed. Nothing was written
+while it was gone.
+
+What happens next depends on how the share was reached:
+
+- **The signed-in account, or guest** — nothing needs typing, so the application tries
+  to reconnect immediately. If the share is back, you are working again and the status
+  line says so.
+- **A named account** — the password was used for one connection and dropped, which is
+  why it cannot be retried for you. Type it again on the card and press *Reconnect and
+  reopen*.
+
+Two messages worth telling apart:
+
+| What it says | What it means |
+|---|---|
+| *…is still not reachable* | the share is not back; try again when it is |
+| *…answered, but the register is not reachable on it yet* | the mount is back and the file is not — usually a link that has flapped. Wait a moment and try again |
+
+If you would rather not wait, **Work on another database** clears the card and leaves
+the chooser as usual. The reconnection is recorded in the audit trail
+(`db.share.reconnected`) on the register that came back; the gap itself has no entry,
+because there was no register to write one to.
+
 ## Runbook: two keys are plugged in
 
 The Inventory and Bootstrap screens watch for keys while they are open, so plugging one in

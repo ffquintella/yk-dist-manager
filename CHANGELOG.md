@@ -19,6 +19,58 @@ Maintenance instructions (see AGENTS.md §5):
 
 ### Added
 
+- **Wave 0 is closed.** Every phase carrying wave `0` in every spec under
+  [`features/`](features/) is done, and the roadmap says so as a *derived* claim: the
+  `awk` one-liner it publishes prints nothing. What that means is the foundation — a
+  register that can be opened, hosted, encrypted, backed up, audited and searched;
+  keys, holders and hand-overs recorded; the paperwork generated, signed for and
+  chased; the procedure editable, signed and shareable; the hardware identified as it
+  is plugged in. What it does **not** mean is that the tool bootstraps a key: that is
+  Wave 1, and `MockWriter` is still the only implementation of the write traits in a
+  default build.
+- **A share that drops mid-session is noticed, and offered back**
+  ([`features/smb-share-hosting.md`](features/smb-share-hosting.md) phase 9). Until
+  now a dropped file server surfaced as whatever SQLite error the next operation
+  happened to hit — mid-hand-over, while recording a distribution — and the operator
+  had to work out from it that the mount had gone, then find the share card and retype
+  the location. Now one `is_file` every five seconds notices, and:
+
+  - the register is **abandoned rather than closed**, because closing politely writes
+    `db.closed` into the register *first* and the register is exactly what is
+    unreachable — the write fails and reports an audit failure for a fault that is not
+    one. Every cached view is cleared with it: no screen may keep showing rows from a
+    register this session can no longer read.
+  - an identity that needs nothing typed — the signed-in user, or guest — is
+    **retried at once**, which is what the operator would do anyway and is how a share
+    that merely blipped comes back by itself. A **named account** is not, because its
+    password was used for one connection and dropped; the card asks again and says why.
+  - **two failures are told apart**: the share still being unreachable, and the share
+    answering while the register is not on it yet. Without that distinction the
+    operator reads "no database file at …" and goes looking for a register they never
+    moved.
+  - `db.share.reconnected` records the round trip on the register that came back — the
+    only place it can be written. The gap itself has no entry and cannot have one.
+- **Property tests for the audit chain and the RFC 4514 escaper**
+  ([`features/testing-strategy.md`](features/testing-strategy.md) phase 9), the two
+  pieces of pure logic whose risk is the *space of inputs* rather than the logic. The
+  chain's example tests all use plausible entries, and a hash chain does not fail on
+  plausible input — it fails on an actor containing a newline, or an empty field where
+  a concatenation loses a boundary. The escaper takes the one field this application
+  has no control over: a person's name as they spell it.
+
+  Seven properties — a well-formed chain verifies; editing **any** field of **any**
+  entry is detected; reordering is; removing an entry from the middle is; escaping is
+  reversible; no bare separator survives it; the positional rules hold at both ends —
+  plus one **documented limit** as an example test: a prefix of a valid chain is
+  itself valid, so truncation at the tail is not detectable by verification, which is
+  why the `DELETE` trigger and the segregated mirror are what stand between the
+  register and a truncated trail.
+
+  Each property was checked by **breaking the code it covers**, because a property
+  test that has never failed proves nothing: dropping `;` from the escaper fails one
+  (shrunk to the minimal input `";"`), and dropping `details` from the hashed payload
+  fails another (at entry 0, field 3). Both breakages were reverted.
+
 - **The application mark is used inside the application**
   ([`features/application-icon.md`](features/application-icon.md) phase 7), in three
   places, each answering a different question: beside the name in the top bar (telling

@@ -29,8 +29,8 @@ deployment.
 
 | State | Count |
 |---|---|
-| Done | 21 |
-| In progress | 7 |
+| Done | 23 |
+| In progress | 5 |
 | Todo | 13 |
 | **Total tracked items** | **41** (across 38 specs — two items share a spec) |
 
@@ -45,7 +45,7 @@ deployment.
 > had every wave-0 phase done and were still `[/]` because of their **Wave 1** rows,
 > which the Wave column exists to stop counting. Bootstrap templates joined them when
 > its own wave-0 phases finished. See
-> [What stands between here and a closed Wave 0](#what-stands-between-here-and-a-closed-wave-0).
+> [Wave 0 is closed](#wave-0-is-closed).
 
 Released: **v0.10.0**. Current wave: **Wave 1 — native execution.**
 
@@ -88,7 +88,7 @@ decisions this makes possible rather than makes — see the gates in the spec.
 Also out of turn, released in v0.6.0: the **Templates screen** — phase 2 of
 [`features/bootstrap-templates.md`](features/bootstrap-templates.md), plus add /
 duplicate / retire / remove — was built at the request of the operator who will run
-the tool. It belongs to Wave 0, which is not finished, rather than to Wave 1, and it
+the tool. It belongs to Wave 0 — then unfinished — rather than to Wave 1, and it
 was worth taking now for the same reason the Terms editor was: the procedure is
 content somebody else owns. "Templates are data, not code" was only true for a
 reader of the source — changing a step meant editing Rust and shipping a build, so
@@ -120,12 +120,12 @@ store method with its refusal. They are recorded as Phase 9 of
 made them worth taking early: a register nobody can correct gets worked around in a
 spreadsheet, and the workaround is the thing an audit finds.
 
-Wave 0 (foundation) is in place, and v0.2.1–v0.2.2 add the paperwork and intake half
+Wave 0 (foundation) is **closed**, and v0.2.1–v0.2.2 added the paperwork and intake half
 of the job: choosing or creating the database file, recording serials from a barcode,
 generating the consignment term in the holder's language, and filing the signed copy
 against the hand-over — and, from the Terms screen, editing that term's wording per
 language. The Templates screen now does the same for the bootstrap procedure itself.
-**693 tests** pass with the default features and **710** with `--all-features` (plus 4
+**702 tests** pass with the default features and **719** with `--all-features` (plus 4
 read-only hardware tests and one ignored `openssl` interop test), with **85.2%**
 (region 84.6%) line coverage of the headless core — enforced by CI against a floor of
 80% rather than reported. The register can also
@@ -141,35 +141,31 @@ transports; the secret machinery it needs exists. Nothing in this build can writ
 key — `MockWriter` is the only implementation of the write traits — which is the
 intended state until the native transports land and are verified against hardware.
 
-## What stands between here and a closed Wave 0
+## Wave 0 is closed
 
-Wave 0 cannot be marked done today. This is the whole of what is left, derived from
-the phase tables in [`features/`](features/) rather than written from memory — a
-phase gates this wave if and only if its **Wave** column says `0`:
+**Nothing.** Every phase carrying wave `0` in every spec under
+[`features/`](features/) is done, which is the rule this file states below and the one
+it is now measured against for the first time.
 
-| Feature | Phase | What is missing |
-|---|---|---|
-| [SMB share hosting](features/smb-share-hosting.md) | 9 | reconnecting a share that drops mid-session |
-| [Testing strategy](features/testing-strategy.md) | 9 | property tests for the audit chain and the RFC 4514 escaper |
-
-**Two phases across two features, none of them blocked on anything.** No decision is
-outstanding for either, no hardware is needed, and nothing waits on Wave 1. It is
-work, not a queue.
-
-Four rows left this list in quick succession: bootstrap templates (files, signatures,
-diff), device detection (the watch and the picker), receipts & terms (the signature
-state machine and the return receipt) and the application icon (its in-application
-use). All four are `[x]` above; what remains in those specs is Wave 1, Wave 2 or —
-for the icon's Windows and Linux resources — Wave 3.
-
-Regenerate this list rather than trusting it — the prose here drifted twice before
-it was derived:
+Derived, not asserted — the command prints nothing:
 
 ```bash
 awk -F'|' '$4 ~ /^ *0 *$/ && $5 !~ /[Dd]one/ {print FILENAME" phase"$2": "$3}' features/*.md
 ```
 
-**What that command cannot see, and what stands behind the list.** It reads the
+The last four phases to land were the icon's in-application use, the signature state
+machine and the return receipt, reconnecting a dropped share, and the property tests
+for the audit chain and the RFC 4514 escaper.
+
+**What "Wave 0 is closed" does and does not mean.** It means the foundation is in
+place: a register that can be opened, hosted, encrypted, backed up, audited and
+searched; keys, holders and hand-overs recorded; the paperwork generated, signed for
+and chased; the procedure editable, signed and shareable; and the hardware identified
+as it is plugged in. It does **not** mean the tool bootstraps a key — that is Wave 1,
+and `MockWriter` is still the only implementation of the write traits in a default
+build.
+
+**What that command cannot see, and what the claim rests on.** It reads the
 **Wave** column, and nine specs do not have one — they predate it and were never
 given one: consignment terms, database selection, distribution records, holder
 registry, key inventory, logging, serial scanning, signed-term documents and the
@@ -177,32 +173,33 @@ registry, key inventory, logging, serial scanning, signed-term documents and the
 
 Those phases were read one by one, and **none of them is wave-0 work**: they are
 later-wave or optional by nature (AD/LDAP lookup, reconciliation reports, batch
-hand-over, applet resets), or they duplicate a phase that is already on the list
-above under the spec that owns it — consignment terms 9 and distribution records 4
-are the return receipt and the signature state machine, which is exactly
-[receipts & terms](features/receipts-and-terms.md) 4 and 6.
+hand-over, applet resets), or they duplicate a phase the spec that owns it has since
+finished — consignment terms 9 and distribution records 4 are the return receipt and
+the signature state machine, which
+[receipts & terms](features/receipts-and-terms.md) 4 and 6 delivered.
 
 Four turned out to be **already done elsewhere** and are now marked so, with a
 pointer to where: the log panel (logging 3, shipped as gui-shell 8), search on
 Inventory and on Holders (key inventory 5, holder registry 5, shipped as gui-shell
 3) and the spreadsheet import (key inventory 8, shipped as storage 8). None of them
-changed this list — they were work already finished, not work still owed.
+was work still owed.
 
 So of the 23 rows in the Wave 0 tables below, **14 are derived** — their specs carry
 the column the rule is written against — and **nine are reasoned**, by having read
-their remaining phases. This paragraph is what says so, rather than the reader
-assuming the whole list came out of the command.
+their remaining phases. "Wave 0 is closed" is therefore a derived claim for 14 rows
+and a judgement for nine, and this paragraph is what says so rather than letting a
+reader assume the command covered all of them.
 
 Giving those nine a Wave column is the real fix, and it is a planning decision
 rather than a mechanical one: somebody has to say which wave each remaining phase
 belongs to. Worth doing before the next wave closes, because the same gap will be
 there.
 
-### What is *not* on that list, and why
+### Unticked boxes that are not Wave 0
 
-Three groups of unticked boxes exist elsewhere in the specs and none of them gates
-this wave. They are named here because they used to be listed as Wave 0 blockers,
-and looking for them is otherwise the obvious mistake.
+Plenty of phases in `features/` are still Todo. None of them gates this wave, and
+they are grouped here because "the specs are full of Todos, so how is Wave 0 closed?"
+is the first reasonable question a reader has.
 
 **Phases that gate a later wave.** The bootstrap engine's PIV and OTP steps, the
 PIV/OTP/management native transports, per-applet reads, the wizard's resume and
@@ -286,7 +283,7 @@ closed: `packaging/macos/verify-bundle.sh` fails the build without it. See
   surprise.
 - A phase marked **—** in the Wave column gates *no* wave: it is optional, or it
   is blocked on a decision that is not the implementer's (`AGENTS.md` §8). Those
-  are listed under [What stands between here and a closed Wave 0](#what-stands-between-here-and-a-closed-wave-0)
+  are listed under [Wave 0 is closed](#wave-0-is-closed)
   with their owner, and a wave can close with them outstanding.
 - Waves are ordered. Work the current wave; if something must jump the queue,
   edit this file in the same commit and say why (see [AGENTS.md](AGENTS.md)).
@@ -304,7 +301,7 @@ Everything needed before a single byte is written to a key.
 | `[x]` | `ykman` fallback + parsers | [spec](features/ykman-fallback.md) — argv-only subprocess, typed errors, parsers unit-tested against recorded output of ykman 5.9.2. |
 | `[x]` | Device detection | [spec](features/device-detection.md) — read-on-demand, plus a **background watch** that notices a key being plugged in or pulled out (identifying only when the set of serials changes; 1.5s natively, 4s when every poll is a subprocess, and only while a screen that needs it is open) and a **picker** for when several are attached. Nothing is ever chosen for the operator, and the watch is stopped — thread joined — before a run writes to a key. Per-applet reads, the "already bootstrapped" warning and attestation are Wave 1. |
 | `[x]` | Single-file SQLite storage | [spec](features/storage-sqlite-single-file.md) — schema **v5** (per-step run rows), `user_version` migrations (v1→v5 tested), WAL locally / rollback journal on a share, `VACUUM INTO` backup **on a schedule with rotation**, `integrity_check`, **CSV import** of the spreadsheet this replaces, and the SMB share connected by the application itself. Every wave-0 phase done. Concurrency is Wave 2; archival and retention (phase 7, gating no wave) has its decision — one year, configurable — and needs the archive-then-remove path that may break and rebuild the audit trigger. |
-| `[/]` | SMB share hosting | [spec](features/smb-share-hosting.md) — the application connects the share itself: the signed-in user (the default, and the whole mechanism on Windows), guest, or a named account whose password is typed and never stored. `WNetAddConnection2W` / `NetFSMountURLSync`, never a command line. An already-mounted share is used and left alone; one this session made is released on close and on quit. Reconnecting a share that drops mid-session, and Kerberos on macOS, are Todo. |
+| `[x]` | SMB share hosting | [spec](features/smb-share-hosting.md) — the application connects the share itself: the signed-in user (the default, and the whole mechanism on Windows), guest, or a named account whose password is typed and never stored. `WNetAddConnection2W` / `NetFSMountURLSync`, never a command line. An already-mounted share is used and left alone; one this session made is released on close and on quit. A share that **drops mid-session** is noticed within five seconds, the register is abandoned rather than closed, an identity that needs no password is retried at once, and the way back is one button — `db.share.reconnected` records the round trip. Kerberos on macOS gates no wave. |
 | `[x]` | Cloud-sync hosting (OneDrive) | [spec](features/cloud-sync-hosting.md) — `Location::CloudSync`: waits for the sync client, takes `<database>.lock`, refuses a second workstation by name, releases after the upload, reports sync conflict copies, **snapshots the register at open** before this session can write, and offers a **read-only** open so a second operator can look without taking the lock. Every phase done. Whether the location is *acceptable* is an ESI decision, not this feature's. |
 | `[x]` | Choosing / creating the database file | [spec](features/database-selection.md) — strict `open_existing` vs `create_new` (a typo can no longer create an empty database), recent-database list, native dialogs, switch from Settings. |
 | `[x]` | Optional database password | [spec](features/db-password-and-encryption.md) — `encrypted-db` wires `PRAGMA key`; the chooser prompts. **Settings → Password protection** sets, changes and removes the password by export-and-swap, never an in-place re-key, with the strength meter beside it and the floor enforced by the store rather than by the screen. The prompt slows down after three wrong passwords — a doubling delay counted down on screen, enforced in `handle_db_request` and deliberately not a lockout. Explicit KDF parameters are the one thing left, and they are **blocked on the ESI's approved cipher set**; unlocking with a YubiKey is Wave 1. |
@@ -319,7 +316,7 @@ Everything needed before a single byte is written to a key.
 | `[x]` | GUI shell | [spec](features/gui-shell.md) — eight screens, unlock screen, status bar, egui 0.36 `App::ui`, themed with `egui-elegance` (four palettes, the choice persisted) and laid out fluidly (one gutter, full-width cards, columns that split the page, tables that contain their own overflow). Search, sortable columns, window-state persistence, keyboard flow, hardware-write confirmation, the log panel and the accessibility pass are all done — every wave-0 phase. Localisation (phase 9) is closed as not needed: the interface is English (2026-08-12). |
 | `[x]` | Bootstrap wizard | [spec](features/gui-bootstrap-wizard.md) — selection (the newest version of each template in use), per-step opt-out, plan review, dry run, and a link to the Templates screen — the whole of wave 0. The live run view, the secret panels and the pre-flight checks landed with the executor in 0.7.1; resume and the post-run summary are Wave 1, batch mode Wave 2. |
 | `[x]` | Application icon | [spec](features/application-icon.md) — one SVG (a box truck carrying a YubiKey), `make icons` rendering the PNGs, the macOS `.icns` and the RGBA blob the binary embeds; window, dock and bundle icons done, plus **three placements in the application** (top bar, database chooser, About box) and an **About box** on the version badge carrying the copyable `--diagnose` report. A Windows `.ico` resource and a Linux `hicolor` install are **Wave 3**, with the packaging they attach to. |
-| `[/]` | Testing strategy | [spec](features/testing-strategy.md) — **693 tests** (710 with `--all-features`) across unit + behaviour suites, a mock device backend and a mock share connector, recorded fixtures, and tests ignored by default for what needs hardware or `openssl`; **85.2%** core line coverage. **CI enforces the gate** on every push, with a macOS/Windows/Linux build matrix. Mock write transports and the secret-leak sweep wait on Wave 1. |
+| `[x]` | Testing strategy | [spec](features/testing-strategy.md) — **702 tests** (719 with `--all-features`) across unit + behaviour suites, a mock device backend and a mock share connector, recorded fixtures, and tests ignored by default for what needs hardware or `openssl`; **85.2%** core line coverage. **CI enforces the gate** on every push, with a macOS/Windows/Linux build matrix. **Property tests** for the audit chain and the RFC 4514 escaper, each verified by breaking the code it covers. Mock write transports and the secret-leak sweep wait on Wave 1. |
 
 ### Paperwork
 

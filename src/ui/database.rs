@@ -59,6 +59,7 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
                         ui.add_space(10.0);
                     }
 
+                    dropped_share(app, ui);
                     throttled(app, ui);
                     locked(app, ui);
                     recent(app, ui);
@@ -72,6 +73,85 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
             ui.add_space(40.0);
         });
     });
+}
+
+/// The share that went away under an open register
+/// (`features/smb-share-hosting.md` phase 9).
+///
+/// A card rather than a line in the error list, because this is not a refused open:
+/// the operator was working, the file server went away, and three things need saying
+/// in the same breath — what happened, that **the register is intact** (it is on the
+/// server, not here), and the one action that gets them back to it.
+///
+/// The reconnect button is the whole point. Before this the operator had to work out
+/// from an SQLite error that a mount had gone, then find the share card and retype
+/// the location.
+fn dropped_share(app: &mut YkDistApp, ui: &mut egui::Ui) {
+    use crate::store::smb::Access;
+
+    let Some(lost) = app.share_lost.clone() else {
+        return;
+    };
+    let mut reconnect = false;
+    let mut give_up = false;
+
+    super::titled_card(ui, "The share went away", |ui| {
+        super::mono(ui, &lost.location);
+        ui.add_space(6.0);
+        super::faint(ui, &format!("was connected as {}", lost.identity));
+        ui.add_space(10.0);
+
+        super::notice(
+            ui,
+            CalloutTone::Warning,
+            "The register itself is on the file server and is intact — this workstation simply              cannot reach it. Nothing was written while it was gone, and nothing was lost: the              last thing you recorded was committed before the share dropped.",
+        );
+
+        if lost.access == Access::Named {
+            ui.add_space(10.0);
+            super::hint(
+                ui,
+                "This share was reached with a named account, so the password has to be typed                  again — it is used for one connection and never stored, which is why it cannot                  be reconnected for you.",
+            );
+            ui.add_space(8.0);
+            super::capped_input(ui, &mut app.share_form.password, MAX_TEXT, |input| {
+                input
+                    .label(format!("Password for {}", lost.user))
+                    .password(true)
+                    .id_salt("reconnect-password")
+            });
+        }
+
+        ui.add_space(12.0);
+        ui.horizontal_wrapped(|ui| {
+            let ready = lost.access != Access::Named || !app.share_form.password.trim().is_empty();
+            if ui
+                .add(Button::new("Reconnect and reopen").enabled(ready))
+                .on_hover_text("reach the share again, then open the register on it")
+                .clicked()
+            {
+                reconnect = true;
+            }
+            if ui
+                .add(Button::new("Work on another database").outline())
+                .on_hover_text("leave this share alone and choose something else below")
+                .clicked()
+            {
+                give_up = true;
+            }
+        });
+    });
+    ui.add_space(14.0);
+
+    if reconnect {
+        app.reconnect_dropped_share();
+    }
+    if give_up {
+        // Cleared deliberately: the card is the offer, and an operator who has
+        // declined it should not have to look at it while they pick another register.
+        app.share_lost = None;
+        app.open_error = None;
+    }
 }
 
 /// The wait a run of wrong passwords has earned
