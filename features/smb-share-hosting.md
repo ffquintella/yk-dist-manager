@@ -293,9 +293,12 @@ one that cannot.
 
 `tests/behaviour_app_share_dropped.rs` drives the application through the whole
 round trip, with the mock connector and no file server: a register is opened on a
-share and a key recorded on it, the mount is **moved aside** — a rename, not a
-delete, because that is what a dropped share is: the path stops resolving and the
-register keeps existing on the server — and then
+share and a key recorded on it, the mount point is **taken away** — the share's root
+is a link to the "server-side" tree (a symlink on Unix, a junction on Windows) and
+the link is what goes, not the files, because that is what a dropped share is: the
+path stops resolving and the register keeps existing on the server. Taking the link
+rather than the directory is also the only way this runs on Windows, where a
+directory holding an open file cannot be moved. Then
 
 - the health tick lets go of the register and the dead connection, and clears the
   cached rows;
@@ -303,7 +306,7 @@ register keeps existing on the server — and then
   raw "no database file at …" that the automatic attempt would otherwise have left
   behind;
 - nothing reports an audit failure, which is what closing politely would have done;
-- renaming the mount back and reconnecting reopens the register **with its rows**,
+- putting the mount point back and reconnecting reopens the register **with its rows**,
   writes `db.share.reconnected`, and leaves the chain verifying across the gap;
 - a share whose identity is a **named account** is left waiting for the password
   instead of being retried.
