@@ -112,6 +112,13 @@ pub struct PivState {
     /// False while the applet still has Yubico's published default.
     pub management_key_changed: bool,
     pub pin_changed_from_default: bool,
+    /// PIN attempts remaining before the applet locks, when the applet says.
+    ///
+    /// `None` means "not read", which is not the same as "plenty": a key whose
+    /// retry counter is at 1 is one wrong PIN away from needing the PUK, and
+    /// starting a run against it is a decision an operator should make knowingly
+    /// (`features/device-detection.md` phase 4).
+    pub pin_retries: Option<u8>,
 }
 
 impl PivState {
@@ -127,6 +134,12 @@ pub struct OtpState {
     pub slot_two_programmed: bool,
     /// True when a slot is already write-protected by an access code we would
     /// have to supply to change it.
+    ///
+    /// **Not readable from the hardware.** Neither the OTP status structure nor
+    /// `ykman otp info` reports whether a slot carries an access code — the only way
+    /// to find out is to try a write and be rejected. So this stays `false` from any
+    /// read, and it is the *record*, not the key, that says whether this tool set one
+    /// (`features/step-otp-access-code.md`).
     pub access_code_set: bool,
 }
 
@@ -164,6 +177,18 @@ pub struct KeygenEvidence {
     pub algorithm: String,
     /// PEM public key. Public by definition, so safe to store with the run.
     pub public_key_pem: String,
+    /// The slot's attestation certificate, PEM, read immediately after generation
+    /// (`features/device-detection.md` phase 6).
+    ///
+    /// This is what turns "we generated a key on the device" from a claim into
+    /// evidence: the certificate is signed by Yubico's attestation key, names the
+    /// slot, and says the private key was generated on the card and cannot be
+    /// exported. Read *at generation time* rather than later, because the point is to
+    /// bind the proof to this generation and not to whatever is in the slot next week.
+    ///
+    /// `None` when the firmware has no attestation (below 4.3) or the applet refused —
+    /// which is a missing proof, not a failed generation, so it does not fail the step.
+    pub attestation_pem: Option<String>,
 }
 
 // ----------------------------------------------------------------- the traits
@@ -237,6 +262,14 @@ pub trait PivWriter {
         algorithm: &str,
         pin: &Secret,
     ) -> Result<KeygenEvidence>;
+
+    /// Read a slot's attestation certificate (`features/device-detection.md` phase 6).
+    ///
+    /// A **read**, on the write trait because it needs the same PIV connection and no
+    /// other. Independent of `generate_key` so the verification step can re-read the
+    /// proof for a key this run did not generate — which is how an auditor checks a
+    /// key handed over months ago.
+    fn attest(&mut self, serial: u32, slot: &str) -> Result<String>;
 
     /// Build a CSR for the generated key, with the holder's e-mail as an
     /// `rfc822Name` SAN — the requirement `ykman` cannot meet, and the reason
@@ -321,15 +354,32 @@ pub struct MockWriter {
     piv: PivState,
     otp: OtpState,
     attached: Option<u32>,
+    /// What `attest` returns. `None` models a key whose firmware has no
+    /// attestation — the case a test needs in order to prove that a missing proof
+    /// does not fail the generation step.
+    attestation: Option<String>,
 }
 
 impl MockWriter {
     /// A key that is attached and completely factory-fresh.
+    ///
+    /// Attestation present, because every YubiKey since firmware 4.3 has it — a mock
+    /// whose default lacked it would make the *unusual* case the one every test
+    /// exercised.
     pub fn factory_fresh(serial: u32) -> Self {
         Self {
             attached: Some(serial),
+            attestation: Some(
+                "-----BEGIN CERTIFICATE-----\nMOCK-ATTESTATION\n-----END CERTIFICATE-----\n".into(),
+            ),
             ..Default::default()
         }
+    }
+
+    /// A key whose firmware cannot attest (below 4.3), or whose applet refuses.
+    pub fn without_attestation(mut self) -> Self {
+        self.attestation = None;
+        self
     }
 
     /// Start from a given applet state — for the idempotency scenarios, where the
@@ -565,6 +615,15 @@ impl PivWriter for MockWriter {
             slot: slot.to_owned(),
             algorithm: algorithm.to_owned(),
             public_key_pem: "-----BEGIN PUBLIC KEY-----\nMOCK\n-----END PUBLIC KEY-----\n".into(),
+            attestation_pem: self.attestation.clone(),
+        })
+    }
+
+    fn attest(&mut self, serial: u32, slot: &str) -> Result<String> {
+        self.record("piv.attest", serial, vec![slot.to_owned()], 0)?;
+        self.attestation.clone().ok_or(WriteError::Unsupported {
+            operation: "piv.attest",
+            reason: "this mock is configured as a key with no attestation".into(),
         })
     }
 
@@ -762,6 +821,7 @@ mod tests {
             occupied_slots: vec!["9c".into()],
             management_key_changed: true,
             pin_changed_from_default: true,
+            pin_retries: Some(3),
         });
         let state = writer.piv_state(20_423_633).unwrap();
         assert!(state.slot_occupied("9c"));

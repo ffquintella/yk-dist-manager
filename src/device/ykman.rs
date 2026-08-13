@@ -95,6 +95,74 @@ impl YubiKeyBackend for YkmanBackend {
     }
 }
 
+/// Read which OTP slots are programmed, through `ykman otp info`.
+///
+/// **A labelled fallback, and the only read there is.** The native path would be the
+/// OTP HID status frame, which no crate in this graph exposes — writing it means
+/// hand-rolling the protocol, and `features/native-device-transport.md` phase 4 is
+/// explicit that the read path must be verified against this command on a real key
+/// before any of it is trusted. Until that happens, this *is* the read: it is
+/// read-only, it is the source `ykman info` itself uses, and having it means the
+/// pre-flight can describe the OTP applet instead of reporting it as unknown.
+pub fn otp_state(backend: &YkmanBackend, serial: u32) -> Result<crate::device::write::OtpState> {
+    let serial = serial.to_string();
+    let out = backend.run(&["--device", &serial, "otp", "info"])?;
+    parse_otp_info(&out)
+}
+
+/// Parse `ykman otp info`.
+///
+/// The output is two lines naming each slot and whether it holds a configuration:
+///
+/// ```text
+/// Slot 1: programmed
+/// Slot 2: empty
+/// ```
+///
+/// Parsed by *matching the words rather than the position*, because a line that has
+/// gained a field between `ykman` versions must not silently turn a programmed slot
+/// into an empty one — a wrong answer here says a slot is free to overwrite when it
+/// is not.
+pub fn parse_otp_info(stdout: &str) -> Result<crate::device::write::OtpState> {
+    let mut state = crate::device::write::OtpState::default();
+    let mut seen = 0;
+
+    for line in stdout.lines() {
+        let line = line.trim();
+        let Some((slot, rest)) = line.split_once(':') else {
+            continue;
+        };
+        let slot = slot.trim().to_ascii_lowercase();
+        let programmed = match rest.trim().to_ascii_lowercase() {
+            // Both words `ykman` uses. Anything else is not treated as empty:
+            // "unknown" must not read as "free".
+            state_word if state_word.starts_with("programmed") => true,
+            state_word if state_word.starts_with("empty") => false,
+            _ => continue,
+        };
+        match slot.as_str() {
+            "slot 1" => {
+                state.slot_one_programmed = programmed;
+                seen += 1;
+            }
+            "slot 2" => {
+                state.slot_two_programmed = programmed;
+                seen += 1;
+            }
+            _ => {}
+        }
+    }
+
+    if seen == 0 {
+        return Err(DeviceError::Parse {
+            command: "ykman otp info".into(),
+            reason: "no `Slot N: programmed|empty` line — the applet may be disabled over USB"
+                .into(),
+        });
+    }
+    Ok(state)
+}
+
 /// Parse `ykman list --serials`: one decimal serial per line.
 pub fn parse_serials(stdout: &str) -> Vec<u32> {
     stdout

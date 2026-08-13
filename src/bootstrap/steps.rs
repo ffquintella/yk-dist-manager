@@ -298,8 +298,26 @@ pub fn perform(
                 transports
                     .backend
                     .generate_key(serial, &slot, &algorithm, &secrets[pin])?;
+            // The attestation goes into the step's detail, which is what the run
+            // record keeps (`features/device-detection.md` phase 6). A public
+            // certificate, so there is nothing here that must not persist — and
+            // storing it is the difference between "generated on the device" as a
+            // claim and as something an auditor can check years later, against
+            // Yubico's attestation root, without the key in hand.
+            //
+            // Its absence is stated rather than omitted: a step detail that simply
+            // did not mention attestation would read the same whether the proof was
+            // missing or nobody had looked.
+            let proof = match &evidence.attestation_pem {
+                Some(pem) => format!(
+                    "; attestation ({} bytes) proves on-device generation\n{pem}",
+                    pem.len()
+                ),
+                None => "; NO attestation — on-device generation is unproven for this key                          (firmware below 4.3, or the applet refused)"
+                    .to_owned(),
+            };
             Ok(StepOutcomeKind::applied(format!(
-                "[native] {} key generated on the device in slot {}",
+                "[native] {} key generated on the device in slot {}{proof}",
                 evidence.algorithm, evidence.slot
             )))
         }
@@ -344,14 +362,27 @@ pub fn perform(
             let fido2 = transports.backend.fido2_state(serial)?;
             let piv = transports.backend.piv_state(serial)?;
             let otp = transports.backend.otp_state(serial)?;
+            // Re-read the attestation for the signing slot rather than trusting the
+            // keygen step's copy: verification exists to check the key as it is now,
+            // and a proof carried forward from an earlier step would be evidence about
+            // that step instead. Absent is recorded, not silent.
+            let slot = text(params, "slot").unwrap_or_else(|| "9c".into());
+            let attested = match transports.backend.attest(serial, &slot) {
+                Ok(pem) => format!("attested_{slot}=yes ({} bytes)", pem.len()),
+                Err(e) => format!("attested_{slot}=no ({e})"),
+            };
             Ok(StepOutcomeKind::applied(format!(
                 "[native] read back: fido2_pin={} force_change={} credentials={} \
-                 piv_slots=[{}] mgmt_key_changed={} otp_access_code={}",
+                 piv_slots=[{}] mgmt_key_changed={} piv_pin_retries={} otp_access_code={} {attested}",
                 fido2.pin_set,
                 fido2.force_pin_change_set,
                 fido2.resident_credentials,
                 piv.occupied_slots.join(","),
                 piv.management_key_changed,
+                match piv.pin_retries {
+                    Some(left) => left.to_string(),
+                    None => "unread".to_owned(),
+                },
                 otp.access_code_set
             )))
         }

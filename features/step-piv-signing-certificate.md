@@ -102,11 +102,11 @@ test enforces that.
 | # | Phase | State | Notes |
 |---|---|---|---|
 | 1 | Plan entries with subject rendering and the SAN stated on the step | Done | |
-| 2 | Native on-device key generation with PIN/touch policy | Todo | `piv::generate` |
-| 3 | CSR construction with the `rfc822Name` SAN, signed on-device | Todo | option A; `x509-cert` + `piv::sign_data` |
+| 2 | Native on-device key generation with PIN/touch policy | **Built** (not hardware-verified) | `piv::generate` with `PinPolicy::Always` — consent per signature is the point of this slot |
+| 3 | CSR construction with the `rfc822Name` SAN, signed on-device | **Built** (not hardware-verified) | [`device::csr`](../src/device/csr.rs) — option A, `x509-cert` + `piv::sign_data`. Pure assembly with the signature injected, so the ASN.1 is testable with no key; `openssl` reads the SAN back in `tests/interop_csr_san.rs` and verifies the signature. ECDSA only: RSA needs PKCS#1 v1.5 padding applied by the caller and is refused rather than guessed |
 | 4 | Submit to a CA and retrieve the certificate | Todo | `features/ca-integration.md` |
 | 5 | Import with `--verify` semantics (certificate matches the slot key) | Todo | refuse a mismatch |
-| 6 | Attestation capture and storage on the run | Todo | evidence of on-device generation |
+| 6 | Attestation capture and storage on the run | **Built** (not hardware-verified) | read at generation time, not later — the proof has to bind to *this* generation. Stored in the step detail; a firmware that cannot attest is recorded as unproven rather than omitted |
 | 7 | Verification: read the slot back, check subject, SAN, EKU, chain | Todo | the `Verify` step's real content |
 | 8 | Expiry tracking and renewal reminder | Todo | `features/reports-and-export.md` |
 | 9 | CHUID / CCC population where a platform needs it | Todo | `ykman` does this on import by default (`--update-chuid`) |

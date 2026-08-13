@@ -18,16 +18,24 @@ whole even though every part passes.
 
 **Suites in place, and CI now enforces the gate.**
 
-- **725 tests** pass on the default features (`cargo test`), **730** with
+- **753 tests** pass on the default features (`cargo test`), **758** with
   `--all-features` — the encrypted-database paths account for the difference, minus
   the one test that exists only when `encrypted-db` is *off*. The default figure now
   includes the native-transport tests, because `native-device` became a default
   feature (`features/native-device-transport.md` phase 6); a
   `--no-default-features` run is smaller and is compiled, not just run, in CI. Plus tests ignored by
-  default for what a build machine need not have: 4 read-only hardware tests, and
-  the `openssl` interop test that proves the documented template-signing commands
-  produce a signature this build accepts
-  ([`interop_template_signing.rs`](../tests/interop_template_signing.rs)).
+  default for what a build machine need not have: 4 read-only hardware tests, and **two
+  `openssl` interop tests**, each of which checks a claim against something that is not
+  this code —
+  ([`interop_template_signing.rs`](../tests/interop_template_signing.rs)) runs the
+  documented out-of-band signing commands and feeds the signature back through `verify`,
+  so a documented command line nobody has run cannot stay wrong; and
+  ([`interop_csr_san.rs`](../tests/interop_csr_san.rs)) hands a finished certificate
+  request to `openssl`, which has to report `email:…` under *X509v3 Subject Alternative
+  Name* and verify the signature over the request info. That second one matters because a
+  unit test decoding the request with the same crate that encoded it checks the round trip
+  and not the standard: if `x509-cert` and this code agree on a wrong encoding, both agree.
+  Proven load-bearing by swapping `Rfc822Name` for `DnsName` — caught.
 - **Property tests** for the two pieces of pure logic whose risk is the *space of
   inputs* rather than the logic: the audit chain and the RFC 4514 escaper
   ([`property_audit_and_escaping.rs`](../tests/property_audit_and_escaping.rs),
@@ -46,13 +54,18 @@ whole even though every part passes.
 - `cargo check --no-default-features` is part of the pre-commit sweep, because the
   no-camera build is a supported configuration
   (`make check-all`).
-- Core line coverage **86.14%** (region 85.50%), above the 80% floor. It has fallen
+- Core line coverage **86.07%** (region 85.29%), above the 80% floor. It has fallen
   twice for the same structural reason rather than through neglect: from 88.25% when
-  `device/native_fido.rs` joined the build, and again when `device/select.rs` brought
-  the native transports into a default build. Both are reachable only with hardware
-  attached, so they count against the gate at close to 0% — `select.rs` is the
-  exception, since its decision is pure and every branch is unit-tested; what cannot
-  be covered is the probe that talks to PC/SC.
+  `device/native_fido.rs` joined the build, and again when `native-device` became a
+  default feature. The hardware transports are reachable only with a key attached, so
+  they count against the gate at close to 0% (`native_fido.rs` 3.5%,
+  `native_piv.rs` 32%).
+
+  The pure cores next to them are the answer to that, and they are covered:
+  `device/select.rs` 93%, `device/applets.rs` 91%, `device/csr.rs` 90%. That split is
+  deliberate — the ASN.1 of a certificate request, the transport decision and the
+  already-configured judgement are all pure functions precisely so they are testable
+  without hardware, leaving only the APDU exchange uncovered.
 - Unit suites: `unit_domain.rs` (15), `unit_template.rs` (50), `unit_audit.rs` (17),
   `unit_ykman_parse.rs` (8), `unit_store.rs` (30), `unit_device_backends.rs` (9),
   `unit_records.rs` (16), `unit_logging_format.rs` (6), `unit_term.rs` (45),

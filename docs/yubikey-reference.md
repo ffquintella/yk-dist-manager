@@ -10,24 +10,35 @@ verified against **ykman 5.9.2** and a **YubiKey 5 NFC, firmware 5.4.3**, on 202
 | List serials | `yubikey` (PC/SC) | `list --serials` | native, fallback ykman |
 | Serial + firmware | `yubikey` | `info` | native |
 | Model, form factor, per-application enable flags | ✗ (management applet, no crate) | `info` | **ykman only** |
-| FIDO2 info (PIN set?, retries, credential slots) | `ctap-hid-fido2` | `fido info` | native (planned) |
-| Set / change FIDO2 PIN | `ctap-hid-fido2` | `fido access change-pin` | native (planned) |
+| FIDO2 info (PIN set?, retries, credential slots) | `ctap-hid-fido2` | `fido info` | **native, hardware-verified** |
+| Set / change FIDO2 PIN | `ctap-hid-fido2` | `fido access change-pin` | **native, hardware-verified** |
 | Minimum PIN length (5.7+) | CTAP 2.1 `authenticatorConfig` — crate coverage unconfirmed | `fido access set-min-length` | ykman for now |
 | Force PIN change | CTAP 2.1 | `fido access force-change` | ykman for now |
 | **Create a FIDO2 credential** | `ctap-hid-fido2` `make_credential(rk=true)` | **✗ impossible** | **native only** |
 | List / delete FIDO2 credentials | `ctap-hid-fido2` | `fido credentials list/delete` | either |
-| OTP slot status | `hidapi` (protocol ours to write) | `otp info` | ykman for now |
+| OTP slot status | `hidapi` (protocol ours to write — unwritten) | `otp info` | **ykman**, parsed in `device::ykman::parse_otp_info` |
 | OTP access code | `hidapi` (protocol ours to write) | `otp settings <slot> --new-access-code` | **ykman only** |
-| PIV PIN / PUK | `yubikey` | `piv access change-pin/change-puk` | native (planned) |
-| PIV management key | `yubikey` | `piv access change-management-key` | native (planned) |
-| PIV on-device keygen | `yubikey::piv::generate` | `piv keys generate` | native (planned) |
-| **CSR with an e-mail SAN** | build it ourselves + `piv::sign_data` | **✗ no SAN option** | **native only** |
-| Import a certificate | `yubikey::certificate::Certificate::write` | `piv certificates import` | native (planned) |
-| Attestation | `yubikey::piv::attest` | `piv keys attest` | native (planned) |
+| PIV PIN / PUK | `yubikey` | `piv access change-pin/change-puk` | native, **built but not hardware-verified** |
+| PIV management key | our own APDU (`device::piv_mgm`; the crate's 3DES type fails on 5.7) | `piv access change-management-key` | native, **built but not hardware-verified** |
+| PIV on-device keygen | `yubikey::piv::generate` | `piv keys generate` | native, **built but not hardware-verified** |
+| **CSR with an e-mail SAN** | `device::csr` (`x509-cert`) + `piv::sign_data` | **✗ no SAN option** | **native only** — built; the ASN.1 is verified against `openssl`, the card path is not |
+| Import a certificate | `yubikey::certificate::Certificate::write` | `piv certificates import` | native — built; nothing to import until the CA is decided |
+| Attestation | `yubikey::piv::attest` | `piv keys attest` | native, **built but not hardware-verified** |
 | OpenPGP applet | `openpgp-card-sequoia` (to evaluate) | `openpgp *` | undecided |
 
 The two bold "impossible" rows are the reason the native transport is the primary path,
-not an optimisation.
+not an optimisation. It has been the *default* build since 0.12.0.
+
+**"Built but not hardware-verified" is a real state, and it is tracked as one.** The PIV
+write path was written in a session with no key attached, so every APDU in it is
+unexercised. AGENTS.md requires each operation to be exercised against a dedicated test key
+before it is relied on, and the feature specs say **Built** rather than **Done** until that
+happens.
+
+One thing **nothing** on this table can read: whether an OTP slot carries an **access
+code**. Neither the status frame nor `ykman otp info` reports it — the only way to find out
+is to attempt a write and be rejected — so no read in this tool claims one, and it is the
+register rather than the key that records whether one was set.
 
 ## The two things `ykman` cannot do
 

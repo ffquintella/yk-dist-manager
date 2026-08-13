@@ -299,6 +299,7 @@ fn scenario_re_running_on_a_configured_key_skips_rather_than_overwrites() {
             occupied_slots: vec!["9c".into()],
             management_key_changed: true,
             pin_changed_from_default: true,
+            pin_retries: Some(3),
         });
     let mut recording = Recording::default();
 

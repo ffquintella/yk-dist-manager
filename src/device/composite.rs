@@ -181,6 +181,16 @@ impl PivWriter for NativeBackend {
         }
     }
 
+    fn attest(&mut self, serial: u32, slot: &str) -> Result<String> {
+        #[cfg(feature = "native-piv")]
+        return self.piv.attest(serial, slot);
+        #[cfg(not(feature = "native-piv"))]
+        {
+            let _ = (serial, slot);
+            Err(unavailable("piv.attest", "native-piv"))
+        }
+    }
+
     fn create_csr(
         &mut self,
         serial: u32,

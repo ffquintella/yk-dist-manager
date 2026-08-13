@@ -17,6 +17,100 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+### Added
+
+- **A key's applets are read before a run, and an already-configured key is refused**
+  ([`features/device-detection.md`](features/device-detection.md) phases 4 and 5).
+
+  The three state reads existed already — but on the *write* traits, reachable only
+  with a `WriteBackend` in hand. So the pre-flight passed `AppletSnapshot::default()`,
+  with a comment explaining that reading one needed a write-capable transport, and
+  every check that depended on applet state — including "this key is already
+  configured" — was **written and never fired**.
+  [`device::applets`](src/device/applets.rs) is the read side, callable from a screen:
+  PIV slots, the management-key and PIN default flags and now the **PIN retry
+  counter** natively; the FIDO2 state over CTAP2; which OTP slots are programmed
+  through `ykman otp info`. Read-only throughout — AGENTS.md forbids a hardware write
+  as a side effect of opening a screen. Recorded as `device.applets.read`, because the
+  refusal below rests on it and "what did the tool actually see" is the first question
+  when one is disputed.
+
+  Each applet is read independently and a failure is kept as a **reason** rather than
+  dropped, because "PIV slot 9c is empty" and "PIV was not read" lead to opposite
+  decisions and a snapshot that could not tell them apart would make the refusal
+  unsound.
+
+  The refusal itself is a blocking pre-flight finding raised before any per-step check.
+  Evidence is a certificate in a PIV slot, a FIDO2 PIN already set, or a programmed OTP
+  slot — **any one is enough**. A changed PIV management key is deliberately *not*
+  evidence: a fleet-management tool may have set it without ever bootstrapping the key,
+  and refusing on it would refuse keys that are merely under management.
+
+  Per the decision of 2026-08-13 there is **no override**: a configured key is only ever
+  returned to factory default, and only by the system operator. The message therefore
+  has to name the reset, or a refusal with no exit just leaves the operator stuck at a
+  screen — and a test asserts the wording implies no override that does not exist.
+
+- **A generated key carries the proof it was generated on the device**
+  ([`features/device-detection.md`](features/device-detection.md) phase 6). The
+  attestation certificate is read **at generation time**, not later, because a proof
+  read afterwards proves whatever is in the slot then — a different claim. It goes into
+  the step's record (a public certificate, so nothing there must not persist), which is
+  what lets an auditor check on-device generation years later against Yubico's
+  attestation root without the key in hand. The verification step re-reads it rather
+  than repeating the earlier claim. A firmware that cannot attest (below 4.3) does not
+  fail the run — that would leave a key whose slot was changed *and* a run marked
+  failed — but the record says `NO attestation … unproven` in those words, because a
+  detail that merely omitted it would read identically to one where nobody looked.
+
+- **The PKCS#10 certificate request, with the `rfc822Name` SAN**
+  ([`features/step-piv-signing-certificate.md`](features/step-piv-signing-certificate.md)
+  phase 3) — the last gap in the native PIV write path, which had been returning
+  `WriteError::Unsupported`. The SAN is the whole reason this step is native: a signing
+  certificate whose subject alternative name does not carry the holder's address will
+  not validate the signatures it was issued for, silently, at the point somebody relies
+  on it.
+
+  [`device::csr`](src/device/csr.rs) is pure assembly with the signature **injected as a
+  closure**, so parsing the subject, wrapping the SAN in an `extensionRequest` attribute
+  and encoding the `CertificationRequestInfo` are all exercised with no key and no PIN.
+  That split is not cosmetic: signing needs a key, the key needs a PIN, and the PIN
+  needs a run — a design where the ASN.1 could only be reached with a YubiKey in a port
+  is a design whose ASN.1 nobody checks.
+
+  Checked by something that is not this code: `tests/interop_csr_san.rs` hands the
+  finished request to `openssl`, which reports `email:…` under *X509v3 Subject
+  Alternative Name*, and verifies the signature over the request info — the mistake a
+  CA reports as "signature failure" with no further detail. Proven load-bearing by
+  swapping `Rfc822Name` for `DnsName`, which both the unit test and `openssl` caught.
+
+  ECDSA only. RSA requires the caller to apply PKCS#1 v1.5 padding before the card
+  signs, and a mistake there verifies nowhere for reasons the output does not show, so
+  it is refused with a message that says so. The public key comes from the slot's own
+  metadata rather than from the caller, so the request is about the key that is actually
+  there.
+
+### Changed
+
+- `PivState` gained `pin_retries`, and `OtpState::access_code_set` is now documented as
+  **not readable from hardware** — neither the OTP status frame nor `ykman otp info`
+  reports whether a slot carries an access code, and the only way to find out is to
+  attempt a write and be rejected. No read claims one; the record, not the key, says
+  whether this tool set one.
+
+### Not done, and why
+
+- **The OTP write path** (`features/step-otp-access-code.md` phase 4) needs the Yubico
+  OTP HID configuration frame, which no crate in this graph exposes. It was left
+  unwritten rather than hand-rolled: `features/native-device-transport.md` phase 4
+  requires the read path verified against a real key first, and the failure mode of a
+  wrong frame is a slot write-protected by an access code nobody holds — unrecoverable
+  from this tool.
+- **No PIV write is hardware-verified.** No key was attached while this was written, so
+  every APDU on that path is unexercised. The specs say **Built**, not **Done**, for
+  exactly that reason, and AGENTS.md's rule stands: each operation is exercised against
+  a dedicated test key before it is relied on.
+
 ## [0.12.0] - 2026-08-13
 
 ### Changed

@@ -508,7 +508,15 @@ bootstrap run** — nothing else touches the key while a run is writing to it.
    it goes into the signing certificate.
 3. **Bootstrap** — pick the key, the holder and the template; **Build plan**; read the plan.
    Check the transport column and any notes (a firmware gate may skip a step).
-4. Run it *(Wave 1; today: **Record dry run**)*.
+4. Read the **pre-flight**. It reads the key's applets first — PIV slots and PIN retries,
+   the FIDO2 state, which OTP slots are programmed — and turns problems into lines on the
+   screen instead of failures halfway through a key. Three things to look for:
+   * **"already been through a procedure"** — the run is refused; see the runbook below.
+   * **"was not read"** — an applet did not answer. Not the same as an empty applet: the
+     checks that depend on it produced nothing, so this pre-flight looked at less than it
+     appears to have.
+   * a **low PIN retry count** — a key one wrong PIN from needing its PUK.
+5. Run it *(Wave 1; today: **Record dry run**)*.
 5. **Distribution** — select the key and holder, set the delivery method, put the signed
    term's reference in *Receipt*, leave *Attach the most recent bootstrap run* ticked, and
    **Record distribution**.
@@ -516,6 +524,30 @@ bootstrap run** — nothing else touches the key while a run is writing to it.
 
 If the key status refuses to advance ("illegal status transition"), the key was never marked
 bootstrapped — that is the guard working, not a bug.
+
+## Runbook: a key that is already configured
+
+The pre-flight refuses a key that shows any sign of a previous procedure — a certificate in
+a PIV slot, a FIDO2 PIN already set, or a programmed OTP slot. There is **no override**, and
+that is a decision rather than a missing feature: overwriting the credential a holder is
+currently relying on cannot be undone from this tool.
+
+What to do:
+
+1. **Establish whether the key is in service.** Check Inventory and Distribution for that
+   serial. If it was handed over, the holder is relying on what is on it — start the
+   return, do not reset it.
+2. If it is genuinely a key to reissue, **reset it to factory default**. That is the system
+   operator's action, outside this tool, and it destroys the credentials on the key.
+3. Read the key again and start the run.
+
+A changed PIV **management key** on its own is not treated as evidence and will not refuse
+the run: a fleet-management tool may have set it without the key ever having been
+bootstrapped.
+
+If the refusal seems wrong, the pre-flight names the evidence it found — quote that line.
+An applet reported as *not read* is worth checking too: the refusal only speaks for the
+applets that answered.
 
 ## Runbook: the consignment term
 

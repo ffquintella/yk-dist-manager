@@ -27,9 +27,21 @@ insert or refresh the inventory record and pre-fill the wizard's serial field.
 - More than one key → `DeviceError::Ambiguous(n)`, refused rather than guessed.
   Picking one at random and writing a PIN to it is the worst possible outcome.
 
-**Done for Wave 0.** What is left in this spec is Wave 1: per-applet state
-(phase 4), the "already bootstrapped" warning (phase 5) and attestation (phase 6),
-all of which need the applet transports.
+**Done for Wave 0, and phases 4–6 have now landed for Wave 1.** The applet state is
+read before a run, an already-configured key is refused, and a generated key carries
+its attestation into the record.
+
+Worth being precise about what phase 4 changed, because it is the kind of gap that
+hides: the three state reads already existed on the *write* traits, and the pre-flight
+said `AppletSnapshot::default()` with a comment explaining that reading one needed a
+write-capable transport. So every check that depended on applet state — including the
+"already configured" one — was written and **never fired**. `device::applets` is the
+read side, callable from a screen, and it is what turned those checks on.
+
+The one thing phase 4 cannot answer is whether an OTP slot carries an **access code**:
+neither the HID status frame nor `ykman otp info` reports it, and the only way to find
+out is to attempt a write and be rejected. So no read ever claims one, and it is the
+record rather than the key that says whether this tool set one.
 
 - **Keys are noticed as they are plugged in** ([`device::watch`](../src/device/watch.rs)):
   a background thread enumerates on a tick, identifies only when the set of serials
@@ -121,9 +133,9 @@ per key with its serial, model, firmware and applications, and *Use this one*.
 | 1 | Read on demand, insert/refresh inventory | 0 | Done | Inventory + wizard |
 | 2 | Background hot-plug polling | 0 | **Done** | [`device::watch`](../src/device/watch.rs) — a thread enumerates on a tick and publishes a snapshot the GUI clones; identification runs **only when the set of serials changes**. 1.5s with a native transport, 4s when every poll is a `ykman` subprocess — chosen from the *live* transport, not the compiled one — and only while a screen that shows attached keys is open |
 | 3 | Explicit picker when several keys are attached | 0 | **Done** | serial, model, firmware and applications per row, with *Use this one*; on the Inventory screen and above the wizard's serial field. Nothing is chosen for the operator, `device.selected` records which one was, and a selection is dropped when that key is unplugged |
-| 4 | Per-applet state read (PIN retries, PIV slots, FIDO PIN set?) | 1 | Todo | needed by `StepKind::Verify` |
-| 5 | "This key is already bootstrapped" **refusal** | 1 | Todo | detect an occupied 9c slot or an existing FIDO PIN and **refuse the run**, naming the reset as the way forward. *(Decided 2026-08-13: a configured key is only ever returned to factory default, and only by the system operator — there is no in-place re-bootstrap and no override.)* |
-| 6 | Attestation read (`piv keys attest 9c`) | 1 | Todo | proves on-device generation; stored with the run |
+| 4 | Per-applet state read (PIN retries, PIV slots, FIDO PIN set?) | 1 | **Done** | [`device::applets`](../src/device/applets.rs) — read-only, one call per applet, failures recorded as reasons rather than dropped. PIV slots + management-key/PIN-default flags + **PIN retries** natively; FIDO2 via CTAP2 `get_info`; OTP slots via `ykman otp info`, a labelled fallback because no crate exposes the OTP HID status frame. Audited as `device.applets.read` |
+| 5 | "This key is already bootstrapped" **refusal** | 1 | **Done** | `Preflight::check_already_configured` — a `Blocking` finding, before any per-step check, naming the evidence *and* the reset. **No override**, per the decision of 2026-08-13. A changed PIV management key is deliberately not evidence: a fleet-management tool may have set it without ever bootstrapping the key |
+| 6 | Attestation read (`piv keys attest 9c`) | 1 | **Built** (not hardware-verified) | `PivWriter::attest`, plus `KeygenEvidence::attestation_pem` read *at generation time* and stored in the step's detail; the verification step re-reads it. A firmware with no attestation is recorded as `NO attestation — unproven`, never omitted. **No key was attached when this was written**, so the APDU path is unexercised |
 
 ## Audit events
 
@@ -134,6 +146,7 @@ per key with its serial, model, firmware and applications, and *Use this one*.
 | `device.detect.failed` | Detection failed, with the reason |
 | `device.ambiguous` | More than one key attached; nothing was chosen. Written when the watch first sees that arrangement, and when a read-on-demand is refused for it |
 | `device.selected` | The operator chose one of several attached keys. With several keys in front of somebody, *which one they picked* is part of the story of everything written afterwards |
+| `device.applets.read` | The per-applet state was read before a run. Recorded because the phase-5 refusal rests on it, and "what did the tool actually see" is the first question when one is disputed. States, slots and counts only — never a secret |
 
 ## Tests
 

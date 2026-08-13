@@ -76,8 +76,8 @@ tool's own database — see `features/db-password-and-encryption.md` Phase 7).
 | 1 | Plan entry with a secret placeholder and the fallback command | Done | |
 | 1b | Custody default under model B: generate and discard | Done (default taken) | the holder never needs this code, so the slot is deliberately frozen; confirmation pending — `roadmap.md` #6 |
 | 2 | Executor on the `ykman` path using the prompt form (`--access-code -`) | Todo | no code in argv |
-| 3 | Native read path over `hidapi` (slot status, sequence) | Todo | verify against `ykman otp info` first |
-| 4 | Native write path (access code) | Todo | frame + CRC + status confirmation |
+| 3 | Native read path over `hidapi` (slot status, sequence) | Todo — **the `ykman` read landed instead** | `device::ykman::parse_otp_info` answers "which slots are programmed" today, unit-tested against recorded output, and feeds the pre-flight refusal. The *native* frame is still unwritten. Note what neither path can answer: **whether a slot carries an access code** — nothing reports it, so no read ever claims one |
+| 4 | Native write path (access code) | Todo — **blocked on hardware, deliberately** | frame + CRC + status confirmation, hand-rolled because no crate exposes it. Not written without a key to verify against: the failure mode of a wrong frame is a slot write-protected by a code nobody holds, which is unrecoverable from this tool |
 | 5 | Optional slot programming (challenge-response) | Todo | for local unlock use cases |
 | 6 | Warn that a protected slot blocks interface mode switching | Todo | in the wizard, before the run |
 | 7 | Record custody of the access code | Todo | `features/secrets-custody.md` |

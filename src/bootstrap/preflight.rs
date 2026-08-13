@@ -12,7 +12,6 @@
 //! state. It writes nothing and touches no hardware, so the wizard can call it as
 //! the operator changes the template.
 
-use crate::device::write::{Fido2State, OtpState, PivState};
 use crate::domain::{StepKind, YubiKeyRecord};
 use crate::template::plan::{PlannedCommand, Transport};
 
@@ -60,15 +59,12 @@ impl Finding {
 
 /// What the applets currently hold, when it could be read.
 ///
-/// All optional: a key may be attached but its FIDO2 applet unreadable, and a
-/// pre-flight that refused to run without every answer would be a pre-flight
-/// nobody could use.
-#[derive(Debug, Clone, Default)]
-pub struct AppletSnapshot {
-    pub fido2: Option<Fido2State>,
-    pub piv: Option<PivState>,
-    pub otp: Option<OtpState>,
-}
+/// One type, shared with the read side (`device::applets`), rather than a copy: the
+/// pre-flight is the main consumer of that read, and two structs with the same three
+/// fields would drift the moment one gained a fourth. All optional, because a key may
+/// be attached with its FIDO2 applet disabled over USB, and a pre-flight that refused
+/// to run without every answer would be a pre-flight nobody could use.
+pub use crate::device::applets::Snapshot as AppletSnapshot;
 
 /// Everything the checks look at.
 pub struct Preflight<'a> {
@@ -102,6 +98,12 @@ impl Preflight<'_> {
             return sorted(findings);
         };
 
+        // Before anything about individual steps: has this key been through a
+        // procedure already? A run that overwrites a configured key destroys the
+        // identity somebody is currently relying on, so this is a refusal and not a
+        // warning (`features/device-detection.md` phase 5).
+        findings.extend(self.check_already_configured());
+
         for command in self.commands {
             findings.extend(self.check_step(command, key));
         }
@@ -131,6 +133,36 @@ impl Preflight<'_> {
         }
 
         sorted(findings)
+    }
+
+    /// Refuse a key that already carries a configuration
+    /// (`features/device-detection.md` phase 5).
+    ///
+    /// **A refusal with no override, by decision (2026-08-13):** a configured key is
+    /// only ever returned to factory default, and only by the system operator. There
+    /// is no in-place re-bootstrap. So this does not offer a "continue anyway" —
+    /// offering one would make the reset optional, and the reason the reset exists is
+    /// that overwriting a live signing identity is not recoverable from the tool.
+    ///
+    /// The message therefore has to name the way forward, or a refusal with no exit is
+    /// just an operator stuck at a screen.
+    ///
+    /// Silence when nothing was read is deliberate, and it is why the message says
+    /// which applets *were* consulted: an unread applet is not a clean applet, and a
+    /// refusal that pretended otherwise would be worse than no refusal at all.
+    fn check_already_configured(&self) -> Vec<Finding> {
+        let evidence = self.applets.already_configured();
+        if evidence.is_empty() {
+            return Vec::new();
+        }
+        vec![Finding::new(
+            Severity::Blocking,
+            "",
+            format!(
+                "this key has already been through a procedure — {}. A configured key is only                  ever returned to factory default, and only by the system operator: there is no                  in-place re-bootstrap, because overwriting the credential a holder is currently                  relying on cannot be undone from here. Reset the key to factory default first,                  then start the run against it.",
+                evidence.join("; ")
+            ),
+        )]
     }
 
     fn check_step(&self, command: &PlannedCommand, key: &YubiKeyRecord) -> Vec<Finding> {
@@ -326,6 +358,7 @@ pub fn summarise(findings: &[Finding]) -> String {
 mod tests {
     use super::*;
     use crate::device::DeviceInfo;
+    use crate::device::write::{Fido2State, OtpState, PivState};
     use crate::template::plan::plan;
     use crate::template::{BootstrapTemplate, RenderContext};
 
@@ -461,8 +494,24 @@ mod tests {
                 access_code_set: true,
                 ..Default::default()
             }),
+            unread: Vec::new(),
         };
         let findings = check(&key, &applets);
+
+        // Since phase 5, such a key does not merely produce per-step findings — the
+        // run is refused outright, and the refusal names the way forward.
+        let refusal = findings
+            .iter()
+            .find(|f| {
+                f.severity == Severity::Blocking && f.message.contains("already been through")
+            })
+            .expect("a configured key blocks the run");
+        assert!(
+            refusal.message.contains("factory default"),
+            "a refusal with no way forward leaves the operator stuck: {}",
+            refusal.message
+        );
+        assert!(refusal.message.contains("9c"), "{}", refusal.message);
 
         for step in [
             "fido2-pin",

@@ -16,7 +16,12 @@
 //! See `docs/yubikey-reference.md` for the capability matrix and
 //! `features/native-device-transport.md` for the migration plan.
 
+pub mod applets;
 pub mod composite;
+/// PKCS#10 assembly for the PIV signing certificate. Behind `native-piv` because it
+/// needs `x509-cert`, which only that feature brings in.
+#[cfg(feature = "native-piv")]
+pub mod csr;
 pub mod mock;
 #[cfg(feature = "native-piv")]
 pub mod native;
@@ -31,6 +36,7 @@ pub mod watch;
 pub mod write;
 pub mod ykman;
 
+pub use applets::Snapshot as AppletStates;
 pub use mock::MockBackend;
 #[cfg(feature = "native-piv")]
 pub use native::NativeBackend;

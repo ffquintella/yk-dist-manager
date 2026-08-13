@@ -95,6 +95,21 @@ when it introduces real secret input.
 operations and their availability; the plan shows which transport each step will use. A
 step's transport is not a global mode.
 
+**Reading a key is separate from writing to one.** The three applet state reads sit on the
+*write* traits, because they need the same connection — but [`device::applets`](../src/device/applets.rs)
+is the read-only entry point a screen calls, and it reads each applet independently so a
+disabled FIDO2 applet does not blank the PIV answer. A failed read is kept as a **reason**
+rather than dropped: "slot 9c is empty" and "PIV was not read" lead to opposite decisions,
+and the pre-flight refusal of an already-configured key would be unsound if it could not
+tell them apart.
+
+**The certificate request is pure code with the signature injected.**
+[`device::csr`](../src/device/csr.rs) assembles PKCS#10 — subject, `SubjectPublicKeyInfo`,
+the `rfc822Name` SAN wrapped in an `extensionRequest` attribute — and takes a closure that
+signs a digest. The card is one closure at one point. Signing needs a key, the key needs a
+PIN and the PIN needs a run in progress, so a design where the ASN.1 could only be reached
+with a YubiKey attached is a design whose ASN.1 nobody checks.
+
 **Which transport the session reads through** is a separate question, answered once at
 startup by [`device::select`](../src/device/select.rs): `probe()` asks the machine, and a
 pure `decide()` maps `(requested, availability)` to a transport plus the reason to show

@@ -4182,13 +4182,34 @@ impl YkDistApp {
             return;
         }
         let serial = self.wizard.serial.trim().parse::<u32>().ok();
-        let key = serial.and_then(|s| self.keys.iter().find(|k| k.serial == s));
 
-        // No applet snapshot yet: reading one needs a write-capable transport
-        // open, and this build has none by default. The checks that do not need
-        // it — firmware gates, enabled applications — still run, and the ones
-        // that do simply produce no finding rather than a wrong one.
-        let applets = AppletSnapshot::default();
+        // Read the applets now (`features/device-detection.md` phase 4). Until this
+        // existed the snapshot was always `default()`, so every check that depended on
+        // applet state — including "this key is already configured" — was written and
+        // never fired.
+        //
+        // Read-only: `get_info`, the PIV slot list, the retry counter, `ykman otp
+        // info`. Nothing here writes, which is what makes it safe to run as the
+        // operator moves through the wizard rather than only on a button.
+        let applets = match serial {
+            Some(serial) => crate::device::applets::read(serial, &self.transport),
+            None => AppletSnapshot::default(),
+        };
+        // Recorded, because a refusal downstream rests on it and "what did the tool
+        // see" is the first question when one is disputed. States and slots only —
+        // never a secret, and never a PIN.
+        if let Some(serial) = serial
+            && !applets.is_empty()
+        {
+            self.record(
+                "device.applets.read",
+                &serial.to_string(),
+                &applets.describe().join(" | "),
+            );
+        }
+        // Looked up after the recording above, so the audit write does not have to
+        // borrow around a reference into `self.keys`.
+        let key = serial.and_then(|s| self.keys.iter().find(|k| k.serial == s));
         self.wizard.findings = Preflight {
             commands: &self.wizard.plan,
             key,

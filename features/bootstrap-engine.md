@@ -29,10 +29,21 @@ some steps go native and some still fall back to `ykman`.
 sequencing, per-step persistence, the abort policy, idempotency, resume, the
 confirmation gate, and that no secret reaches any record.
 
-The **default build still cannot write to a key**: `MockWriter` is the only
-implementation of the write traits compiled in. `--features native-fido` adds
-`device::native_fido`, whose state read is verified against real hardware and
-whose write operations are not — see phase 5.
+**The default build can now reach a key.** `native-device` became a default feature in
+0.12.0, and `device::select` decides the transport at startup, so `NativeBackend` — not
+only `MockWriter` — is compiled in and reachable. What that means per applet:
+
+| Applet | Reads | Writes |
+|---|---|---|
+| FIDO2 | hardware-verified (5.7.4) | **hardware-verified**, including the resident credential `ykman` cannot create |
+| PIV | hardware-verified | **implemented, not hardware-verified** — PIN/PUK, management key, keygen, CSR, certificate import |
+| OTP | via `ykman otp info` (labelled fallback) | not implemented — needs the HID config frame |
+
+"Implemented, not hardware-verified" is a real state and is tracked as one. The PIV
+write path was written in a session with no key attached, so every APDU in it is
+unexercised. AGENTS.md is explicit that each operation is exercised against a dedicated
+test key before it is relied on, and that has not happened yet — the phase table says
+**Built** rather than **Done** for exactly that reason.
 
 Three decisions in the executor worth knowing about:
 
@@ -134,8 +145,8 @@ key and recorded in the phase notes.
 | 3 | Executor skeleton: sequencing, status persistence, abort policy | 1 | **Done** | [`src/bootstrap/`](../src/bootstrap/); 10 scenarios against `MockWriter` |
 | 4 | Secret input: prompt, generate, show-once, zeroise | 1 | **Done** | [`src/secret.rs`](../src/secret.rs) — `features/secrets-custody.md` phase 3 |
 | 5 | FIDO2 steps live | 1 | **Done** | `device::native_fido`; every operation hardware-verified on a 5.7.4 key, including `make_credential`. See `features/step-fido2-pin.md` |
-| 6 | PIV steps live | 1 | Todo | same, behind `native-piv`. The **certificate import** additionally waits on the CA decision |
-| 7 | OTP step live | 1 | Todo | same, behind `native-otp` |
+| 6 | PIV steps live | 1 | **Built** (not hardware-verified) | PIN/PUK, management key, keygen and **the CSR** all reach the card behind `native-piv`. The CSR was the last gap: [`device::csr`](../src/device/csr.rs) assembles PKCS#10 with the `rfc822Name` SAN and signs it *through* the slot — pure assembly, injected signature, checked by `openssl` in `tests/interop_csr_san.rs`. The **certificate import** is implemented but has nothing to import until the CA decision (roadmap open question 1). **No key was attached when this was written**, so no write path is hardware-verified |
+| 7 | OTP step live | 1 | Todo — **blocked on hardware** | The *read* landed via `ykman otp info` (`device-detection.md` phase 4). The **writes** need the OTP HID configuration frame, which no crate in this graph exposes, so it has to be hand-rolled; `native-device-transport.md` phase 4 requires the read path verified against a real key first. Not attempted without one: the failure mode is a slot write-protected by an access code nobody holds |
 | 8 | Verification step reading the key back | 1 | **Done** | reads all three applets and stores the end state as the step's detail |
 | 9 | Resume an interrupted run | 1 | **Done** | `Executor::resume` continues from the first non-`Done` step |
 | 10 | Idempotency detection ("already applied") | 1 | **Done** | every step reads its applet's state first and skips rather than overwriting |
