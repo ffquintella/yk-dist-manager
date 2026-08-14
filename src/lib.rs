@@ -20,6 +20,7 @@
 //! | [`password`] | The database password: how strong, and how slowly retried |
 //! | [`secret`] | The secrets a bootstrap sets: generated, shown once, wiped |
 //! | [`term`] | Consignment terms: multilingual templates and rendering |
+//! | [`report`] | What the register knows, answered as a table and exported |
 //! | [`pdf`] | The PDF a term is printed and signed on, written without a dependency |
 //! | [`incident`] | The note that goes to the ESI when a key is lost or stolen |
 //! | [`versioning`] | "What number does the next edit get?", shared by both |
@@ -49,6 +50,7 @@ pub mod password;
 pub mod paths;
 pub mod pdf;
 pub mod receipt;
+pub mod report;
 pub mod san;
 pub mod scan;
 pub mod secret;

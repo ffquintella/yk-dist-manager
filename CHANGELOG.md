@@ -15,6 +15,67 @@ Maintenance instructions (see AGENTS.md §5):
 * A database schema change also bumps store::SCHEMA_VERSION and ships a migration.
 -->
 
+## [Unreleased]
+
+### Added
+
+- **The questions the register exists to answer, answered** — the whole of
+  `features/reports-and-export.md`, on a new **Reports** screen. Seven reports, all of
+  them **derived** on demand rather than stored: a register that kept a summary beside
+  its records would eventually disagree with itself, and nobody could tell which half
+  was wrong.
+
+  - **Inventory summary** — counts by status, model, firmware, batch, FIPS and serial
+    provenance. Every status is listed *including the empty ones*, because "0 lost" is an
+    answer and a row that vanishes at zero makes a reader guess.
+  - **Custody** — who holds a key right now, and for how long. A key handed out,
+    returned and handed out again counts **once**: the arithmetic is the whole point of
+    the report, and the naive read of the records inflates it.
+  - **Unaccounted** — four kinds of gap in one table: a key filed as distributed with no
+    hand-over, an open hand-over against a key the register says is in stock, a returned
+    key still carrying the previous holder's credentials, and a hand-over pointing at a
+    serial the inventory has never heard of. What it does *not* do is compare against
+    what was purchased — the tool has no procurement data, and the report says so rather
+    than reading as exhaustive.
+  - **Bootstrap compliance** — keys in somebody's hands with no run, with no *completed*
+    run, or carrying a procedure that has since been corrected.
+  - **Certificate expiry** — read out of each run's step details, so a register written
+    before this release answers in full and there is nothing to backfill. A certificate
+    whose validity cannot be parsed is **listed**, not dropped: a report that said
+    everything was fine because it could not read the one date that mattered would be
+    worse than no report.
+  - **Custody model** — where the secrets each run set went, and whether the change was
+    enforced by firmware or instructed on the term.
+  - **Audit extract** — the trail for a range, carrying the sequence range, the chain
+    head and the result of verifying **the whole chain** at export time. It is produced
+    even when the chain does not verify, and says so in capitals at the top: refusing
+    would leave the one person who has to investigate with nothing to look at.
+
+- **Export, audited** — CSV and JSON for every report, PDF for the two that are handed to
+  a person (the extract and the compliance report). One `Report` shape behind all three
+  writers, so they cannot disagree about what a report contains. Each file names itself
+  inside — the scope, the generation time and the operator — because a file name is not
+  evidence and usually gets renamed. Every export writes `export.taken` with what left
+  and where it went.
+
+- **A one-click bundle** — every report into one dated folder, from **one** moment in
+  time, with a manifest. Nine files generated over nine clicks are nine different
+  answers, and a folder of those reconciles against nothing. Scheduling is deliberately
+  not built, and `src/report/bundle.rs` says why: a schedule inside a desktop application
+  fires only when somebody has it open, which would look like a control without being
+  one.
+
+### Security
+
+- **An exported cell can no longer run as a formula.** A CSV cell beginning `=`, `+`, `-`
+  or `@` is what a spreadsheet executes on open, and the values in these reports come
+  from certificate subjects, operator notes and holder names. Such a cell is now quoted
+  with a leading tab — text to every spreadsheet, and readable back without the value
+  having been rewritten.
+- The export screen states, before the file is written, that a report naming people
+  leaves the application's protection: no database password, and no record of who opens
+  it afterwards.
+
 ## [0.14.0] - 2026-08-14
 
 ### Added

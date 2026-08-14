@@ -574,18 +574,20 @@ pub enum Tab {
     Bootstrap,
     Templates,
     Terms,
+    Reports,
     Audit,
     Settings,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 8] = [
+    pub const ALL: [Tab; 9] = [
         Tab::Inventory,
         Tab::Holders,
         Tab::Distribution,
         Tab::Bootstrap,
         Tab::Templates,
         Tab::Terms,
+        Tab::Reports,
         Tab::Audit,
         Tab::Settings,
     ];
@@ -598,6 +600,7 @@ impl Tab {
             Tab::Bootstrap => "Bootstrap",
             Tab::Templates => "Templates",
             Tab::Terms => "Terms",
+            Tab::Reports => "Reports",
             Tab::Audit => "Audit",
             Tab::Settings => "Settings",
         }
@@ -612,6 +615,44 @@ impl Tab {
     /// tab bar, and falls back to the first screen rather than panicking.
     pub fn from_index(index: usize) -> Self {
         Self::ALL.get(index).copied().unwrap_or(Tab::Inventory)
+    }
+}
+
+/// Reports screen state (`features/reports-and-export.md`).
+///
+/// The generated report is held here rather than rebuilt every frame, and that
+/// is the behaviour rather than an optimisation: a report carries the moment it
+/// was generated, and one that silently re-derived itself sixty times a second
+/// would answer a different question each time the operator looked away. It is
+/// generated when they ask, and it says when.
+pub struct ReportPanel {
+    pub kind: crate::report::ReportKind,
+    pub current: Option<crate::report::Report>,
+    pub format: crate::report::export::Format,
+    pub error: Option<String>,
+    /// How far ahead the certificate-expiry report looks.
+    pub expiry_days: i64,
+    /// What the audit extract is cut with. Its own filter rather than the Audit
+    /// screen's: an extract for the ESI is a deliberate range, and inheriting
+    /// whatever was last typed on another screen is how the wrong range gets
+    /// sent.
+    pub audit_filter: crate::audit::AuditFilter,
+    pub from: String,
+    pub until: String,
+}
+
+impl Default for ReportPanel {
+    fn default() -> Self {
+        Self {
+            kind: crate::report::ReportKind::InventorySummary,
+            current: None,
+            format: crate::report::export::Format::Csv,
+            error: None,
+            expiry_days: crate::report::DEFAULT_EXPIRY_WINDOW_DAYS,
+            audit_filter: crate::audit::AuditFilter::default(),
+            from: String::new(),
+            until: String::new(),
+        }
     }
 }
 
@@ -933,6 +974,8 @@ pub struct YkDistApp {
     pub template_editor: TemplateEditor,
     pub term_panel: TermPanel,
     pub term_editor: TermEditor,
+    /// The Reports screen: which report, the one generated, and where it goes.
+    pub reports: ReportPanel,
     /// Term templates, refreshed with everything else.
     pub term_templates: Vec<crate::term::TermTemplate>,
     /// How many documents each distribution has.
@@ -1053,6 +1096,7 @@ impl YkDistApp {
             template_editor: TemplateEditor::default(),
             term_panel: TermPanel::default(),
             term_editor: TermEditor::default(),
+            reports: ReportPanel::default(),
             term_templates: Vec::new(),
             document_counts: std::collections::BTreeMap::new(),
             filed_documents: std::collections::BTreeMap::new(),
@@ -6174,6 +6218,314 @@ impl YkDistApp {
         }
     }
 
+    // ---------------------------------------------------------------- reports
+
+    /// The newest version of each template id, retired ones included.
+    ///
+    /// Read from the **catalogue** rather than from the wizard's list, because a
+    /// retired template is still on the register: a run against it is explicable,
+    /// and calling it "not on the register" in the compliance report would send
+    /// somebody looking for a version that is right there.
+    fn newest_template_versions(&self) -> std::collections::BTreeMap<String, String> {
+        let mut newest: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        for stored in &self.template_catalogue {
+            let id = &stored.template.id;
+            let version = &stored.template.version;
+            let replace = match newest.get(id) {
+                Some(current) => {
+                    crate::versioning::version_order(version)
+                        > crate::versioning::version_order(current)
+                }
+                None => true,
+            };
+            if replace {
+                newest.insert(id.clone(), version.clone());
+            }
+        }
+        newest
+    }
+
+    /// Build one report from the register as it stands.
+    ///
+    /// Everything except the audit extract comes from the cached views the
+    /// screens already read; the remediations are fetched here because no screen
+    /// holds them for the whole register, and the reconciliation report needs
+    /// them for every returned key.
+    ///
+    /// Takes no panel state and changes none, so the bundle can build nine of
+    /// these without the screen flickering through all nine.
+    pub fn build_report(
+        &self,
+        kind: crate::report::ReportKind,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> std::result::Result<crate::report::Report, String> {
+        use crate::report::{Dataset, ReportKind, Verification, audit_extract, build};
+
+        let Some(store) = &self.store else {
+            return Err("no database is open".into());
+        };
+
+        if kind == ReportKind::AuditExtract {
+            let (entries, verification) = match (store.audit_trail(), store.verify_audit()) {
+                (Ok(entries), Ok(count)) => (entries, Verification::Verified { entries: count }),
+                // The extract is still produced when the chain does not verify,
+                // and says so at the top: refusing would leave the one person who
+                // needs to investigate with nothing to look at.
+                (Ok(entries), Err(e)) => (
+                    entries,
+                    Verification::Broken {
+                        reason: e.to_string(),
+                    },
+                ),
+                (Err(e), _) => return Err(format!("could not read the trail: {e}")),
+            };
+            return Ok(audit_extract(
+                &entries,
+                &self.reports.audit_filter,
+                &verification,
+                &self.operator,
+                now,
+            ));
+        }
+
+        let remediations = store
+            .remediations()
+            .map_err(|e| format!("could not read the register: {e}"))?;
+
+        let data = Dataset {
+            keys: &self.keys,
+            holders: &self.holders,
+            distributions: &self.distributions,
+            runs: &self.runs,
+            remediations: &remediations,
+            newest_template_version: self.newest_template_versions(),
+            filed: self.filed_documents.clone(),
+            policy: self.settings.signatures.clone(),
+            now,
+        };
+
+        Ok(match kind {
+            ReportKind::CertificateExpiry => {
+                crate::report::certificate_expiry(&data, &self.operator, self.reports.expiry_days)
+            }
+            kind => build(kind, &data, &self.operator),
+        })
+    }
+
+    /// Build the selected report and put it on the screen.
+    pub fn generate_report(&mut self) {
+        self.reports.error = None;
+        self.reports.current = None;
+
+        match self.build_report(self.reports.kind, chrono::Utc::now()) {
+            Ok(report) => {
+                self.status = format!("{} generated", report.provenance());
+                // The format may not survive the report: PDF is offered for two
+                // of them only, and a stale choice would export the wrong thing.
+                if !crate::report::export::Format::available_for(report.kind)
+                    .contains(&self.reports.format)
+                {
+                    self.reports.format = crate::report::export::Format::Csv;
+                }
+                self.reports.current = Some(report);
+            }
+            Err(reason) => self.reports.error = Some(reason),
+        }
+    }
+
+    /// Generate every report at once into a dated folder, with a manifest
+    /// (`features/reports-and-export.md` phase 8).
+    ///
+    /// One moment in time for all of them, which is the point: nine files
+    /// generated over nine clicks are nine different answers, and a folder of
+    /// those cannot be reconciled against anything. Returns the folder written.
+    pub fn export_bundle(&mut self, into: &Path) -> Option<PathBuf> {
+        use crate::report::bundle;
+
+        self.reports.error = None;
+        let now = chrono::Utc::now();
+        let directory = into.join(bundle::directory_name(now));
+        if let Err(e) = std::fs::create_dir_all(&directory) {
+            let message = format!("could not create {}: {e}", directory.display());
+            tracing::error!(event = "export.bundle.failed", reason = %e);
+            self.reports.error = Some(message.clone());
+            self.status = message;
+            return None;
+        }
+
+        // Each report is built once even when it leaves in two formats: the
+        // compliance report and the extract go out as both a spreadsheet and a
+        // document, and building each twice would let the two disagree.
+        let mut built: std::collections::BTreeMap<crate::report::ReportKind, crate::report::Report> =
+            std::collections::BTreeMap::new();
+        let mut written: Vec<(String, crate::report::Report)> = Vec::new();
+
+        for (kind, format) in bundle::CONTENTS {
+            let report = match built.get(&kind) {
+                Some(report) => report.clone(),
+                None => match self.build_report(kind, now) {
+                    Ok(report) => {
+                        built.insert(kind, report.clone());
+                        report
+                    }
+                    Err(reason) => {
+                        self.reports.error = Some(reason);
+                        return None;
+                    }
+                },
+            };
+
+            let name = report.file_name(format);
+            let path = directory.join(&name);
+            let content = crate::report::export::render(&report, format);
+            if let Err(e) = std::fs::write(&path, &content) {
+                let message = format!("could not write {}: {e}", path.display());
+                tracing::error!(event = "export.bundle.failed", reason = %e);
+                self.reports.error = Some(message.clone());
+                self.status = message;
+                return None;
+            }
+            // Audited per file, not once for the folder: `export.taken` says what
+            // left and where it went, and a single entry for nine files would
+            // answer neither question.
+            self.record(
+                "export.taken",
+                &format!("report:{}", report.kind.slug()),
+                &report.audit_detail(format, &path),
+            );
+            written.push((name, report));
+        }
+
+        let manifest_entries: Vec<(String, &crate::report::Report)> = written
+            .iter()
+            .map(|(name, report)| (name.clone(), report))
+            .collect();
+        let manifest = bundle::manifest(&manifest_entries, &self.operator, now);
+        let manifest_path = directory.join(bundle::MANIFEST);
+        if let Err(e) = std::fs::write(&manifest_path, manifest) {
+            // The reports are already written and audited; a missing manifest is
+            // a folder that is harder to read, not a failed export.
+            tracing::error!(event = "export.manifest.failed", reason = %e);
+            self.reports.error = Some(format!(
+                "the reports were written, but {} could not be: {e}",
+                manifest_path.display()
+            ));
+        }
+
+        self.record(
+            "export.bundle",
+            "report:bundle",
+            &format!(
+                "files={} path={}",
+                written.len(),
+                directory.display()
+            ),
+        );
+        self.status = format!(
+            "{} report file(s) written to {}",
+            written.len(),
+            directory.display()
+        );
+        Some(directory)
+    }
+
+    /// Ask for the folder the bundle goes into, then write it.
+    pub fn export_bundle_interactive(&mut self) {
+        if let Some(directory) = self.choose_export_directory() {
+            self.export_bundle(&directory);
+        }
+    }
+
+    #[cfg(feature = "file-dialog")]
+    fn choose_export_directory(&mut self) -> Option<PathBuf> {
+        rfd::FileDialog::new()
+            .set_title("Where should the report bundle go?")
+            .pick_folder()
+    }
+
+    #[cfg(not(feature = "file-dialog"))]
+    fn choose_export_directory(&mut self) -> Option<PathBuf> {
+        Some(
+            self.config
+                .path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .to_path_buf(),
+        )
+    }
+
+    /// Write the generated report to a file the operator chooses, and audit it.
+    ///
+    /// The audit entry is the point of the operation as much as the file is: NRM
+    /// §5.3.1 treats the export of critical data as an action somebody must be
+    /// able to review afterwards, and three of these reports are a list of people
+    /// and the credentials they hold.
+    pub fn export_report(&mut self) {
+        self.reports.error = None;
+        let Some(report) = self.reports.current.as_ref() else {
+            self.reports.error = Some("generate a report before exporting it".into());
+            return;
+        };
+        let suggested = report.file_name(self.reports.format);
+        // A cancelled dialog is not an error and says nothing.
+        let Some(path) = self.choose_export_path(&suggested) else {
+            return;
+        };
+        self.write_report(&path);
+    }
+
+    /// Write the generated report to `path` and audit it.
+    ///
+    /// Split from [`Self::export_report`] because the dialog is the untestable
+    /// half and this is the operation: the behaviour suite drives the write and
+    /// the audit entry without a file chooser anywhere near it.
+    pub fn write_report(&mut self, path: &Path) -> bool {
+        let Some(report) = self.reports.current.clone() else {
+            self.reports.error = Some("generate a report before exporting it".into());
+            return false;
+        };
+        let format = self.reports.format;
+        let content = crate::report::export::render(&report, format);
+
+        if let Err(e) = std::fs::write(path, &content) {
+            let message = format!("could not write {}: {e}", path.display());
+            tracing::error!(event = "export.write.failed", reason = %e);
+            self.reports.error = Some(message.clone());
+            self.status = message;
+            return false;
+        }
+
+        self.record(
+            "export.taken",
+            &format!("report:{}", report.kind.slug()),
+            &report.audit_detail(format, path),
+        );
+        self.status = format!("exported {} row(s) to {}", report.rows.len(), path.display());
+        true
+    }
+
+    #[cfg(feature = "file-dialog")]
+    fn choose_export_path(&mut self, suggested: &str) -> Option<PathBuf> {
+        rfd::FileDialog::new()
+            .set_title("Export report")
+            .set_file_name(suggested)
+            .save_file()
+    }
+
+    #[cfg(not(feature = "file-dialog"))]
+    fn choose_export_path(&mut self, suggested: &str) -> Option<PathBuf> {
+        // Without a dialog the file goes next to the database — a location the
+        // operator already knows, and one they chose.
+        Some(
+            self.config
+                .path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(suggested),
+        )
+    }
+
     /// Verify the audit chain and report the result in the status bar.
     pub fn verify_audit(&mut self) {
         let Some(store) = &self.store else { return };
@@ -6317,6 +6669,7 @@ impl eframe::App for YkDistApp {
                             Tab::Bootstrap => crate::ui::bootstrap::show(self, ui),
                             Tab::Templates => crate::ui::templates::show(self, ui),
                             Tab::Terms => crate::ui::terms::show(self, ui),
+                            Tab::Reports => crate::ui::reports::show(self, ui),
                             Tab::Audit => crate::ui::audit::show(self, ui),
                             Tab::Settings => crate::ui::settings::show(self, ui),
                         }

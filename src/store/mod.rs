@@ -1838,6 +1838,24 @@ impl Store {
             .collect::<Result<Vec<_>>>()
     }
 
+    /// Every remediation on record, newest first.
+    ///
+    /// The whole-register read the reports need
+    /// (`features/reports-and-export.md`): the reconciliation report asks whether
+    /// each returned key has been sanitised, and answering that one serial at a
+    /// time would be a query per key on a register that may hold hundreds.
+    pub fn remediations(&self) -> Result<Vec<Remediation>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, key_serial, incident_id, kind, subject, reference, reason, recorded_at,
+                    recorded_by, detail
+             FROM key_remediations ORDER BY recorded_at DESC",
+        )?;
+        let rows = stmt.query_map([], row_to_remediation)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .collect::<Result<Vec<_>>>()
+    }
+
     /// What this key was carrying, read off its runs.
     pub fn dependencies_for(&self, serial: u32) -> Result<Vec<Dependency>> {
         Ok(crate::domain::lifecycle::dependencies(
@@ -2665,17 +2683,27 @@ impl Store {
             .collect::<Result<Vec<_>>>()
     }
 
-    /// Verify the whole chain; returns the number of entries checked.
-    pub fn verify_audit(&self) -> Result<usize> {
+    /// The whole chain, **oldest first** — the order it was written, the order it
+    /// verifies in, and the order an extract has to be cut from.
+    ///
+    /// [`Self::audit_entries`] is the screen's read and comes newest first,
+    /// because a screen shows what just happened. An extract is the opposite job:
+    /// it is evidence, its last entry is the chain head, and reversing a list to
+    /// find that would be one more place to get it the wrong way round.
+    pub fn audit_trail(&self) -> Result<Vec<AuditEntry>> {
         let mut stmt = self.conn.prepare(
             "SELECT seq, at, actor, event, target, details, prev_hash, hash
              FROM audit ORDER BY seq ASC",
         )?;
         let rows = stmt.query_map([], row_to_audit)?;
-        let entries = rows
-            .collect::<rusqlite::Result<Vec<_>>>()?
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
             .into_iter()
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Result<Vec<_>>>()
+    }
+
+    /// Verify the whole chain; returns the number of entries checked.
+    pub fn verify_audit(&self) -> Result<usize> {
+        let entries = self.audit_trail()?;
         crate::audit::verify(&entries).map_err(|e| StoreError::Decode {
             column: "audit",
             value: e.to_string(),

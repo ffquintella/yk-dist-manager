@@ -31,6 +31,7 @@ pub mod database;
 pub mod distribution;
 pub mod holders;
 pub mod inventory;
+pub mod reports;
 pub mod settings;
 pub mod templates;
 pub mod terms;
