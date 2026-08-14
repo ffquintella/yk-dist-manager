@@ -15,7 +15,7 @@ Maintenance instructions (see AGENTS.md §5):
 * A database schema change also bumps store::SCHEMA_VERSION and ships a migration.
 -->
 
-## [Unreleased]
+## [0.15.0] - 2026-08-14
 
 ### Added
 
@@ -64,6 +64,42 @@ Maintenance instructions (see AGENTS.md §5):
   not built, and `src/report/bundle.rs` says why: a schedule inside a desktop application
   fires only when somebody has it open, which would look like a control without being
   one.
+
+- **Two operators can see each other** — schema **v7** adds `open_sessions`, and a banner
+  under the tabs names who else has the register open and when they were last heard from.
+  Deliberately a warning and not a lock: on a share SQLite serialises the writes perfectly
+  well, so the danger is neither corruption nor a race but two people working out of the
+  same box of keys without knowing it. A session silent for 15 minutes is not shown and is
+  pruned by the next open, so a closed laptop does not leave a name on somebody's screen
+  for the rest of the week. The cloud-sync lock is unchanged and still *refuses* the second
+  workstation — there the two are not sharing a lock manager at all.
+
+- **An operator identity per register**, not per workstation
+  (`features/database-selection.md` phase 8). One field was wrong in the case this tool is
+  actually used in: the same laptop opens the unit's share and a pilot file, and whichever
+  name was typed last became the actor on every audit entry afterwards with nothing on
+  screen saying so. Editing the name with a register open now records it for *that*
+  register; with none open it sets the workstation's default, which is what an unnamed
+  register falls back to. The Settings screen says which of the two is being edited.
+
+### Changed
+
+- **A save can no longer silently overwrite another operator's** — the optimistic half of
+  `features/storage-sqlite-single-file.md` phase 4. An observation is saved against the
+  `updated_at` of the copy the operator was looking at, checked in the `WHERE` clause so it
+  is one statement and cannot interleave with another connection's. A second save is
+  refused, names when the record moved, reloads the screen so the operator can see what
+  they would have overwritten, and writes `db.conflict` — a refused write is a thing that
+  happened to the register, and it is how anybody later learns that two people were working
+  on the same key. `Store::set_key_notes` therefore takes the timestamp it read, and takes
+  it as a required argument rather than an optional one.
+
+- **`database is locked` now says what it means.** `SQLITE_BUSY` becomes
+  `StoreError::Busy`, whose message is *another operator is writing to this register* —
+  wait a moment, rather than report a fault. The retrying is SQLite's own busy handler,
+  which has already spent the whole timeout (5s locally, 20s on a share) by the time the
+  error arrives; a retry loop on top would sleep through a lock that had already been
+  released. Mapped in `From<rusqlite::Error>`, where the next mutation cannot forget it.
 
 ### Security
 
