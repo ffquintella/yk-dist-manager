@@ -64,7 +64,10 @@ release-notes: ## The notes for this version, including the schema upgrade warni
 icons: ## Re-render every icon from assets/logo.svg (needs librsvg + ImageMagick)
 	assets/render-icons.sh
 
-check: ## Fast compile check, default features
+check-lib: ## Level 1: type-check the library only — the cheapest useful command
+	cargo check --lib
+
+check: ## Fast compile check of lib + bin, default features
 	cargo check
 
 check-all: ## Compile every feature combination that ships

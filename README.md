@@ -198,7 +198,7 @@ cargo test --features native-device --test hardware_native -- --ignored --nocapt
 | [`docs/operations.md`](docs/operations.md) | Runbooks: distribute, return, lost key, backup |
 | [`docs/development.md`](docs/development.md) | Layout, conventions, how to add a step |
 | [`features/application-icon.md`](features/application-icon.md) | The icon: what the mark is, and `make icons` |
-| [`AGENTS.md`](AGENTS.md) | Working agreement: secure development, audit coverage, tests, changelog, semver |
+| [`AGENTS.md`](AGENTS.md) | Working agreement, and the map anyone changing this repository starts from: components → tests, the validation levels and their commands, secure development, audit coverage, changelog, semver |
 
 ## Licence
 
