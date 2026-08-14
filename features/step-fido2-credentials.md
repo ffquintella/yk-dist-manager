@@ -86,9 +86,9 @@ PIN used to authorise creation.
 | # | Phase | State | Notes |
 |---|---|---|---|
 | 1 | Plan entry, native-only, no fallback | Done | asserted by test |
-| 2 | `get_info` read: PIN state, remaining credential slots, supported algorithms | **Done** | the slot count is read; refusing when full is still Todo |
+| 2 | `get_info` read: PIN state, remaining credential slots, supported algorithms | **Done** | `remainingDiscoverableCredentials` (CTAP 2.1) is read into `Fido2State::remaining_credential_slots`, and a key with **no free slot** is refused before the PIN is set rather than by the authenticator's own error — which would leave a key that has had a PIN written and nothing else. `None` is "the firmware does not report it", which is not "full": treating it as full would refuse the step on every key below 5.7 |
 | 3 | `make_credential` with `rk=true`, UV, algorithm choice | **Done** | **hardware-verified** — the step `ykman` cannot perform at all, and therefore the whole case for the native transport |
-| 4 | Record credential id + RP id on the run | Todo | evidence, non-secret |
+| 4 | Record credential id + RP id on the run | **Done** | written into the step's detail as `credential_id=… rp_id=… algorithm=… user_name=…` and read back by [`bootstrap::credential_evidence`](../src/bootstrap/mod.rs), the same idiom the CSR and the attestation use. All four are public by construction: a credential id is what the relying party keeps in its own database, and the private key never leaves the device |
 | 5 | List / delete credentials from the GUI | Todo | `ykman` can do this; native is nicer |
 | 6 | Enterprise attestation option | Todo | needs an RP that verifies it |
 | 7 | Bind the credential to an internal relying party | Todo | depends on which service; BastionVault is the obvious candidate |

@@ -704,6 +704,7 @@ fn attached(app: &mut YkDistApp, ui: &mut egui::Ui) {
     let snapshot = app.attached.clone();
     let mut choose: Option<u32> = None;
     let mut reset_requested: Option<u32> = None;
+    let mut read_requested: Option<u32> = None;
 
     // Nothing to say before the first poll lands, and nothing to say on a screen
     // where the watch is not running.
@@ -751,7 +752,14 @@ fn attached(app: &mut YkDistApp, ui: &mut egui::Ui) {
         super::table(
             ui,
             "attached-keys",
-            &["Serial", "Model", "Firmware", "Applications", ""],
+            &[
+                "Serial",
+                "Model",
+                "Firmware",
+                "Applications",
+                "Configuration",
+                "",
+            ],
             |ui| {
                 for key in &snapshot.keys {
                     let chosen = app.target_serial() == Some(key.serial);
@@ -766,6 +774,34 @@ fn attached(app: &mut YkDistApp, ui: &mut egui::Ui) {
                             key.usb_applications.join(", ")
                         },
                     );
+                    // What state this key's applets are in, if anybody has looked
+                    // (`features/step-piv-pin-puk-management-key.md` phase 6). Until
+                    // now the only warning about a key still on its factory defaults
+                    // was in the wizard's pre-flight — seen once, by the operator
+                    // about to fix it, and never by anybody auditing the fleet.
+                    //
+                    // Three states and three renderings, because a key nobody has
+                    // read is not a key with nothing wrong with it.
+                    match app.factory_default_badge(key.serial) {
+                        Some(Some(badge)) => {
+                            ui.add(Badge::new("factory defaults", BadgeTone::Warning))
+                                .on_hover_text(badge);
+                        }
+                        Some(None) => {
+                            ui.add(Badge::new("configured", BadgeTone::Ok));
+                        }
+                        None => {
+                            if super::row_button(ui, "check…")
+                                .on_hover_text(
+                                    "reads the applets — PIN retries, PIV slots, which \
+                                     applications are enabled. A read only; nothing is written",
+                                )
+                                .clicked()
+                            {
+                                read_requested = Some(key.serial);
+                            }
+                        }
+                    }
                     ui.horizontal(|ui| {
                         // The chosen key says so in a word as well as by tone.
                         if chosen {
@@ -798,6 +834,7 @@ fn attached(app: &mut YkDistApp, ui: &mut egui::Ui) {
                         .on_hover_text(reason.clone());
                     super::faint(ui, "—");
                     super::faint(ui, reason);
+                    super::faint(ui, "—");
                     // A key in an unknown state is the case a reset is most for,
                     // so the action is offered here too. The preview will say
                     // which applets it could not read rather than pretending
@@ -830,6 +867,9 @@ fn attached(app: &mut YkDistApp, ui: &mut egui::Ui) {
     }
     if let Some(serial) = reset_requested {
         app.request_key_reset(serial);
+    }
+    if let Some(serial) = read_requested {
+        app.read_applets(serial);
     }
 }
 

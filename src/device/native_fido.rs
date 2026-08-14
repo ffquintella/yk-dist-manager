@@ -168,6 +168,19 @@ impl Fido2Writer for NativeFido2 {
             // acts on — a key with no PIN set can hold no discoverable
             // credential, because creating one requires user verification.
             resident_credentials: 0,
+            // CTAP 2.1 again, and the same reading of zero: a firmware that does
+            // not report it sends 0, which here means "did not say" rather than
+            // "full". Treating it as full would refuse the credential step on
+            // every key below 5.7.
+            remaining_credential_slots: (info.remaining_discoverable_credentials > 0)
+                .then_some(info.remaining_discoverable_credentials as usize),
+            // The retry counter is read through `get_pin_retries`, which does not
+            // spend one. A failure to read it is not a failure to read the state:
+            // it stays `None`, which every consumer already treats as unknown.
+            pin_retries: key
+                .get_pin_retries()
+                .ok()
+                .and_then(|left| u8::try_from(left).ok()),
         })
     }
 

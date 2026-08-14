@@ -9,7 +9,7 @@ verified against **ykman 5.9.2** and a **YubiKey 5 NFC, firmware 5.4.3**, on 202
 |---|---|---|---|
 | List serials | `yubikey` (PC/SC) | `list --serials` | native, fallback ykman |
 | Serial + firmware | `yubikey` | `info` | native |
-| Model, form factor, per-application enable flags | ✗ (management applet, no crate) | `info` | **ykman only** |
+| Model, form factor, per-application enable flags, FIPS state | our own APDU (`device::mgmt`, CCID `00 1D` on AID `A0 00 00 05 27 47 11 17`; no crate covers it) | `info` | native, **built but not hardware-verified** — the parser is pure and covered byte for byte |
 | FIDO2 info (PIN set?, retries, credential slots) | `ctap-hid-fido2` | `fido info` | **native, hardware-verified** |
 | Set / change FIDO2 PIN | `ctap-hid-fido2` | `fido access change-pin` | **native, hardware-verified** |
 | Minimum PIN length (5.7+) | CTAP 2.1 `authenticatorConfig` — crate coverage unconfirmed | `fido access set-min-length` | ykman for now |
@@ -17,13 +17,14 @@ verified against **ykman 5.9.2** and a **YubiKey 5 NFC, firmware 5.4.3**, on 202
 | **Create a FIDO2 credential** | `ctap-hid-fido2` `make_credential(rk=true)` | **✗ impossible** | **native only** |
 | List / delete FIDO2 credentials | `ctap-hid-fido2` | `fido credentials list/delete` | either |
 | OTP slot status | `hidapi` (protocol ours to write — unwritten) | `otp info` | **ykman**, parsed in `device::ykman::parse_otp_info` |
-| OTP access code | `hidapi` (protocol ours to write) | `otp settings <slot> --new-access-code` | **ykman only** |
+| OTP access code | `hidapi` (protocol ours to write — deliberately unwritten, see below) | `otp settings <slot> --force --new-access-code -` | **ykman only**, code on **stdin**, built but not hardware-verified |
 | PIV PIN / PUK | `yubikey` | `piv access change-pin/change-puk` | native, **built but not hardware-verified** |
 | PIV management key | our own APDU (`device::piv_session`; the crate's 3DES type fails on 5.7) | `piv access change-management-key` | native, **hardware-verified 2026-08-11** (the same APDUs, moved into the shared session on 2026-08-13 and not re-run since) |
 | PIV on-device keygen | our own APDU (`device::piv_session`; it needs the AES management-key authentication the crate cannot do) | `piv keys generate` | native, **built but not hardware-verified** |
 | **CSR with an e-mail SAN** | `device::csr` (`x509-cert`) + `piv::sign_data` | **✗ no SAN option** | **native only** — built; the ASN.1 is verified against `openssl`, the card path is not |
 | Import a certificate | our own APDU (`device::piv_session`, `PUT DATA` with command chaining — same authentication problem) | `piv certificates import` | native — built; the certificate comes from the operator (decided 2026-08-13) |
 | Attestation | `yubikey::piv::attest` | `piv keys attest` | native, **built but not hardware-verified** |
+| Read a slot's certificate back | `yubikey::certificate::Certificate::read` | `piv certificates export` | native, **built but not hardware-verified** — what the `Verify` step checks subject, SAN and key usage against |
 | OpenPGP applet | `openpgp-card-sequoia` (to evaluate) | `openpgp *` | undecided |
 
 The two bold "impossible" rows are the reason the native transport is the primary path,
@@ -192,3 +193,46 @@ Touch policies: `never`, `always`, `cached` (15-second window after one touch).
 - [Yubico technical manual (YubiKey 5)](https://docs.yubico.com/hardware/yubikey/yk-tech-manual/)
 - [CTAP 2.1](https://fidoalliance.org/specs/fido-v2.1-ps-20210615/fido-client-to-authenticator-protocol-v2.1-ps-20210615.html)
 - [NIST SP 800-73-4](https://csrc.nist.gov/publications/detail/sp/800-73/4/final)
+
+## The management applet, and what its absence cost
+
+`device::mgmt` reads CCID instruction `00 1D` (`READ CONFIG`) on the management
+application. It is the only source for **which applications are enabled on a key**,
+and until it existed the native transport had to leave that field empty — which
+caused the same bug twice, in opposite directions:
+
+1. reporting `["PIV"]` (the applet the transport had just spoken to) was read
+   downstream as *FIDO2 and OTP are disabled*, and the pre-flight skipped five of the
+   standard procedure's eleven steps on a key that had all three enabled;
+2. corrected to an empty list, the pre-flight then had to raise a warning on every
+   applet-dependent step saying it could not check.
+
+Neither reading of silence is wrong given what was available; both are unnecessary now
+the field is read. Three details are load-bearing:
+
+* **The application names match `ykman info`'s exactly** (`Yubico OTP`, `FIDO U2F`,
+  `FIDO2`, `OATH`, `PIV`, `OpenPGP`, `YubiHSM Auth`). `bootstrap::preflight` matches on
+  these strings, so two transports spelling one application differently would make a
+  step skip on one transport and run on the other.
+* **The FIPS masks are a different encoding from the capability masks.** One bit per
+  application in the order FIDO2, PIV, OpenPGP, OATH, YubiHSM Auth — *not* the
+  capability bit values. Reading one with the other's table reports OTP and U2F
+  instead, which is wrong in the direction of overclaiming compliance.
+* **The declared length is checked.** A truncated response loses its tail, and the tail
+  is where the capability masks are — so a partial read would report "no applications
+  enabled", which is a claim that skips every step.
+
+## Why the native OTP frame is still unwritten
+
+Every other gap in the matrix above is "not yet"; this one is a decision. No crate in
+this dependency graph exposes the Yubico OTP configuration frame, so writing it means
+hand-rolling the protocol — frame, CRC, status confirmation — for an operation whose
+failure mode is a slot **write-protected by a code nobody holds**, which is not
+recoverable from this tool. `features/step-otp-access-code.md` phase 4 keeps it unwritten
+until there is a key to verify it against, and the `ykman` path exists so the step is not
+blocked meanwhile.
+
+What that path costs, and the reason the step and the pre-flight both say so: `ykman otp
+settings` **rewrites the slot's other settings to their defaults**, and it refuses an
+**empty** slot outright — an access code protects a configuration, and an empty slot has
+none. Both facts come from `ykman` 5.9.2's own source rather than from experiment.

@@ -4,10 +4,10 @@
 //!
 //! | Applet | Crate | Transport | State |
 //! |---|---|---|---|
-//! | PIV | [`yubikey`] | PC/SC (CCID) | implemented here (identification); write ops in Wave 1 |
+//! | PIV | [`yubikey`] | PC/SC (CCID) | identification here; writes in [`super::piv_session`] |
 //! | FIDO2 / CTAP2 | `ctap-hid-fido2` | USB HID | `features/step-fido2-pin.md`, `features/step-fido2-credentials.md` |
 //! | Yubico OTP | `hidapi` | USB HID feature reports | `features/step-otp-access-code.md` |
-//! | Management (form factor, capabilities) | — | CCID `00 1D` | no crate covers it; `features/ykman-abstraction.md` |
+//! | Management (form factor, capabilities, FIPS) | — | CCID `00 1D` | [`super::mgmt`], written by hand because no crate covers it |
 //!
 //! Compiled only with the `native-piv` feature, because `pcsc` links against a
 //! system library.
@@ -89,12 +89,30 @@ impl YubiKeyBackend for NativeBackend {
             ));
         }
 
-        match (found.len(), serial) {
-            (0, _) => Err(DeviceError::NoDevice),
-            (1, _) => Ok(found.remove(0)),
-            (_, Some(_)) => Ok(found.remove(0)),
-            (n, None) => Err(DeviceError::Ambiguous(n)),
+        let mut info = match (found.len(), serial) {
+            (0, _) => return Err(DeviceError::NoDevice),
+            (1, _) => found.remove(0),
+            (_, Some(_)) => found.remove(0),
+            (n, None) => return Err(DeviceError::Ambiguous(n)),
+        };
+
+        // The management applet answers for everything the PIV applet cannot:
+        // form factor, and *which applications are enabled*
+        // (`features/native-device-transport.md` phase 5). A failure here is not a
+        // failed identification — the key was identified — so it is logged and the
+        // fields stay unread, which is what every reader downstream already
+        // handles. Turning it into an error would make a key with CCID-only
+        // management trouble unreadable rather than partly read.
+        match super::mgmt::read(info.serial) {
+            Ok(config) => super::mgmt::enrich(&mut info, &config),
+            Err(e) => tracing::warn!(
+                event = "device.management.unread",
+                serial = info.serial,
+                reason = %e
+            ),
         }
+
+        Ok(info)
     }
 
     fn describe(&self) -> String {

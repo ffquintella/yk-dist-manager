@@ -56,7 +56,7 @@ fn main() {
     // ---------------------------------------------------------------- before
     let before = piv.piv_state(serial).expect("read the applet state");
     println!("before: {before:?}");
-    if before.pin_changed_from_default || before.management_key_changed {
+    if before.pin_changed_from_default() || before.management_key_changed() {
         eprintln!(
             "\nREFUSING: this key's PIV applet is already configured.\n\
              This procedure is for a factory-fresh applet — run `ykman piv reset --force` first."
@@ -75,8 +75,8 @@ fn main() {
             let state = piv.piv_state(serial).expect("read back");
             println!(
                 "   -> pin_changed_from_default={} {}",
-                state.pin_changed_from_default,
-                if state.pin_changed_from_default {
+                state.pin_changed_from_default(),
+                if state.pin_changed_from_default() {
                     "OK"
                 } else {
                     "NOT REPORTED — the metadata read disagrees with the write"
@@ -99,8 +99,8 @@ fn main() {
             let state = piv.piv_state(serial).expect("read back");
             println!(
                 "   -> management_key_changed={} {}",
-                state.management_key_changed,
-                if state.management_key_changed {
+                state.management_key_changed(),
+                if state.management_key_changed() {
                     "OK — and PIN-protected, so nothing needs custody"
                 } else {
                     "NOT REPORTED — investigate before relying on it"

@@ -18,7 +18,7 @@ whole even though every part passes.
 
 **Suites in place, and CI now enforces the gate.**
 
-- **834 tests** pass on the default features (`cargo test`), **839** with
+- **890 tests** pass on the default features (`cargo test`), **895** with
   `--all-features` — the encrypted-database paths account for the difference, minus
   the one test that exists only when `encrypted-db` is *off*. The default figure now
   includes the native-transport tests, because `native-device` became a default
@@ -54,12 +54,22 @@ whole even though every part passes.
 - `cargo check --no-default-features` is part of the pre-commit sweep, because the
   no-camera build is a supported configuration
   (`make check-all`).
-- Core line coverage **85.68%** (region 84.97%), above the 80% floor. It has fallen
+- Core line coverage **85.04%** (region 85.76%), above the 80% floor. It has fallen
   twice for the same structural reason rather than through neglect: from 88.25% when
   `device/native_fido.rs` joined the build, and again when `native-device` became a
   default feature. The hardware transports are reachable only with a key attached, so
   they count against the gate at close to 0% (`native_fido.rs` 3.5%,
   `native_piv.rs` 32%).
+
+  Finishing Wave 1 held it level rather than dropping it, which was not the
+  expectation: almost everything that landed is hardware-facing. What kept it level is
+  that each of those modules splits into a **pure** half and a **card exchange**, and
+  the pure half is where the failure modes are. `device::mgmt`'s TLV parsing is at
+  98.7% while its APDU conversation is at nothing; `device::certificate`'s read-back
+  checks are exhaustively tested with no card in sight. That split is deliberate — it
+  is the same reason `device::csr` assembles PKCS#10 purely and takes the signature as
+  a closure — and it is what makes "not hardware-verified" mean *the protocol
+  conversation is unproven* rather than *this code is untested*.
 
   The pure cores next to them are the answer to that, and they are covered:
   `device/select.rs` 93%, `device/applets.rs` 91%, `device/csr.rs` 90%. That split is

@@ -66,6 +66,23 @@ use crate::template::BootstrapTemplate;
 /// which is only possible because the tag is inside the signed bytes.
 pub const CANONICAL_FORMAT: &str = "ykdm-template-v1";
 
+/// The tag for a template that uses a field v1 had no room for: the applicability
+/// rule and the per-step attempt budget
+/// (`features/bootstrap-templates.md` phases 3 and 7).
+///
+/// **A template that uses neither is still encoded as v1**, byte for byte, and
+/// that is the whole design of this second tag. Bumping the format for every
+/// template would have invalidated every signature ever made and changed every
+/// fingerprint on every screen, to carry two fields that almost no template sets.
+///
+/// Which encoding applies is decided by the template's own contents and the tag is
+/// the first thing inside the signed bytes, so the two cannot be confused: adding
+/// a rule to a v1-signed template moves it to v2 and the signature stops
+/// verifying, which is correct — the policy changed. Removing one does the same in
+/// the other direction, which is the case that matters, since removing a
+/// restriction *widens* the keys a signed procedure may be applied to.
+pub const CANONICAL_FORMAT_V2: &str = "ykdm-template-v2";
+
 /// The only signature algorithm this build knows.
 ///
 /// Ed25519: small keys, no parameter choices to get wrong, and no way to produce
@@ -239,8 +256,21 @@ impl Trust {
 ///
 /// (spaces added for readability only — the real encoding has none).
 pub fn canonical_bytes(template: &BootstrapTemplate) -> Vec<u8> {
+    // v2 only when the template actually uses what v2 adds. See
+    // [`CANONICAL_FORMAT_V2`]: this is what keeps every existing signature and
+    // every printed fingerprint valid.
+    let v2 =
+        !template.applicability.is_unrestricted() || template.steps.iter().any(|s| s.attempts > 1);
+
     let mut out = Vec::new();
-    push(&mut out, CANONICAL_FORMAT);
+    push(
+        &mut out,
+        if v2 {
+            CANONICAL_FORMAT_V2
+        } else {
+            CANONICAL_FORMAT
+        },
+    );
     push(&mut out, template.id.trim());
     push(&mut out, template.name.trim());
     push(&mut out, template.description.trim());
@@ -267,6 +297,25 @@ pub fn canonical_bytes(template: &BootstrapTemplate) -> Vec<u8> {
             push(&mut out, value);
         }
     }
+
+    if v2 {
+        // Appended rather than interleaved, so the bytes above stay exactly what
+        // v1 produced and the difference between the two encodings is a suffix.
+        let rule = &template.applicability;
+        push(&mut out, rule.min_firmware.as_deref().unwrap_or("").trim());
+        push(&mut out, rule.max_firmware.as_deref().unwrap_or("").trim());
+        push(&mut out, &rule.requires_applications.len().to_string());
+        for application in &rule.requires_applications {
+            push(&mut out, application.trim());
+        }
+        // The count again, so the attempt budgets cannot be re-partitioned against
+        // a different list of steps — the same reason it precedes the steps above.
+        push(&mut out, &template.steps.len().to_string());
+        for step in &template.steps {
+            push(&mut out, &step.attempts.to_string());
+        }
+    }
+
     out
 }
 
@@ -373,6 +422,7 @@ mod tests {
                 TemplateStep::new("fido-pin", StepKind::Fido2Pin, "Set the PIN")
                     .with_param("min_length", "6"),
             ],
+            applicability: Default::default(),
             signature: None,
         }
     }

@@ -82,6 +82,29 @@ impl WriteError {
         )
     }
 
+    /// Is trying this step again worth anything?
+    ///
+    /// The retry half of `features/bootstrap-templates.md` phase 7, and it lives on
+    /// the **error** rather than on the template because it is a property of what
+    /// went wrong, not of the procedure. A template may ask for three attempts;
+    /// whether a given failure gets them is decided here, and most do not:
+    ///
+    /// * [`Self::WrongSecret`] — retrying spends the applet's retry counter, and
+    ///   the value will be just as wrong the second time. Three attempts at a
+    ///   mistyped PIV PIN is how a PIN gets blocked.
+    /// * [`Self::Locked`] — the applet needs a reset, not another go.
+    /// * [`Self::Unsupported`] and [`Self::TransportUnavailable`] — deterministic
+    ///   facts about this key and this build.
+    /// * [`Self::NotAttached`] and [`Self::Detached`] — there is nothing to retry
+    ///   against, and these already stop the run outright.
+    ///
+    /// That leaves [`Self::Failed`], which is where a dropped frame, a busy reader
+    /// or a transport that lost its session land — the failures a second attempt
+    /// genuinely fixes.
+    pub fn is_worth_retrying(&self) -> bool {
+        matches!(self, WriteError::Failed { .. })
+    }
+
     /// Secret-free, and short enough for a `StepOutcome::detail`.
     ///
     /// The `Display` impls above are already secret-free — none of them
@@ -102,16 +125,54 @@ pub struct Fido2State {
     pub min_pin_length: Option<u8>,
     pub force_pin_change_set: bool,
     pub resident_credentials: usize,
+    /// Discoverable-credential slots still free, when the authenticator says
+    /// (CTAP 2.1 `remainingDiscoverableCredentials`).
+    ///
+    /// `None` is "the firmware does not report it", which is not "plenty" and not
+    /// "none". The distinction is what
+    /// `features/step-fido2-credentials.md` phase 2 turns into a refusal: a key
+    /// with no free slot cannot take the credential the procedure is for, and
+    /// finding that out from `make_credential`'s error leaves a key that has had a
+    /// PIN set and nothing else.
+    ///
+    /// PIN retries are deliberately not here: they live on the *PIV* state because
+    /// PIV counts down towards a PUK, while CTAP's counter resets on a correct PIN.
+    pub remaining_credential_slots: Option<usize>,
+    /// FIDO2 PIN attempts left before the applet locks, when the authenticator
+    /// says (`features/step-fido2-pin.md` phase 8).
+    ///
+    /// Read rather than burned: `get_info` does not consume an attempt, which is
+    /// the only reason it is safe to show this on a screen the operator opened.
+    pub pin_retries: Option<u8>,
 }
 
 /// What the PIV applet currently looks like.
+///
+/// The three "is it still the factory default" answers are `Option<bool>` and not
+/// `bool`, and that is the point of them. `GET METADATA` may say *default*, say
+/// *changed*, or not answer at all — a pre-5.3 firmware has no such command, and a
+/// reader another process holds answers nothing. Those are three facts, and the two
+/// consumers read them opposite ways:
+///
+/// * the **executor** wants "has somebody changed it", where unknown must behave
+///   like default so the step tries rather than skipping something that was never
+///   applied — [`Self::pin_changed_from_default`] and friends;
+/// * the **inventory badge** wants "is this key still on a factory default", where
+///   unknown must not be reported as *yes*, because a badge accusing a correctly
+///   configured key of holding a default is a badge that gets ignored
+///   (`features/step-piv-pin-puk-management-key.md` phase 6).
+///
+/// Collapsing them into one boolean is what made the second of those impossible,
+/// and it is the same mistake as reading an empty application list as "disabled".
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PivState {
     /// Slots holding a certificate, e.g. `["9c"]`.
     pub occupied_slots: Vec<String>,
-    /// False while the applet still has Yubico's published default.
-    pub management_key_changed: bool,
-    pub pin_changed_from_default: bool,
+    /// `Some(true)` still Yubico's published default, `Some(false)` changed,
+    /// `None` the applet did not say.
+    pub management_key_is_default: Option<bool>,
+    pub pin_is_default: Option<bool>,
+    pub puk_is_default: Option<bool>,
     /// PIN attempts remaining before the applet locks, when the applet says.
     ///
     /// `None` means "not read", which is not the same as "plenty": a key whose
@@ -135,6 +196,49 @@ impl PivState {
 
     pub fn slot_occupied(&self, slot: &str) -> bool {
         self.occupied_slots.iter().any(|s| s == slot)
+    }
+
+    /// Has somebody changed the PIV PIN from the factory default?
+    ///
+    /// `Some(false)` is the only reading that means yes. Unknown behaves like
+    /// default, so a step tries rather than skipping something that may never have
+    /// been applied — the executor's reading, see the type's own note.
+    pub fn pin_changed_from_default(&self) -> bool {
+        self.pin_is_default == Some(false)
+    }
+
+    pub fn puk_changed_from_default(&self) -> bool {
+        self.puk_is_default == Some(false)
+    }
+
+    pub fn management_key_changed(&self) -> bool {
+        self.management_key_is_default == Some(false)
+    }
+
+    /// The factory defaults this key is **known** to still carry, named
+    /// (`features/step-piv-pin-puk-management-key.md` phase 6).
+    ///
+    /// Only `Some(true)` counts. An applet that did not answer produces nothing
+    /// here, deliberately: a badge that accused a correctly configured key of
+    /// holding a default because a reader was busy is a badge an operator learns to
+    /// ignore, and then it is worth less than no badge at all.
+    ///
+    /// The management key is included even though it is *not* evidence of a
+    /// previous bootstrap ([`super::applets::Snapshot::already_configured`]). The
+    /// two questions are different: "has anybody been here before" must not refuse a
+    /// key that a fleet-management tool merely touched, while "does this key still
+    /// hold a published default" is exactly what somebody auditing the fleet needs
+    /// to see.
+    pub fn factory_defaults(&self) -> Vec<&'static str> {
+        [
+            (self.pin_is_default, "PIV PIN"),
+            (self.puk_is_default, "PIV PUK"),
+            (self.management_key_is_default, "PIV management key"),
+        ]
+        .into_iter()
+        .filter(|(state, _)| *state == Some(true))
+        .map(|(_, name)| name)
+        .collect()
     }
 
     /// The occupied slots that say something about how this key was *configured*.
@@ -317,6 +421,16 @@ pub trait PivWriter {
         certificate_pem: &str,
         pin: &Secret,
     ) -> Result<()>;
+
+    /// Read back the certificate a slot holds, as PEM. `None` when the slot is
+    /// empty.
+    ///
+    /// A **read**, on the write trait for the same reason [`Self::attest`] is: it
+    /// needs the PIV connection and nothing else has one. It exists so the
+    /// verification step can check the card rather than its own memory of what it
+    /// wrote (`features/step-piv-signing-certificate.md` phase 7) — and so an
+    /// auditor can run that check months later against a key in their hand.
+    fn read_certificate(&mut self, serial: u32, slot: &str) -> Result<Option<String>>;
 }
 
 /// Yubico OTP writes.
@@ -384,6 +498,9 @@ pub struct MockWriter {
     /// attestation — the case a test needs in order to prove that a missing proof
     /// does not fail the generation step.
     attestation: Option<String>,
+    /// What each slot holds, so the verification step reads back what was written
+    /// rather than what it hoped was written. Keyed by slot, like the card.
+    certificates: std::collections::BTreeMap<String, String>,
 }
 
 impl MockWriter {
@@ -422,6 +539,17 @@ impl MockWriter {
 
     pub fn with_otp_state(mut self, state: OtpState) -> Self {
         self.otp = state;
+        self
+    }
+
+    /// Put a certificate in a slot without going through an import — a key that
+    /// arrived already holding one, which is what the verification step meets when
+    /// an auditor checks a key handed over months ago.
+    pub fn with_certificate(mut self, slot: &str, pem: &str) -> Self {
+        self.certificates.insert(slot.to_owned(), pem.to_owned());
+        if !self.piv.slot_occupied(slot) {
+            self.piv.occupied_slots.push(slot.to_owned());
+        }
         self
     }
 
@@ -600,7 +728,8 @@ impl PivWriter for MockWriter {
             supplied,
         )?;
         let _ = (current_pin, new_pin, current_puk, new_puk);
-        self.piv.pin_changed_from_default = true;
+        self.piv.pin_is_default = Some(false);
+        self.piv.puk_is_default = Some(false);
         Ok(())
     }
 
@@ -619,7 +748,7 @@ impl PivWriter for MockWriter {
             2 + usize::from(current.is_some()),
         )?;
         let _ = (current, new, pin);
-        self.piv.management_key_changed = true;
+        self.piv.management_key_is_default = Some(false);
         Ok(())
     }
 
@@ -686,7 +815,14 @@ impl PivWriter for MockWriter {
         )?;
         let _ = pin;
         self.piv.occupied_slots.push(slot.to_owned());
+        self.certificates
+            .insert(slot.to_owned(), certificate_pem.to_owned());
         Ok(())
+    }
+
+    fn read_certificate(&mut self, serial: u32, slot: &str) -> Result<Option<String>> {
+        self.record("piv.read_certificate", serial, vec![slot.to_owned()], 0)?;
+        Ok(self.certificates.get(slot).cloned())
     }
 }
 
@@ -845,8 +981,9 @@ mod tests {
         // The starting point for "this key is already bootstrapped".
         let mut writer = MockWriter::factory_fresh(20_423_633).with_piv_state(PivState {
             occupied_slots: vec!["9c".into()],
-            management_key_changed: true,
-            pin_changed_from_default: true,
+            management_key_is_default: Some(false),
+            pin_is_default: Some(false),
+            puk_is_default: Some(false),
             pin_retries: Some(3),
         });
         let state = writer.piv_state(20_423_633).unwrap();

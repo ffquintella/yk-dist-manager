@@ -17,6 +17,135 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+### Added
+
+- **The management applet is read natively** — form factor, **which applications are
+  enabled**, and the FIPS state ([`device::mgmt`](src/device/mgmt.rs),
+  `features/native-device-transport.md` phase 5). It is the last read the native
+  transport was missing, and the one that has caused the same bug twice: with no way
+  to read the enable flags, `device::native` first reported `["PIV"]` — the applet it
+  had just spoken to — which the pre-flight read as *FIDO2 and OTP are disabled* and
+  skipped five of eleven steps on a fully enabled key; corrected to an empty list, the
+  pre-flight then had to warn on every applet-dependent step that it could not check.
+  Both go away now the field is actually read: the pre-flight says *the OTP
+  application is switched off on this key*, or says nothing.
+
+  CCID `00 1D` on AID `A0 00 00 05 27 47 11 17`, written by hand because no crate
+  covers it. The application names are deliberately the ones `ykman info` produces,
+  because the pre-flight matches on those strings and two transports spelling one
+  application differently would make a step skip on one and run on the other. The
+  parser is pure and covered by tests built from the encoding byte for byte; **the
+  card exchange is not hardware-verified**. The BER-TLV walker moved to
+  [`device::tlv`](src/device/tlv.rs) so the PIV session and this share one.
+
+- **Applicability rules per template** (`features/bootstrap-templates.md` phase 3):
+  a firmware floor, a firmware ceiling and the applications a procedure requires. A
+  key the rule does not fit **blocks the run** rather than skipping steps — the
+  distinction being that a wrong *step* skips, while a wrong *procedure* that starts
+  leaves the register saying a key had something applied to it that it was never
+  meant for. A rule that could not be checked (a key entered by barcode has no
+  firmware on record) is a warning, never a refusal.
+
+- **A per-step attempt budget** (`features/bootstrap-templates.md` phase 7).
+  `TemplateStep::attempts`, bounded at five, and **only a transport-level failure
+  spends it** — [`WriteError::is_worth_retrying`](src/device/write.rs) is where that
+  line is drawn, on the error rather than on the procedure, because retrying a
+  rejected PIN walks the applet's counter towards a lock. A retry is audited
+  (`bootstrap.step.retried`) and named in the step's detail, so a flaky reader is
+  visible rather than invisible. `required` remains the continue-on-failure half.
+
+- **The verification step now reads the certificate back off the card** and checks
+  it (`features/step-piv-signing-certificate.md` phase 7,
+  `features/ca-integration.md` phase 2 checks 3 and 4): subject DN, the holder's
+  `rfc822Name`, and the key usage / EKU. An encryption certificate issued against a
+  signing request — the realistic CA mix-up — imports cleanly and then fails every
+  signature the holder makes, and is now caught. A failed check **fails the step**,
+  because a run recording "verified" against a key that cannot sign for its holder is
+  worse than no verification. The **chain** is reported as `chain=unchecked` rather
+  than omitted: it needs a trust store this build does not have.
+
+- **The OTP access code is written**, through `ykman otp settings --new-access-code -`
+  with the code on **stdin** (`features/step-otp-access-code.md` phase 2). Never in
+  argv, where every process on the workstation can read it. The invocation was derived
+  from `ykman` 5.9.2's own source, which decides three things: the prompt confirms, so
+  the code goes in twice; `settings` refuses an **empty** slot, so the step checks that
+  first and says so; and the write resets the slot's other settings to their defaults,
+  which the pre-flight now warns about along with the fact that a protected slot stops
+  the key's interfaces being mode-switched (phase 6). Custody is recorded, never the
+  value (phase 7). **Not hardware-verified.**
+
+- **An Inventory badge for a key still on a factory default**
+  (`features/step-piv-pin-puk-management-key.md` phase 6). The only warning used to be
+  in the wizard's pre-flight — seen once, by the operator about to fix it, and never by
+  anybody auditing the fleet. Three states and three renderings, because a key nobody
+  has read is not a key with nothing wrong with it: *factory defaults*, *configured*,
+  or an invitation to read the applets.
+
+- **Retry counters before and after a run** (`features/step-fido2-pin.md` phase 8).
+  Both applets' counters are read (neither read spends an attempt), a counter walked
+  below its factory value is a warning naming what recovery costs — under custody model
+  B the PUK is in a sealed envelope on its way to the holder — and **zero left blocks
+  the run**, because every step that authenticates would fail.
+
+- **An unfinished run can be picked up off the register**
+  (`features/gui-bootstrap-wizard.md` phase 5). The manual issuer makes the wait
+  routine: the CA takes three days and by then the register has been closed and
+  reopened, so the run exists only as rows in the database. The wizard now lists what
+  is still open, rebuilds the plan from the version the run **recorded** — pinned, so a
+  superseded version the selector cannot offer is still resumable — and reproduces which
+  optional steps that run included.
+
+- **One click from a finished run to the hand-over**
+  (`features/gui-bootstrap-wizard.md` phase 6). The form opens with the key, its holder
+  and *that* run attached — explicitly, rather than "the newest run on this serial",
+  which differs exactly where it matters. Nothing is recorded: a hand-over is a
+  statement that a person took possession of a key, which nothing the tool can see
+  tells it.
+
+- **The credential a run registered is readable back off the record**
+  (`features/step-fido2-credentials.md` phase 4) — credential id, relying party,
+  algorithm and user name, all public by construction. A key with **no free
+  discoverable-credential slot** is now refused before the PIN is set rather than by the
+  authenticator's own error (phase 2's remainder).
+
+### Changed
+
+- **`PivState`'s three "still the factory default" answers are `Option<bool>`.**
+  `GET METADATA` may say default, say changed, or not answer at all, and the two
+  consumers read the unknown case opposite ways: the executor must treat it as
+  default so a step tries, while a badge must not accuse a key nobody read.
+  Collapsing them into one boolean made the second impossible. The old readings stay
+  as methods (`pin_changed_from_default()`, `management_key_changed()`) with exactly
+  their previous behaviour, so nothing that depended on them changed.
+
+- **The applet read has one entry point** (`YkDistApp::read_applets`), which records
+  the audit entry and caches what was read for the session. The reset preview and the
+  wizard's pre-flight each wrote their own; a third caller would have written a fourth
+  or forgotten. The cache is never persisted — a stale read of hardware on the
+  register would be worse than none.
+
+- **The canonical bytes a template signature covers gained a second format tag.**
+  A template that uses neither the applicability rule nor a raised attempt budget is
+  encoded exactly as before, **byte for byte**, so every existing signature still
+  verifies and every printed fingerprint is unchanged; one that uses either is
+  `ykdm-template-v2` and has those fields covered. Adding a restriction to a signed
+  template therefore breaks its signature, which is correct — the policy changed —
+  and so does removing one, which is the direction that matters.
+
+- **A pre-flight finding about a step that will not run is no longer raised.** A step
+  whose application is switched off skips, and neither the state it would have found
+  nor the consequences it would have had are worth an operator's attention. Findings
+  nobody needs are how the ones that matter get skimmed past.
+
+  **No schema change**, and the two new template fields are omitted when unused, so a
+  database written by this build opens unchanged in an older one. The consequence worth
+  stating rather than discovering: an older build reading a template that *does* carry
+  an applicability rule ignores it, and would run that procedure against a key the rule
+  excludes. Downgrading a workstation while a restricted template is in use therefore
+  removes the restriction silently. It is not guarded, because guarding it would mean
+  refusing bodies an older build wrote — the opposite compatibility problem — but it is
+  a reason to roll a deployment forward rather than back.
+
 ### Fixed
 
 - **A hand-over was written and *then* refused.** Recording a distribution for a key the

@@ -182,6 +182,21 @@ pub fn diff(before: &BootstrapTemplate, after: &BootstrapTemplate) -> TemplateDi
     // picks two templates rather than two versions of one) and a diff that hid it
     // would be describing something other than what was asked for.
     field(&mut lines, "id", &before.id, &after.id);
+    // Which keys the procedure may be applied to is part of the procedure, and a
+    // change to it is exactly the change an approver most needs to see: widening
+    // it puts a version somewhere it was never reviewed for.
+    field(
+        &mut lines,
+        "applies to",
+        &before
+            .applicability
+            .describe()
+            .unwrap_or_else(|| "any key".to_owned()),
+        &after
+            .applicability
+            .describe()
+            .unwrap_or_else(|| "any key".to_owned()),
+    );
 
     let before_ids: Vec<&str> = before.steps.iter().map(|s| s.id.as_str()).collect();
     let after_ids: Vec<&str> = after.steps.iter().map(|s| s.id.as_str()).collect();
@@ -254,6 +269,14 @@ pub fn diff(before: &BootstrapTemplate, after: &BootstrapTemplate) -> TemplateDi
                         "required",
                         yes(old.required),
                         yes(new.required),
+                    ));
+                }
+                if old.attempt_budget() != new.attempt_budget() {
+                    lines.push(step_change(
+                        id,
+                        "attempts",
+                        &old.attempt_budget().to_string(),
+                        &new.attempt_budget().to_string(),
                     ));
                 }
 
@@ -343,6 +366,7 @@ mod tests {
                 TemplateStep::new("cred", StepKind::Fido2Credential, "Register")
                     .with_param("rp_id", "{{org}}"),
             ],
+            applicability: Default::default(),
             signature: None,
         }
     }

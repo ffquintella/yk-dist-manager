@@ -32,6 +32,11 @@
 //! 6. **Resume, not restart.** [`Executor::resume`] continues from the first
 //!    step that is not `Done`, so an interrupted run is finished rather than
 //!    repeated.
+//! 7. **A retry is for the transport, never for a secret.** A step may carry an
+//!    attempt budget (`TemplateStep::attempts`), and
+//!    [`crate::device::write::WriteError::is_worth_retrying`] decides which
+//!    failures spend it: a dropped frame, yes; a rejected PIN, no — retrying that
+//!    walks the applet's counter towards a lock.
 //!
 //! ## What this module does not do
 //!
@@ -365,22 +370,58 @@ impl<'a> Executor<'a> {
                 break;
             };
 
-            let result = perform(
-                command,
-                template_step,
-                &context,
-                &mut self.transports,
-                &mut self.secrets,
-                recorder,
-            );
+            // Rule 7: a step may be given more than one attempt at a
+            // *transport-level* failure — a dropped frame, a busy reader — and at
+            // nothing else. `WriteError::is_worth_retrying` is what draws that
+            // line, and it draws it on the error rather than on the template,
+            // because retrying a wrong PIN is how a PIN gets blocked.
+            let budget = template_step.attempt_budget();
+            let mut attempt = 1u8;
+            let result = loop {
+                let outcome = perform(
+                    command,
+                    template_step,
+                    &context,
+                    &mut self.transports,
+                    &mut self.secrets,
+                    recorder,
+                );
+                match &outcome {
+                    Err(error) if attempt < budget && error.is_worth_retrying() => {
+                        recorder
+                            .audit(
+                                "bootstrap.step.retried",
+                                &target,
+                                &format!(
+                                    "step={} kind={} attempt={attempt}/{budget} reason={}",
+                                    command.step_id,
+                                    command.kind.slug(),
+                                    error.detail()
+                                ),
+                            )
+                            .map_err(ExecutionError::NotRecordable)?;
+                        attempt += 1;
+                    }
+                    _ => break outcome,
+                }
+            };
 
             let step = &mut run.steps[index];
             step.finished_at = Some(Utc::now());
+            // Written into the record only when it happened, so a run that went
+            // straight through reads exactly as it always did — and one that took
+            // three goes says so, which is the fact somebody investigating a flaky
+            // reader needs.
+            let retries = if attempt > 1 {
+                format!(" (succeeded on attempt {attempt} of {budget})")
+            } else {
+                String::new()
+            };
 
             match result {
                 Ok(StepOutcomeKind::Applied { detail }) => {
                     step.status = StepStatus::Done;
-                    step.detail = detail;
+                    step.detail = format!("{detail}{retries}");
                     recorder
                         .audit(
                             "bootstrap.step.done",
@@ -424,7 +465,11 @@ impl<'a> Executor<'a> {
                     step.status = StepStatus::Failed;
                     // The typed error's Display carries no secret — asserted in
                     // `device::write`'s tests — so this is safe to persist.
-                    step.detail = error.detail();
+                    step.detail = if attempt > 1 {
+                        format!("{} (after {attempt} attempts)", error.detail())
+                    } else {
+                        error.detail()
+                    };
                     recorder
                         .audit(
                             "bootstrap.step.failed",
@@ -561,6 +606,117 @@ pub fn irreversible_steps(commands: &[PlannedCommand]) -> Vec<&PlannedCommand> {
 /// Errors that mean the key is in an unknown state and needs looking at.
 pub fn leaves_key_in_unknown_state(error: &WriteError) -> bool {
     matches!(error, WriteError::Detached { .. })
+}
+
+/// Runs on the register a resume could still finish
+/// (`features/gui-bootstrap-wizard.md` phase 5).
+///
+/// The case this exists for is the one the manual issuer makes routine: a run
+/// produces a certificate request, the CA takes three days, and by the time the
+/// certificate comes back the register has been closed and reopened and the wizard
+/// knows nothing about it. Until now a resume could only continue a run still held
+/// in memory from the same session, which is the *short* half of the wait.
+///
+/// A run qualifies when it is not `Completed` and at least one step is not `Done`
+/// — that is, when there is something left to attempt. Newest first, because the
+/// operator is almost always coming back to the last one.
+pub fn resumable(runs: &[BootstrapRun]) -> Vec<&BootstrapRun> {
+    let mut open: Vec<&BootstrapRun> = runs
+        .iter()
+        .filter(|run| run.status != RunStatus::Completed)
+        .filter(|run| run.steps.iter().any(|step| step.status != StepStatus::Done))
+        .collect();
+    open.sort_by_key(|run| std::cmp::Reverse(run.started_at));
+    open
+}
+
+/// The per-step opt-out that reproduces the plan a run was made from.
+///
+/// A resume indexes the run's recorded steps against a freshly built plan, so the
+/// plan has to have the same steps in the same order — and the operator may have
+/// deselected optional steps on the original run. Rebuilding that selection from
+/// what the run *recorded* is the only way to get back to it: nothing else on the
+/// register says which steps were offered and turned down.
+pub fn step_selection(template: &BootstrapTemplate, run: &BootstrapRun) -> Vec<bool> {
+    template
+        .steps
+        .iter()
+        .map(|step| run.steps.iter().any(|recorded| recorded.step_id == step.id))
+        .collect()
+}
+
+/// Why this run cannot be continued against this template version, or `None`.
+///
+/// Checked before the wizard adopts a run rather than after it has built a plan,
+/// because the failure is not the operator's to fix by trying again: a run whose
+/// template version has been *removed* from the register cannot be resumed at all,
+/// and saying so is more use than a plan that silently does not line up.
+pub fn resume_refusal(template: &BootstrapTemplate, run: &BootstrapRun) -> Option<String> {
+    if template.id != run.template_id || template.version != run.template_version {
+        return Some(format!(
+            "this run applied {} version {}, and the procedure offered is {} version {} — a resume \
+             continues the same procedure",
+            run.template_id, run.template_version, template.id, template.version
+        ));
+    }
+    let missing: Vec<&str> = run
+        .steps
+        .iter()
+        .map(|step| step.step_id.as_str())
+        .filter(|id| !template.steps.iter().any(|step| step.id == *id))
+        .collect();
+    if !missing.is_empty() {
+        return Some(format!(
+            "this run recorded step(s) {} which {} version {} no longer has — the procedure on \
+             record and the one in the database disagree, so nothing can be resumed against it",
+            missing.join(", "),
+            template.id,
+            template.version
+        ));
+    }
+    None
+}
+
+/// What the credential step registered, read back off a stored run
+/// (`features/step-fido2-credentials.md` phase 4).
+///
+/// Every field is public by construction: a credential id is what the relying
+/// party keeps in its own database, and the private key never leaves the
+/// authenticator. So this is evidence that can be exported, compared against the
+/// relying party's records, and kept for as long as the register is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialEvidence {
+    pub credential_id_hex: String,
+    pub relying_party: String,
+    pub algorithm: String,
+    pub user_name: String,
+}
+
+/// The credentials a run registered, in the order the steps ran.
+///
+/// Read out of the step details rather than from a column of their own, which is
+/// how this run record carries every other piece of evidence — the CSR, the
+/// attestation. The alternative was a schema change per kind of evidence, and the
+/// evidence is not what the register is indexed by.
+pub fn credential_evidence(run: &BootstrapRun) -> Vec<CredentialEvidence> {
+    run.steps
+        .iter()
+        .filter(|step| step.kind == StepKind::Fido2Credential)
+        .filter_map(|step| {
+            let field = |name: &str| {
+                step.detail
+                    .split_whitespace()
+                    .find_map(|token| token.strip_prefix(&format!("{name}=")))
+                    .map(str::to_owned)
+            };
+            Some(CredentialEvidence {
+                credential_id_hex: field("credential_id")?,
+                relying_party: field("rp_id")?,
+                algorithm: field("algorithm").unwrap_or_default(),
+                user_name: field("user_name").unwrap_or_default(),
+            })
+        })
+        .collect()
 }
 
 /// The PEM marker a certification request opens with.

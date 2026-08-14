@@ -19,7 +19,7 @@ use yk_dist_manager::device::DeviceInfo;
 use yk_dist_manager::device::write::{Fido2State, MockWriter, OtpState, PivState};
 use yk_dist_manager::domain::{BootstrapRun, StepStatus, YubiKeyRecord};
 use yk_dist_manager::template::plan::{PlannedCommand, plan};
-use yk_dist_manager::template::{BootstrapTemplate, RenderContext};
+use yk_dist_manager::template::{Applicability, BootstrapTemplate, RenderContext};
 
 const SERIAL: u32 = 20_423_633;
 
@@ -90,6 +90,7 @@ fn preflight(applets: &AppletSnapshot) -> Vec<yk_dist_manager::bootstrap::Findin
         key: Some(&key),
         applets,
         can_write: true,
+        applicability: &Applicability::default(),
     }
     .run()
 }
@@ -101,8 +102,9 @@ fn scenario_a_key_that_has_already_been_bootstrapped_is_refused_with_the_way_for
     let applets = AppletSnapshot {
         piv: Some(PivState {
             occupied_slots: vec!["9c".into()],
-            pin_changed_from_default: true,
-            management_key_changed: true,
+            pin_is_default: Some(false),
+            management_key_is_default: Some(false),
+            puk_is_default: Some(false),
             pin_retries: Some(3),
         }),
         fido2: Some(Fido2State {
@@ -110,6 +112,7 @@ fn scenario_a_key_that_has_already_been_bootstrapped_is_refused_with_the_way_for
             ..Fido2State::default()
         }),
         otp: Some(OtpState::default()),
+        management: None,
         unread: Vec::new(),
     };
 
@@ -150,6 +153,7 @@ fn scenario_a_factory_fresh_key_is_not_refused() {
         piv: Some(PivState::default()),
         fido2: Some(Fido2State::default()),
         otp: Some(OtpState::default()),
+        management: None,
         unread: Vec::new(),
     };
     let findings = preflight(&applets);
@@ -178,6 +182,7 @@ fn scenario_a_key_carrying_only_its_factory_attestation_certificate_is_not_refus
         }),
         fido2: Some(Fido2State::default()),
         otp: Some(OtpState::default()),
+        management: None,
         unread: Vec::new(),
     };
 
@@ -220,6 +225,7 @@ fn scenario_a_key_whose_enabled_applications_were_never_read_still_runs_every_st
         key: Some(&key),
         applets: &applets,
         can_write: true,
+        applicability: &Applicability::default(),
     }
     .run();
 
@@ -369,8 +375,9 @@ fn scenario_the_read_never_reports_a_secret() {
     let applets = AppletSnapshot {
         piv: Some(PivState {
             occupied_slots: vec!["9a".into(), "9c".into()],
-            management_key_changed: true,
-            pin_changed_from_default: true,
+            management_key_is_default: Some(false),
+            pin_is_default: Some(false),
+            puk_is_default: Some(false),
             pin_retries: Some(1),
         }),
         fido2: Some(Fido2State {
@@ -378,12 +385,14 @@ fn scenario_the_read_never_reports_a_secret() {
             min_pin_length: Some(8),
             force_pin_change_set: true,
             resident_credentials: 1,
+            ..Default::default()
         }),
         otp: Some(OtpState {
             slot_one_programmed: true,
             slot_two_programmed: false,
             access_code_set: false,
         }),
+        management: None,
         unread: Vec::new(),
     };
     let described = applets.describe().join(" | ");

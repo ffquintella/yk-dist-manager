@@ -225,18 +225,42 @@ impl PivWriter for NativeBackend {
             Err(unavailable("piv.import_certificate", "native-piv"))
         }
     }
+
+    fn read_certificate(&mut self, serial: u32, slot: &str) -> Result<Option<String>> {
+        #[cfg(feature = "native-piv")]
+        return self.piv.read_certificate(serial, slot);
+        #[cfg(not(feature = "native-piv"))]
+        {
+            let _ = (serial, slot);
+            Err(unavailable("piv.read_certificate", "native-piv"))
+        }
+    }
 }
 
-/// OTP has no transport yet — `features/bootstrap-engine.md` phase 7. Every
-/// method answers with the feature that would provide it, so the plan the
-/// operator sees and the failure they get say the same thing.
+/// OTP goes through **`ykman`**, and is the one applet that does.
+///
+/// Not an oversight and not laziness: no crate in this dependency graph exposes
+/// the Yubico OTP configuration frame, so the native path means hand-rolling the
+/// protocol — and `features/step-otp-access-code.md` phase 4 keeps that
+/// deliberately unwritten until there is a key to verify it against, because the
+/// failure mode of a wrong frame is a slot write-protected by a code nobody holds.
+///
+/// So this routes to the subprocess, which is what
+/// `features/step-otp-access-code.md` phase 2 asks for, and it is honest on screen:
+/// the planner marks the OTP steps' native op as unavailable, so the plan the
+/// operator confirms already reads `ykman (fallback)` against them.
 impl OtpWriter for NativeBackend {
-    fn otp_state(&mut self, _serial: u32) -> Result<OtpState> {
-        Err(unavailable("otp.state", "native-otp"))
+    fn otp_state(&mut self, serial: u32) -> Result<OtpState> {
+        super::ykman::otp_state(&super::YkmanBackend::default(), serial).map_err(|e| {
+            WriteError::Failed {
+                operation: "otp.state",
+                reason: e.to_string(),
+            }
+        })
     }
 
-    fn set_access_code(&mut self, _serial: u32, _slot: u8, _code: &Secret) -> Result<()> {
-        Err(unavailable("otp.set_access_code", "native-otp"))
+    fn set_access_code(&mut self, serial: u32, slot: u8, code: &Secret) -> Result<()> {
+        super::ykman::set_otp_access_code(&super::YkmanBackend::default(), serial, slot, code)
     }
 
     fn program_slot(
@@ -246,6 +270,12 @@ impl OtpWriter for NativeBackend {
         _configuration: &str,
         _access_code: Option<&Secret>,
     ) -> Result<()> {
+        // Optional slot programming is `features/step-otp-access-code.md` phase 5,
+        // and it is a *different* operation from protecting a slot: it writes a
+        // credential, which needs the deployment to have decided what the slot is
+        // for (challenge-response for a local unlock, a static password, a Yubico
+        // OTP registered with somebody). Nobody has, so this stays unimplemented
+        // rather than guessing at a configuration to put on a key.
         Err(unavailable("otp.program_slot", "native-otp"))
     }
 }
@@ -259,9 +289,13 @@ mod tests {
     fn a_transport_this_build_lacks_names_the_feature_that_would_provide_it() {
         // The message is what the pre-flight turns into "this step will skip",
         // so it has to say what is missing rather than that something failed.
+        //
+        // Slot *programming* is the one that is still unimplemented — protecting a
+        // slot goes through `ykman` since `step-otp-access-code.md` phase 2.
         let mut backend = NativeBackend::for_key(20_423_633);
-        let code = Secret::generate(SecretKind::OtpAccessCode, 0).unwrap();
-        let error = backend.set_access_code(20_423_633, 1, &code).unwrap_err();
+        let error = backend
+            .program_slot(20_423_633, 2, "challenge-response", None)
+            .unwrap_err();
         assert!(
             matches!(
                 error,
@@ -273,6 +307,44 @@ mod tests {
             "got {error:?}"
         );
         assert!(error.detail().contains("native-otp"), "{}", error.detail());
+    }
+
+    #[test]
+    fn an_access_code_of_the_wrong_length_is_refused_before_any_subprocess_starts() {
+        // The check is on the length, which is the one thing about this value that
+        // can be checked without looking at it — and it has to happen here, because
+        // `ykman`'s own refusal would arrive as a parse error about a value this
+        // code must never print.
+        let short = Secret::generate(SecretKind::Fido2Pin, 6).unwrap();
+        let error = super::super::ykman::set_otp_access_code(
+            &super::super::YkmanBackend::default(),
+            1,
+            1,
+            &short,
+        )
+        .unwrap_err();
+        assert!(error.detail().contains("six bytes"), "{}", error.detail());
+        assert!(
+            !error.detail().contains(short.expose()),
+            "the refusal must not carry the value"
+        );
+    }
+
+    #[test]
+    fn a_slot_a_yubikey_does_not_have_is_refused_rather_than_attempted() {
+        let code = Secret::generate(SecretKind::OtpAccessCode, 0).unwrap();
+        let error = super::super::ykman::set_otp_access_code(
+            &super::super::YkmanBackend::default(),
+            1,
+            3,
+            &code,
+        )
+        .unwrap_err();
+        assert!(
+            error.detail().contains("slots 1 and 2"),
+            "{}",
+            error.detail()
+        );
     }
 
     #[test]

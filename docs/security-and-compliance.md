@@ -56,6 +56,18 @@ a panic message.
   them into a template.
 - Command construction uses argv vectors, never a shell string; the native transport passes
   secrets as function parameters instead of command-line arguments.
+- **The one secret that has to reach a subprocess goes down its standard input.** The OTP
+  access code is written by `ykman otp settings --new-access-code -`, and the `-` is what
+  makes that acceptable: it means *prompt*, and a prompt reads stdin. An argument vector is
+  readable by every process on the workstation, which is the same reasoning that made the
+  SMB backends native APIs rather than `net use`. `ykman::run_with_stdin` logs the
+  **arguments** and never the input, and the arguments hold no secret by construction. The
+  value goes in twice because that prompt confirms — read out of `ykman`'s own source, not
+  guessed, since a prompt left waiting would hang a run in front of an operator.
+- **Custody of the OTP access code is recorded, never the value** (`secret.custody`: the
+  step, the slot, `custody=sealed-envelope`, `retained=no`). Under the model the owner
+  confirmed on 2026-08-11 the code travels to the holder on the sealed slip, which is what
+  keeps a protected slot reprogrammable later without an applet reset.
 - **A share password is the one secret this tool does handle, and it is handled as a
   transient.** `store::smb::Secret` keeps it as bytes, zeroes them on drop, prints
   `Secret(********)` from `Debug` — so no `{:?}`, no `tracing` field and no panic message can

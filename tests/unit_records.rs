@@ -121,6 +121,7 @@ fn variant_template() -> BootstrapTemplate {
             .with_param("algorithm", "tdes")
             .with_param("protect", "false"),
         ],
+        applicability: Default::default(),
         signature: None,
     }
 }

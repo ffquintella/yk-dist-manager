@@ -70,6 +70,81 @@ impl YkmanBackend {
 
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
+
+    /// Run `ykman` with a secret written to the child's **standard input**.
+    ///
+    /// The whole reason this exists rather than an extra argument: an argument
+    /// vector is readable by every process on the workstation (`ps`, `/proc`), so a
+    /// six-byte access code on a command line is a secret in a place it can be
+    /// read from — which `AGENTS.md` §2 forbids. `ykman` offers `-` on the options
+    /// that take a code, meaning "prompt for it", and a prompt reads stdin.
+    ///
+    /// `lines` is written verbatim and **never logged**: `rendered` below is built
+    /// from the arguments alone, which by construction hold no secret. The caller
+    /// supplies as many lines as the prompt asks for — some of `ykman`'s prompts
+    /// confirm, and want the value twice.
+    fn run_with_stdin(&self, args: &[&str], lines: &[&str]) -> Result<String> {
+        use std::io::Write as _;
+        use std::process::Stdio;
+
+        let rendered = format!("{} {}", self.binary.display(), args.join(" "));
+        let mut child = Command::new(&self.binary)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    DeviceError::ToolMissing {
+                        binary: self.binary.display().to_string(),
+                    }
+                } else {
+                    DeviceError::Command {
+                        command: rendered.clone(),
+                        message: e.to_string(),
+                    }
+                }
+            })?;
+
+        {
+            // Dropped at the end of this block, which closes the pipe — a prompt
+            // waiting on more input would otherwise hang the run in front of an
+            // operator with no way to see why.
+            let mut stdin = child.stdin.take().ok_or_else(|| DeviceError::Command {
+                command: rendered.clone(),
+                message: "the subprocess offered no standard input to write the code to".into(),
+            })?;
+            for line in lines {
+                stdin
+                    .write_all(line.as_bytes())
+                    .and_then(|()| stdin.write_all(b"\n"))
+                    .map_err(|e| DeviceError::Command {
+                        command: rendered.clone(),
+                        // `e` is an I/O error about a pipe and carries no value.
+                        message: format!("the code could not be handed to the subprocess: {e}"),
+                    })?;
+            }
+        }
+
+        let output = child.wait_with_output().map_err(|e| DeviceError::Command {
+            command: rendered.clone(),
+            message: e.to_string(),
+        })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            return Err(DeviceError::Command {
+                command: rendered,
+                message: if stderr.is_empty() {
+                    format!("exit status {}", output.status)
+                } else {
+                    stderr
+                },
+            });
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
 }
 
 impl YubiKeyBackend for YkmanBackend {
@@ -161,6 +236,111 @@ pub fn parse_otp_info(stdout: &str) -> Result<crate::device::write::OtpState> {
         });
     }
     Ok(state)
+}
+
+/// An OTP slot access code is six bytes, written as twelve hex characters — which
+/// is both what the applet stores and what `ykman` parses.
+const OTP_ACCESS_CODE_HEX: usize = 12;
+
+/// Write-protect an OTP slot with an access code, through
+/// `ykman otp settings --new-access-code -` (`features/step-otp-access-code.md`
+/// phase 2).
+///
+/// **A labelled fallback, and the only implementation there is.** The native path
+/// is the OTP HID configuration frame, which no crate in this graph exposes; phase
+/// 4 keeps it deliberately unwritten until there is a key to verify it against,
+/// because the failure mode of a wrong frame is a slot write-protected by a code
+/// nobody holds. The plan already shows this step as `ykman (fallback)`, so what
+/// the operator agreed to and what runs are the same thing.
+///
+/// Three facts about the command, each read out of `ykman` 5.9.2's own source
+/// rather than guessed, because each one changes whether this works at all:
+///
+/// * `--new-access-code -` prompts **with confirmation**, so the code is written to
+///   stdin twice. One line would leave the prompt waiting.
+/// * `settings` refuses an **empty** slot — "Not possible to update settings on an
+///   empty slot". An access code protects a configuration; there is nothing to
+///   protect on a slot that holds none. The step checks that first, so an operator
+///   gets a sentence rather than a subprocess error.
+/// * `--force` skips the interactive "all existing settings will be overwritten"
+///   confirmation. That overwrite is real and is why the step's preview says so:
+///   this command rewrites the slot's other settings to their defaults.
+///
+/// **Not hardware-verified.** The invocation is derived from `ykman`'s source; no
+/// key was attached when it was written.
+pub fn set_otp_access_code(
+    backend: &YkmanBackend,
+    serial: u32,
+    slot: u8,
+    code: &crate::secret::Secret,
+) -> crate::device::write::Result<()> {
+    use crate::device::write::WriteError;
+    const OP: &str = "otp.set_access_code";
+
+    if !matches!(slot, 1 | 2) {
+        return Err(WriteError::Unsupported {
+            operation: OP,
+            reason: format!("a YubiKey has OTP slots 1 and 2, and this template asked for {slot}"),
+        });
+    }
+    // Checked here rather than left to `ykman`: its refusal names a parse failure,
+    // and the length is the one thing about this value that can be checked without
+    // ever looking at it.
+    if code.len() != OTP_ACCESS_CODE_HEX {
+        return Err(WriteError::Failed {
+            operation: OP,
+            reason: format!(
+                "an OTP access code is exactly {OTP_ACCESS_CODE_HEX} hex characters (six bytes) \
+                 and this one is {} — nothing was sent to the key",
+                code.len()
+            ),
+        });
+    }
+
+    let serial = serial.to_string();
+    let slot = slot.to_string();
+    backend
+        .run_with_stdin(
+            &[
+                "--device",
+                &serial,
+                "otp",
+                "settings",
+                &slot,
+                "--force",
+                "--new-access-code",
+                "-",
+            ],
+            // Twice: the prompt confirms.
+            &[code.expose(), code.expose()],
+        )
+        .map(|_| ())
+        .map_err(|e| translate(OP, e))
+}
+
+/// Turn a subprocess failure into the typed error the executor branches on.
+///
+/// The distinctions that matter are the ones the executor acts on differently: a
+/// key that is not there stops the run, an unsupported operation is a skip, and
+/// everything else is a failure of this step. `ykman`'s own message is kept
+/// because it is what an operator will search for.
+fn translate(operation: &'static str, error: DeviceError) -> crate::device::write::WriteError {
+    use crate::device::write::WriteError;
+    match error {
+        DeviceError::NoDevice => WriteError::Detached { operation },
+        // `feature` names a build feature everywhere else, and no feature installs
+        // `ykman` — so the honest answer names the tool instead. The same variant,
+        // because the caller's handling is identical: this workstation cannot
+        // perform the operation.
+        DeviceError::ToolMissing { .. } => WriteError::TransportUnavailable {
+            operation,
+            feature: "ykman on PATH",
+        },
+        other => WriteError::Failed {
+            operation,
+            reason: other.to_string(),
+        },
+    }
 }
 
 /// Return the FIDO2 applet to factory default, through `ykman fido reset`.

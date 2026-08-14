@@ -552,6 +552,14 @@ pub struct DistForm {
     pub receipt_ref: String,
     pub notes: String,
     pub link_last_run: bool,
+    /// The run this hand-over is attached to, when the operator arrived from the
+    /// post-run summary (`features/gui-bootstrap-wizard.md` phase 6).
+    ///
+    /// Set explicitly rather than left to `link_last_run`'s "the newest run on this
+    /// serial", because the two differ exactly where it matters: a key that was
+    /// reset and bootstrapped again has more than one run, and *this* hand-over is
+    /// for the one the operator was just looking at.
+    pub run_id: Option<uuid::Uuid>,
     pub error: Option<String>,
 }
 
@@ -564,6 +572,7 @@ impl Default for DistForm {
             receipt_ref: String::new(),
             notes: String::new(),
             link_last_run: true,
+            run_id: None,
             error: None,
         }
     }
@@ -705,6 +714,15 @@ pub struct Wizard {
     /// What was read out of that certificate, so the operator sees whose it is
     /// before it reaches the key.
     pub certificate_preview: Option<Result<crate::device::certificate::Summary, String>>,
+    /// The exact template version a **resumed** run used, pinned.
+    ///
+    /// `template_index` indexes `YkDistApp::templates`, which is the newest version
+    /// of each id — what a *new* run may be started from. A run being finished days
+    /// later may have applied a version that has since been superseded, and that
+    /// version is not in that list at all, so the wizard's own selector cannot
+    /// express it. Pinning is how (`features/gui-bootstrap-wizard.md` phase 5);
+    /// cleared when the wizard is reset, so it cannot leak into the next run.
+    pub pinned_template: Option<BootstrapTemplate>,
     /// The PIV PIN, typed for a resume only.
     ///
     /// A `String` in the wizard and a [`crate::secret::Secret`] the moment it is
@@ -800,6 +818,19 @@ pub struct YkDistApp {
     pub distributions: Vec<DistributionRecord>,
     pub runs: Vec<BootstrapRun>,
     pub audit_view: Vec<AuditEntry>,
+    /// Applet reads made this session, by serial.
+    ///
+    /// A cache with one rule: a serial that is **not** in here has not been read,
+    /// and no screen may say anything about its applets. That is what lets the
+    /// Inventory badge a key still on its factory defaults
+    /// (`features/step-piv-pin-puk-management-key.md` phase 6) without ever
+    /// accusing a key nobody looked at — the same distinction every reader in
+    /// `device::applets` turns on.
+    ///
+    /// Not persisted. It is a read of hardware at a moment, and a stale one on the
+    /// register would be worse than none: the key it describes may be in somebody
+    /// else's hand by then.
+    pub applet_reads: std::collections::HashMap<u32, crate::device::applets::Snapshot>,
     /// What the wizard may offer: the newest version of each template in use.
     pub templates: Vec<BootstrapTemplate>,
     /// Every template version on record, retired ones included, with its run
@@ -923,6 +954,7 @@ impl YkDistApp {
             distributions: Vec::new(),
             runs: Vec::new(),
             audit_view: Vec::new(),
+            applet_reads: std::collections::HashMap::new(),
             templates: Vec::new(),
             template_catalogue: Vec::new(),
             holder_form: HolderForm::default(),
@@ -2181,16 +2213,48 @@ impl YkDistApp {
         self.reset.typed.clear();
         self.reset.outcomes.clear();
         self.reset.error = None;
-        self.reset.observed = crate::device::applets::read(serial, &self.transport);
+        self.reset.observed = self.read_applets(serial);
+        self.status = format!("serial {serial}: nothing has been written — read the preview");
+    }
 
-        if !self.reset.observed.is_empty() {
+    /// Read one key's applets, record what was read, and remember it for the
+    /// screens.
+    ///
+    /// **A read and only a read** — `get_info`, the PIV slot list, the retry
+    /// counters, the management applet's device info, `ykman otp info`. That is what
+    /// makes it safe to call from a button the operator pressed, and `AGENTS.md`
+    /// forbids anything stronger happening as a side effect of a screen.
+    ///
+    /// One entry point rather than three, because the audit entry belongs to the
+    /// read: the reset preview and the wizard's pre-flight both used to write their
+    /// own, and a third caller would have written a fourth or forgotten.
+    pub fn read_applets(&mut self, serial: u32) -> crate::device::applets::Snapshot {
+        let snapshot = crate::device::applets::read(serial, &self.transport);
+        // Recorded because refusals downstream rest on it, and "what did the tool
+        // see" is the first question when one is disputed. States, slots and counts
+        // only — never a secret.
+        if !snapshot.is_empty() {
             self.record(
                 "device.applets.read",
                 &serial.to_string(),
-                &self.reset.observed.describe().join(" | "),
+                &snapshot.describe().join(" | "),
             );
         }
-        self.status = format!("serial {serial}: nothing has been written — read the preview");
+        self.applet_reads.insert(serial, snapshot.clone());
+        snapshot
+    }
+
+    /// The factory defaults a key is known to still carry, or `None` when its
+    /// applets have not been read this session
+    /// (`features/step-piv-pin-puk-management-key.md` phase 6).
+    ///
+    /// `None` and "no defaults" are different answers and the screen renders them
+    /// differently: a key nobody has looked at gets an invitation to look, not a
+    /// clean bill of health.
+    pub fn factory_default_badge(&self, serial: u32) -> Option<Option<String>> {
+        self.applet_reads
+            .get(&serial)
+            .map(|snapshot| snapshot.factory_default_badge())
     }
 
     /// Abandon a reset the operator asked about and then declined.
@@ -4543,7 +4607,90 @@ impl YkDistApp {
 
     /// Selected template, if any.
     pub fn selected_template(&self) -> Option<&BootstrapTemplate> {
-        self.templates.get(self.wizard.template_index)
+        // A pinned version wins: it is the one a resumed run actually applied, and
+        // it may no longer be in the list the wizard offers.
+        self.wizard
+            .pinned_template
+            .as_ref()
+            .or_else(|| self.templates.get(self.wizard.template_index))
+    }
+
+    /// Every template version on record, including superseded and retired ones.
+    ///
+    /// The wizard offers only the newest of each for a *new* run; a **resume** needs
+    /// the exact version the run recorded, whatever has happened since.
+    fn template_version(&self, id: &str, version: &str) -> Option<BootstrapTemplate> {
+        self.template_catalogue
+            .iter()
+            .map(|stored| &stored.template)
+            .find(|template| template.id == id && template.version == version)
+            .cloned()
+    }
+
+    /// Take up an unfinished run off the register and set the wizard up to finish it
+    /// (`features/gui-bootstrap-wizard.md` phase 5).
+    ///
+    /// The case this is for: the CA took three days, the register has been closed
+    /// and reopened, and the run the operator wants to finish exists only as rows in
+    /// the database. Everything the wizard needs is rebuilt from those rows — the
+    /// serial, the exact template version, and which optional steps the original run
+    /// included — so the plan the executor indexes against is the plan the run was
+    /// made from.
+    ///
+    /// It deliberately does **not** start anything. The wizard lands on the run view
+    /// with the certificate field waiting, and finishing it is still the operator
+    /// pressing the button that resumes.
+    pub fn adopt_run(&mut self, run_id: uuid::Uuid) {
+        let Some(run) = self.runs.iter().find(|run| run.id == run_id).cloned() else {
+            self.wizard.error = Some("that run is no longer on the register".into());
+            return;
+        };
+        let Some(template) = self.template_version(&run.template_id, &run.template_version) else {
+            self.wizard.error = Some(format!(
+                "this run applied {} version {}, which is not in this register — a run cannot be \
+                 resumed without the procedure it recorded",
+                run.template_id, run.template_version
+            ));
+            return;
+        };
+        if let Some(refusal) = crate::bootstrap::resume_refusal(&template, &run) {
+            self.wizard.error = Some(refusal);
+            return;
+        }
+
+        self.wizard.serial = run.key_serial.to_string();
+        self.wizard.holder_index = run
+            .holder_id
+            .and_then(|id| self.holders.iter().position(|holder| holder.id == id))
+            .unwrap_or(self.wizard.holder_index);
+        self.wizard.step_enabled = crate::bootstrap::step_selection(&template, &run);
+        self.wizard.pinned_template = Some(template);
+        self.wizard.certificate_pem.clear();
+        self.wizard.certificate_preview = None;
+        self.wizard.error = None;
+
+        self.build_plan();
+        // The plan has to line up with the run's steps or the executor would index
+        // one against the other. `step_selection` is built to make it, and this says
+        // so rather than trusting it — the failure would be silent and would write
+        // to a key.
+        if self.wizard.plan.len() != run.steps.len() {
+            self.wizard.error = Some(format!(
+                "this run recorded {} step(s) and the procedure plans {} — it cannot be resumed \
+                 safely",
+                run.steps.len(),
+                self.wizard.plan.len()
+            ));
+            self.wizard.pinned_template = None;
+            return;
+        }
+
+        self.wizard.run = Some(run);
+        self.wizard.stage = WizardStage::Running;
+        self.status = format!(
+            "picked up an unfinished run on serial {} — load the certificate and finish it",
+            self.wizard.serial
+        );
     }
 
     /// Build the (dry-run) plan for the wizard's current selection.
@@ -4916,6 +5063,62 @@ impl YkDistApp {
         self.wizard.secrets = None;
     }
 
+    /// Carry a finished run straight to a hand-over
+    /// (`features/gui-bootstrap-wizard.md` phase 6).
+    ///
+    /// The summary already shows the evidence; what was missing was the step after
+    /// it. Retyping the serial and re-picking the holder on the Distribution screen
+    /// is three chances to pick the wrong row, in the one place in this application
+    /// where the wrong row means a security token recorded against somebody who does
+    /// not have it.
+    ///
+    /// It fills the form and switches screens. It deliberately does **not** record
+    /// anything: a hand-over is a statement that a person took physical possession
+    /// of a key, and nothing the tool can see tells it that has happened.
+    pub fn attach_run_to_handover(&mut self) {
+        let Some(run) = self.wizard.run.clone() else {
+            self.wizard.error = Some("there is no finished run to attach".into());
+            return;
+        };
+        if run.status != crate::domain::RunStatus::Completed {
+            self.wizard.error = Some(format!(
+                "this run is {} — a key is handed over once its procedure has completed, so \
+                 finish it first",
+                format!("{:?}", run.status).to_lowercase()
+            ));
+            return;
+        }
+        let Some(key_index) = self
+            .keys
+            .iter()
+            .position(|key| key.serial == run.key_serial)
+        else {
+            self.wizard.error = Some(format!(
+                "serial {} is not in the inventory, so there is nothing to hand over",
+                run.key_serial
+            ));
+            return;
+        };
+
+        self.dist_form = DistForm {
+            key_index,
+            // The run knows whose key it was prepared for. Left at whatever the form
+            // happened to hold, this is precisely the field that gets mis-picked.
+            holder_index: run
+                .holder_id
+                .and_then(|id| self.holders.iter().position(|holder| holder.id == id))
+                .unwrap_or_default(),
+            run_id: Some(run.id),
+            ..DistForm::default()
+        };
+        self.tab = Tab::Distribution;
+        self.status = format!(
+            "hand-over ready for serial {}: the run that prepared it is attached — check the \
+             holder and the receipt reference before recording it",
+            run.key_serial
+        );
+    }
+
     /// Start again, leaving the recorded run on file.
     pub fn reset_wizard(&mut self) {
         self.dismiss_secrets();
@@ -4924,6 +5127,10 @@ impl YkDistApp {
         self.wizard.run = None;
         self.wizard.plan.clear();
         self.wizard.error = None;
+        // A pinned version belongs to the run that was being finished. Left in
+        // place it would silently decide the *next* run's procedure, and a
+        // superseded version is exactly the one a new run must not use.
+        self.wizard.pinned_template = None;
     }
 
     /// Run the pre-flight against the current plan and move to the confirmation.
@@ -4949,29 +5156,25 @@ impl YkDistApp {
         // info`. Nothing here writes, which is what makes it safe to run as the
         // operator moves through the wizard rather than only on a button.
         let applets = match serial {
-            Some(serial) => crate::device::applets::read(serial, &self.transport),
+            Some(serial) => self.read_applets(serial),
             None => AppletSnapshot::default(),
         };
-        // Recorded, because a refusal downstream rests on it and "what did the tool
-        // see" is the first question when one is disputed. States and slots only —
-        // never a secret, and never a PIN.
-        if let Some(serial) = serial
-            && !applets.is_empty()
-        {
-            self.record(
-                "device.applets.read",
-                &serial.to_string(),
-                &applets.describe().join(" | "),
-            );
-        }
-        // Looked up after the recording above, so the audit write does not have to
+        // Looked up after the recording inside that read, so the audit write does not have to
         // borrow around a reference into `self.keys`.
         let key = serial.and_then(|s| self.keys.iter().find(|k| k.serial == s));
+        // A template with no rule is unrestricted, which is also what an
+        // unselected one has to read as: the missing-template case is already the
+        // wizard's own error, and inventing a rule here would report it twice.
+        let applicability = self
+            .selected_template()
+            .map(|template| template.applicability.clone())
+            .unwrap_or_default();
         self.wizard.findings = Preflight {
             commands: &self.wizard.plan,
             key,
             applets: &applets,
             can_write: Self::can_write_to_a_key(),
+            applicability: &applicability,
         }
         .run();
 
@@ -5096,14 +5299,25 @@ impl YkDistApp {
             return;
         };
 
-        let run_id = if self.dist_form.link_last_run {
-            self.runs
-                .iter()
-                .find(|r| r.key_serial == key.serial)
-                .map(|r| r.id)
-        } else {
-            None
-        };
+        // An explicitly attached run wins over "the newest one on this serial": the
+        // operator came here from that run's summary, and a key bootstrapped twice
+        // has two.
+        let run_id = self
+            .dist_form
+            .run_id
+            .filter(|id| {
+                self.runs
+                    .iter()
+                    .any(|r| r.id == *id && r.key_serial == key.serial)
+            })
+            .or_else(|| {
+                self.dist_form.link_last_run.then(|| {
+                    self.runs
+                        .iter()
+                        .find(|r| r.key_serial == key.serial)
+                        .map(|r| r.id)
+                })?
+            });
 
         let record = DistributionRecord {
             id: uuid::Uuid::new_v4(),

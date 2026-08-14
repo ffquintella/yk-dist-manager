@@ -170,6 +170,20 @@ pub fn perform(
                     state.resident_credentials
                 )));
             }
+            // A key with no free discoverable slot cannot take this credential, and
+            // finding that out from the authenticator's own error leaves a key that
+            // has had a PIN set and nothing else
+            // (`features/step-fido2-credentials.md` phase 2). `None` means the
+            // firmware does not report it, which is not "full".
+            if state.remaining_credential_slots == Some(0) {
+                return Err(WriteError::Unsupported {
+                    operation: "fido2.make_credential",
+                    reason: "this key has no discoverable-credential slots left — delete a \
+                             credential it no longer needs, or reset the FIDO2 applet, before \
+                             registering another"
+                        .into(),
+                });
+            }
             let Some(index) = find(secrets, SecretKind::Fido2Pin) else {
                 return Ok(StepOutcomeKind::skip(
                     "a resident credential needs the PIN this run did not set",
@@ -187,9 +201,18 @@ pub fn perform(
             let evidence = transports
                 .backend
                 .make_credential(serial, &request, &secrets[index])?;
+            // Written in `name=value` form rather than prose, so
+            // `bootstrap::credential_evidence` can read it back off the register
+            // years later (`features/step-fido2-credentials.md` phase 4). All three
+            // are public: a credential id is what a relying party stores in its own
+            // database, and the private key never left the device.
             Ok(StepOutcomeKind::applied(format!(
-                "[native] resident credential {} created for {}",
-                evidence.credential_id_hex, evidence.relying_party
+                "[native] resident credential registered — credential_id={} rp_id={} \
+                 algorithm={} user_name={}",
+                evidence.credential_id_hex,
+                evidence.relying_party,
+                evidence.algorithm,
+                request.user_name
             )))
         }
 
@@ -201,12 +224,49 @@ pub fn perform(
                 ));
             }
             let slot = number(params, "slot").unwrap_or(2) as u8;
+
+            // An access code protects a **configuration**, and there is nothing to
+            // protect on an empty slot — `ykman otp settings` refuses one outright.
+            // Checked here so the operator gets a sentence about their key instead
+            // of a subprocess error about a command they never typed.
+            let programmed = match slot {
+                1 => state.slot_one_programmed,
+                _ => state.slot_two_programmed,
+            };
+            if !programmed {
+                return Ok(StepOutcomeKind::skip(format!(
+                    "OTP slot {slot} holds no configuration, and an access code write-protects a \
+                     configuration rather than an empty slot — program the slot first, or drop \
+                     this step from the template"
+                )));
+            }
+
             let index = ensure(secrets, SecretKind::OtpAccessCode, 0, recorder, &step.id)?;
             transports
                 .backend
                 .set_access_code(serial, slot, &secrets[index])?;
+
+            // Custody of the code is *recorded*, never the value
+            // (`features/step-otp-access-code.md` phase 7). Under model B the code
+            // travels to the holder on the sealed slip — the decision of
+            // 2026-08-11, which reversed generate-and-discard precisely so a
+            // protected slot can be reprogrammed later without an applet reset.
+            recorder
+                .audit(
+                    "secret.custody",
+                    &format!("serial:{serial}"),
+                    &format!(
+                        "step={} kind=otp-access-code slot={slot} custody=sealed-envelope \
+                         retained=no",
+                        step.id
+                    ),
+                )
+                .ok();
+
             Ok(StepOutcomeKind::applied(format!(
-                "[native] OTP slot {slot} write-protected"
+                "[ykman] OTP slot {slot} write-protected by a 6-byte access code — the slot's \
+                 other settings were rewritten to their defaults, and while a slot is protected \
+                 this key's USB interfaces cannot be mode-switched"
             )))
         }
 
@@ -235,7 +295,7 @@ pub fn perform(
 
         StepKind::PivPinPuk => {
             let state = transports.backend.piv_state(serial)?;
-            if state.pin_changed_from_default {
+            if state.pin_changed_from_default() {
                 return Ok(StepOutcomeKind::already(
                     "the PIV PIN is no longer the factory default; it was left alone",
                 ));
@@ -264,7 +324,7 @@ pub fn perform(
 
         StepKind::PivManagementKey => {
             let state = transports.backend.piv_state(serial)?;
-            if state.management_key_changed {
+            if state.management_key_changed() {
                 return Ok(StepOutcomeKind::already(
                     "the PIV management key is already not the default",
                 ));
@@ -437,18 +497,90 @@ pub fn perform(
                 Ok(pem) => format!("attested_{slot}=yes ({} bytes)", pem.len()),
                 Err(e) => format!("attested_{slot}=no ({e})"),
             };
+
+            // The **read-back**, which is what makes this step a verification
+            // rather than a summary (`features/step-piv-signing-certificate.md`
+            // phase 7). Everything above is applet state; this is the certificate
+            // the holder will actually sign with, read off the card and checked
+            // against what this run asked for.
+            //
+            // A slot with no certificate is not a failure: it is the shape of a run
+            // whose certificate has not come back from the CA yet, and the
+            // import step has already reported that as the thing to do next.
+            let certificate = match transports.backend.read_certificate(serial, &slot) {
+                Ok(Some(pem)) => match crate::device::certificate::der_from_pem(&pem)
+                    .ok_or(())
+                    .and_then(|der| {
+                        crate::device::certificate::summarise(&der, "piv.read_certificate")
+                            .map_err(|_| ())
+                    }) {
+                    Ok(summary) => {
+                        let checks = crate::device::certificate::verify_read_back(
+                            &summary,
+                            ctx.certificate_subject,
+                            ctx.certificate_email,
+                        );
+                        let failed: Vec<&str> = checks
+                            .iter()
+                            .filter(|check| check.passed == Some(false))
+                            .map(|check| check.name)
+                            .collect();
+                        let fields: Vec<String> =
+                            checks.iter().map(|check| check.to_field()).collect();
+
+                        // A certificate that fails a check **fails the step**. This
+                        // is the one step whose entire purpose is to catch that, and
+                        // a verification that reported a mismatch as a success would
+                        // be worse than no verification: the register would carry
+                        // the word "verified" against a key that cannot sign for its
+                        // holder.
+                        if !failed.is_empty() {
+                            let detail = checks
+                                .iter()
+                                .filter(|check| check.passed == Some(false))
+                                .map(|check| format!("{}: {}", check.name, check.detail))
+                                .collect::<Vec<_>>()
+                                .join("; ");
+                            return Err(WriteError::Failed {
+                                operation: "piv.verify",
+                                reason: format!(
+                                    "the certificate in slot {slot} does not match what this run \
+                                     asked for — {detail}"
+                                ),
+                            });
+                        }
+                        format!("cert_{slot}=[{}]", fields.join(" "))
+                    }
+                    Err(()) => format!(
+                        "cert_{slot}=unreadable (the slot holds something that is not an X.509 \
+                         certificate)"
+                    ),
+                },
+                Ok(None) => format!("cert_{slot}=absent"),
+                Err(e) => format!("cert_{slot}=unread ({e})"),
+            };
+            let attested = format!("{attested} {certificate}");
+
+            // Both retry counters are read back, which is the *after* half of
+            // `features/step-fido2-pin.md` phase 8: a run that set a PIN should
+            // leave the counter at its full value, and one that does not is worth
+            // seeing on the record rather than discovering when the holder is
+            // locked out.
+            let retries = |left: Option<u8>| match left {
+                Some(n) => n.to_string(),
+                None => "unread".to_owned(),
+            };
             Ok(StepOutcomeKind::applied(format!(
                 "[native] read back: fido2_pin={} force_change={} credentials={} \
-                 piv_slots=[{}] mgmt_key_changed={} piv_pin_retries={} otp_access_code={} {attested}",
+                 fido2_pin_retries={} piv_slots=[{}] mgmt_key_changed={} piv_pin_retries={} \
+                 otp_access_code={} {attested}",
                 fido2.pin_set,
                 fido2.force_pin_change_set,
                 fido2.resident_credentials,
+                retries(fido2.pin_retries),
                 piv.occupied_slots.join(","),
-                piv.management_key_changed,
-                match piv.pin_retries {
-                    Some(left) => left.to_string(),
-                    None => "unread".to_owned(),
-                },
+                piv.management_key_changed(),
+                retries(piv.pin_retries),
                 otp.access_code_set
             )))
         }

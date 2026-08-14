@@ -280,14 +280,14 @@ fn observed_state(applet: Applet, observed: &AppletStates) -> Vec<String> {
                         slots.join(", ")
                     ));
                 }
-                if state.management_key_changed {
+                if state.management_key_changed() {
                     lines.push(
                         "the management key is not the factory default — this key is under \
                          somebody's management, which may not be this unit's"
                             .to_owned(),
                     );
                 }
-                if state.pin_changed_from_default {
+                if state.pin_changed_from_default() {
                     lines.push("the PIN is not the factory default".to_owned());
                 }
             }
@@ -941,8 +941,9 @@ mod tests {
         let observed = AppletStates {
             piv: Some(PivState {
                 occupied_slots: vec!["9c".into()],
-                management_key_changed: true,
-                pin_changed_from_default: true,
+                management_key_is_default: Some(false),
+                pin_is_default: Some(false),
+                puk_is_default: Some(false),
                 pin_retries: Some(3),
             }),
             fido2: Some(Fido2State {
@@ -950,6 +951,7 @@ mod tests {
                 ..Fido2State::default()
             }),
             otp: Some(OtpState::default()),
+            management: None,
             unread: Vec::new(),
         };
         let items = plan(&Applet::ALL, &observed, &choice(Transport::Native));
@@ -980,6 +982,7 @@ mod tests {
             }),
             fido2: Some(Fido2State::default()),
             otp: Some(OtpState::default()),
+            management: None,
             unread: Vec::new(),
         };
         let items = plan(&[Applet::Piv], &observed, &choice(Transport::Native));

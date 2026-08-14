@@ -151,7 +151,7 @@ key and recorded in the phase notes.
 | 4 | Secret input: prompt, generate, show-once, zeroise | 1 | **Done** | [`src/secret.rs`](../src/secret.rs) — `features/secrets-custody.md` phase 3 |
 | 5 | FIDO2 steps live | 1 | **Done** | `device::native_fido`; every operation hardware-verified on a 5.7.4 key, including `make_credential`. See `features/step-fido2-pin.md` |
 | 6 | PIV steps live | 1 | **Built** (not hardware-verified) | PIN/PUK, management key, keygen and **the CSR** all reach the card behind `native-piv`. The CSR was the last gap: [`device::csr`](../src/device/csr.rs) assembles PKCS#10 with the `rfc822Name` SAN and signs it *through* the slot — pure assembly, injected signature, checked by `openssl` in `tests/interop_csr_san.rs`. The **certificate import** now has something to import: the operator brings the certificate (2026-08-13), and the step checks it against the slot's key and the holder's address before writing. **No key was attached when this was written**, so no write path is hardware-verified |
-| 7 | OTP step live | 1 | Todo — **blocked on hardware** | The *read* landed via `ykman otp info` (`device-detection.md` phase 4). The **writes** need the OTP HID configuration frame, which no crate in this graph exposes, so it has to be hand-rolled; `native-device-transport.md` phase 4 requires the read path verified against a real key first. Not attempted without one: the failure mode is a slot write-protected by an access code nobody holds |
+| 7 | OTP step live | 1 | **Partly done** (not hardware-verified) | The *read* landed via `ykman otp info` (`device-detection.md` phase 4), and the **access-code write** now goes through the same labelled fallback — `otp settings --new-access-code -`, code on stdin (`step-otp-access-code.md` phase 2). What is still blocked on hardware is the **native** frame (`native-device-transport.md` phase 4): no crate exposes the OTP HID configuration frame, so it has to be hand-rolled, and the failure mode of a wrong one is a slot write-protected by a code nobody holds. Slot *programming* stays unimplemented for a different reason — nobody has decided what the slot is for (phase 5) |
 | 8 | Verification step reading the key back | 1 | **Done** | reads all three applets and stores the end state as the step's detail |
 | 9 | Resume an interrupted run | 1 | **Done** | `Executor::resume` continues from the first non-`Done` step |
 | 10 | Idempotency detection ("already applied") | 1 | **Done** | every step reads its applet's state first and skips rather than overwriting |
@@ -165,6 +165,7 @@ key and recorded in the phase notes.
 | `bootstrap.step.done` | A step succeeded (step id, kind) |
 | `bootstrap.step.failed` | A step failed (step id, reason — no secret) |
 | `bootstrap.step.skipped` | A step was skipped, with why (unsupported firmware, deselected, already applied) |
+| `bootstrap.step.retried` | A step was attempted again after a **transport-level** failure: `step`, `kind`, `attempt=n/budget` and the reason. Not written for a rejected secret, which is never retried (`features/bootstrap-templates.md` phase 7) |
 | `bootstrap.finished` | Run settled, with the final status and the tally |
 | `bootstrap.aborted` | A required step failed, or the operator stopped the run |
 | `bootstrap.resumed` | An interrupted run was continued, naming the step it resumed from |

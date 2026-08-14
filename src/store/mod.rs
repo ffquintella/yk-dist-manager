@@ -413,7 +413,10 @@ pub enum TemplateImport {
     /// Stored under a version this database assigned. `previous` is the newest
     /// version of that id before the import, or `None` for a new template.
     Stored {
-        template: BootstrapTemplate,
+        /// Boxed because it is much the larger of the two variants — a whole
+        /// procedure against a version string — and every caller matches on the
+        /// enum by reference anyway.
+        template: Box<BootstrapTemplate>,
         previous: Option<String>,
     },
     /// A version of this id already describes exactly this procedure, with the
@@ -1871,7 +1874,7 @@ impl Store {
         let stored = incoming.as_version(&crate::versioning::next_version(&existing));
         self.upsert_template(&stored)?;
         Ok(TemplateImport::Stored {
-            template: stored,
+            template: Box::new(stored),
             previous,
         })
     }

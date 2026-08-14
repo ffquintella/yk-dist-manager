@@ -52,6 +52,15 @@ pub struct Summary {
     /// Plural because a certificate may carry more than one, and the check is
     /// "is the holder's address among them", not "is it the only one".
     pub email_sans: Vec<String>,
+    /// The key usages asserted, in the X.509 names
+    /// (`digitalSignature`, `nonRepudiation`, …).
+    ///
+    /// Empty means the extension is absent, which is not the same as "none": a
+    /// certificate with no key-usage extension is unconstrained. See
+    /// [`Summary::signing_verdict`], which says so rather than guessing.
+    pub key_usages: Vec<String>,
+    /// Extended key usages, as dotted OIDs with the well-known ones named.
+    pub extended_key_usages: Vec<String>,
 }
 
 impl Summary {
@@ -72,15 +81,238 @@ impl Summary {
     /// One line for a step's detail or a status bar.
     pub fn one_line(&self) -> String {
         format!(
-            "subject={} issuer={} serial={} valid={}..{} rfc822Name=[{}]",
+            "subject={} issuer={} serial={} valid={}..{} rfc822Name=[{}] key_usage=[{}] eku=[{}]",
             self.subject,
             self.issuer,
             self.serial,
             self.not_before,
             self.not_after,
-            self.email_sans.join(",")
+            self.email_sans.join(","),
+            self.key_usages.join(","),
+            self.extended_key_usages.join(","),
         )
     }
+
+    /// Can this certificate be used for the thing slot 9c exists for — signing on
+    /// the holder's behalf (`features/ca-integration.md` phase 2, check 4)?
+    ///
+    /// Three answers, not two, and the third is the one that matters. A CA that
+    /// issued an *encryption* certificate against a signing request produces a
+    /// certificate that imports cleanly and then fails every signature — the same
+    /// class of failure as a mismatched public key, which is why it is checked
+    /// before the write. But a certificate carrying **no** key-usage extension is
+    /// unconstrained rather than wrong, and refusing it would refuse a perfectly
+    /// usable certificate from a minimal internal CA.
+    pub fn signing_verdict(&self) -> Fitness {
+        if self.key_usages.is_empty() && self.extended_key_usages.is_empty() {
+            return Fitness::NotStated;
+        }
+        // `digitalSignature` is the usage a signature needs; `nonRepudiation`
+        // (renamed `contentCommitment`) is the stronger form a consignment context
+        // may ask for, and either one permits signing.
+        let signs = self
+            .key_usages
+            .iter()
+            .any(|usage| usage == "digitalSignature" || usage == "nonRepudiation");
+        // An EKU that names nothing relevant is a positive statement that this
+        // certificate is for something else.
+        let purpose = self.extended_key_usages.is_empty()
+            || self.extended_key_usages.iter().any(|eku| {
+                matches!(
+                    eku.as_str(),
+                    "clientAuth" | "emailProtection" | "codeSigning" | "anyExtendedKeyUsage"
+                )
+            });
+
+        if self.key_usages.is_empty() {
+            // EKU only: judge on that alone rather than demanding a KU the CA did
+            // not assert.
+            return if purpose {
+                Fitness::Fit
+            } else {
+                Fitness::Unfit
+            };
+        }
+        if signs && purpose {
+            Fitness::Fit
+        } else {
+            Fitness::Unfit
+        }
+    }
+}
+
+/// Whether a certificate is fit for the purpose the slot is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fitness {
+    /// It says it can be used for this.
+    Fit,
+    /// It says it cannot — an encryption-only or server certificate in a signing
+    /// slot.
+    Unfit,
+    /// It carries neither extension, so it constrains nothing. Reported as its own
+    /// answer rather than folded into either: "the CA did not say" and "the CA said
+    /// yes" are different facts about a certificate somebody will sign with.
+    NotStated,
+}
+
+impl Fitness {
+    /// A word, never a colour — `features/gui-shell.md` phase 10.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Fitness::Fit => "usable for signing",
+            Fitness::Unfit => "not issued for signing",
+            Fitness::NotStated => "does not state a usage",
+        }
+    }
+}
+
+/// One thing checked about a certificate read back out of a slot.
+///
+/// `features/step-piv-signing-certificate.md` phase 7 asks for four checks and
+/// this carries them uniformly, because the interesting outcome is per check: an
+/// operator needs to see *which* of subject, address and usage disagreed, not one
+/// boolean over all of them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Check {
+    /// `subject`, `rfc822Name`, `key usage`, `chain`.
+    pub name: &'static str,
+    /// `None` when the check could not be made — the counterpart of
+    /// [`Fitness::NotStated`], and never silently a pass.
+    pub passed: Option<bool>,
+    pub detail: String,
+}
+
+impl Check {
+    fn new(name: &'static str, passed: Option<bool>, detail: impl Into<String>) -> Self {
+        Self {
+            name,
+            passed,
+            detail: detail.into(),
+        }
+    }
+
+    /// `subject=ok`, `rfc822Name=FAILED`, `chain=unchecked` — the form a step's
+    /// detail carries, so a stored run says what was verified years later.
+    pub fn to_field(&self) -> String {
+        format!(
+            "{}={}",
+            self.name.replace(' ', "_"),
+            match self.passed {
+                Some(true) => "ok",
+                Some(false) => "FAILED",
+                None => "unchecked",
+            }
+        )
+    }
+}
+
+/// Verify a certificate read back out of a slot against what the run asked for.
+///
+/// The **read-back** verification, as distinct from the checks made before the
+/// import: those prove the certificate is the right one to write, and these prove
+/// the write landed and the card holds what the register says it does. An auditor
+/// with a key in hand runs exactly this, months later, against a run record.
+///
+/// `expected_subject` is the rendered subject the CSR asked for. It is compared
+/// **loosely** — see [`same_subject`] — because a CA is entitled to normalise a
+/// distinguished name, and a check that failed on attribute order would be a check
+/// that always failed.
+///
+/// The **chain** is reported as unchecked, deliberately and visibly: it needs a
+/// trust store this tool does not have (`features/ca-integration.md` phase 2,
+/// check 5). Saying so is the point — a verification that silently omitted it
+/// would read as a full one.
+pub fn verify_read_back(
+    summary: &Summary,
+    expected_subject: &str,
+    expected_email: &str,
+) -> Vec<Check> {
+    let mut checks = Vec::new();
+
+    checks.push(if expected_subject.trim().is_empty() {
+        Check::new(
+            "subject",
+            None,
+            "the run recorded no subject to compare against",
+        )
+    } else if same_subject(&summary.subject, expected_subject) {
+        Check::new("subject", Some(true), summary.subject.clone())
+    } else {
+        Check::new(
+            "subject",
+            Some(false),
+            format!(
+                "the slot holds `{}` and this run asked for `{}`",
+                summary.subject, expected_subject
+            ),
+        )
+    });
+
+    checks.push(if expected_email.trim().is_empty() {
+        Check::new(
+            "rfc822Name",
+            None,
+            "the run recorded no address to compare against",
+        )
+    } else if summary.covers_email(expected_email) {
+        Check::new("rfc822Name", Some(true), expected_email.trim().to_owned())
+    } else {
+        Check::new(
+            "rfc822Name",
+            Some(false),
+            format!(
+                "the certificate carries [{}] and not {} — signatures made with it will not \
+                 validate against the holder's address",
+                summary.email_sans.join(","),
+                expected_email.trim()
+            ),
+        )
+    });
+
+    let fitness = summary.signing_verdict();
+    checks.push(Check::new(
+        "key usage",
+        match fitness {
+            Fitness::Fit => Some(true),
+            Fitness::Unfit => Some(false),
+            Fitness::NotStated => None,
+        },
+        format!(
+            "{} (key_usage=[{}] eku=[{}])",
+            fitness.label(),
+            summary.key_usages.join(","),
+            summary.extended_key_usages.join(",")
+        ),
+    ));
+
+    checks.push(Check::new(
+        "chain",
+        None,
+        "not checked: this build has no trust store to chain to \
+         (features/ca-integration.md phase 2, check 5)",
+    ));
+
+    checks
+}
+
+/// Do two distinguished names name the same subject?
+///
+/// Compared as a **set of attribute assertions**, case-insensitively, rather than
+/// as strings. Two things make a string comparison wrong here and neither is
+/// exotic: a CA may reorder the RDNs, and it may re-space `CN=Ana Silva, OU=ESI`.
+/// A check that failed on either would fail on every real certificate, and a check
+/// that always fails gets switched off.
+///
+/// What it does **not** do is normalise the values themselves — a subject with a
+/// different `CN` is a different subject, which is the whole point.
+fn same_subject(actual: &str, expected: &str) -> bool {
+    let parts = |dn: &str| -> std::collections::BTreeSet<String> {
+        dn.split(',')
+            .map(|part| part.trim().to_ascii_lowercase())
+            .filter(|part| !part.is_empty())
+            .collect()
+    };
+    parts(actual) == parts(expected)
 }
 
 /// Pull the DER out of a PEM `CERTIFICATE` document, or accept raw DER.
@@ -165,6 +397,8 @@ pub fn summarise(der: &[u8], operation: &'static str) -> Result<Summary> {
         not_before: tbs.validity.not_before.to_string(),
         not_after: tbs.validity.not_after.to_string(),
         email_sans: email_sans(&certificate),
+        key_usages: key_usages(&certificate),
+        extended_key_usages: extended_key_usages(&certificate),
     })
 }
 
@@ -252,6 +486,91 @@ fn email_sans(certificate: &Certificate) -> Vec<String> {
         .collect()
 }
 
+/// The `keyUsage` bits, in the names RFC 5280 gives them.
+///
+/// Named rather than numbered because the whole reason to read this is to show an
+/// operator what a certificate is for, and `bit 0` is not that.
+fn key_usages(certificate: &Certificate) -> Vec<String> {
+    use x509_cert::der::oid::AssociatedOid;
+    use x509_cert::ext::pkix::KeyUsage;
+
+    use x509_cert::ext::pkix::KeyUsages;
+
+    // The flags in RFC 5280's own order, so two certificates with the same usages
+    // always produce the same list — a step detail that reordered between runs
+    // would look like a change.
+    const NAMES: [(KeyUsages, &str); 9] = [
+        (KeyUsages::DigitalSignature, "digitalSignature"),
+        (KeyUsages::NonRepudiation, "nonRepudiation"),
+        (KeyUsages::KeyEncipherment, "keyEncipherment"),
+        (KeyUsages::DataEncipherment, "dataEncipherment"),
+        (KeyUsages::KeyAgreement, "keyAgreement"),
+        (KeyUsages::KeyCertSign, "keyCertSign"),
+        (KeyUsages::CRLSign, "cRLSign"),
+        (KeyUsages::EncipherOnly, "encipherOnly"),
+        (KeyUsages::DecipherOnly, "decipherOnly"),
+    ];
+
+    let Some(extensions) = certificate.tbs_certificate.extensions.as_ref() else {
+        return Vec::new();
+    };
+    extensions
+        .iter()
+        .filter(|extension| extension.extn_id == KeyUsage::OID)
+        .filter_map(|extension| KeyUsage::from_der(extension.extn_value.as_bytes()).ok())
+        .flat_map(|usage| {
+            NAMES
+                .iter()
+                .filter(|(flag, _)| usage.0.contains(*flag))
+                .map(|(_, name)| (*name).to_owned())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// The `extKeyUsage` OIDs, with the ones this tool has an opinion about named and
+/// the rest left as dotted numbers.
+///
+/// Unknown OIDs are kept rather than dropped: an EKU nobody here recognises is
+/// still a statement the CA made, and hiding it would make a constrained
+/// certificate look unconstrained.
+fn extended_key_usages(certificate: &Certificate) -> Vec<String> {
+    use x509_cert::der::oid::AssociatedOid;
+    use x509_cert::ext::pkix::ExtendedKeyUsage;
+
+    const NAMES: [(&str, &str); 7] = [
+        ("2.5.29.37.0", "anyExtendedKeyUsage"),
+        ("1.3.6.1.5.5.7.3.1", "serverAuth"),
+        ("1.3.6.1.5.5.7.3.2", "clientAuth"),
+        ("1.3.6.1.5.5.7.3.3", "codeSigning"),
+        ("1.3.6.1.5.5.7.3.4", "emailProtection"),
+        ("1.3.6.1.5.5.7.3.8", "timeStamping"),
+        ("1.3.6.1.5.5.7.3.9", "OCSPSigning"),
+    ];
+
+    let Some(extensions) = certificate.tbs_certificate.extensions.as_ref() else {
+        return Vec::new();
+    };
+    extensions
+        .iter()
+        .filter(|extension| extension.extn_id == ExtendedKeyUsage::OID)
+        .filter_map(|extension| ExtendedKeyUsage::from_der(extension.extn_value.as_bytes()).ok())
+        .flat_map(|eku| {
+            eku.0
+                .into_iter()
+                .map(|oid| {
+                    let dotted = oid.to_string();
+                    NAMES
+                        .iter()
+                        .find(|(known, _)| *known == dotted)
+                        .map(|(_, name)| (*name).to_owned())
+                        .unwrap_or(dotted)
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 /// Base64 decode, matching the encoder in [`super::csr`]: same reason, which is
 /// that a dependency for thirty lines is one to keep updated for ever.
 fn unbase64(text: &str) -> Option<Vec<u8>> {
@@ -302,6 +621,29 @@ mod tests {
     ///   -addext 'subjectAltName=email:ana.silva@example.org'
     /// ```
     const SAMPLE: &str = include_str!("../../tests/fixtures/certificate_with_email_san.pem");
+
+    /// The same subject and address, plus the extensions a signing certificate
+    /// carries — `keyUsage = digitalSignature, nonRepudiation` and
+    /// `extendedKeyUsage = clientAuth, emailProtection`.
+    ///
+    /// ```text
+    /// openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+    ///   -keyout /dev/null -nodes -days 3650 \
+    ///   -subj '/CN=Ana Silva/OU=ESI/O=Example Organisation' \
+    ///   -addext 'subjectAltName=email:ana.silva@example.org' \
+    ///   -addext 'keyUsage=critical,digitalSignature,nonRepudiation' \
+    ///   -addext 'extendedKeyUsage=clientAuth,emailProtection'
+    /// ```
+    const SIGNING: &str = include_str!("../../tests/fixtures/certificate_signing_usage.pem");
+
+    /// An **encryption** certificate for the same person: the realistic CA mix-up,
+    /// where a signing request comes back issued under the wrong profile. It
+    /// imports cleanly and then fails every signature the holder makes.
+    const ENCRYPTION: &str = include_str!("../../tests/fixtures/certificate_encryption_usage.pem");
+
+    fn summary_of(pem: &str) -> Summary {
+        summarise(&der_from_pem(pem).expect("the fixture is PEM"), "test").unwrap()
+    }
 
     #[test]
     fn a_pem_certificate_is_read_and_described() {
@@ -426,6 +768,151 @@ mod tests {
         assert!(
             message.contains("request"),
             "the operator needs to be told which document they pasted: {message}"
+        );
+    }
+
+    #[test]
+    fn a_signing_certificates_usages_are_read_by_name() {
+        let summary = summary_of(SIGNING);
+        assert_eq!(
+            summary.key_usages,
+            vec!["digitalSignature", "nonRepudiation"],
+            "in RFC 5280's order, so two reads of one certificate never differ"
+        );
+        assert_eq!(
+            summary.extended_key_usages,
+            vec!["clientAuth", "emailProtection"]
+        );
+        assert_eq!(summary.signing_verdict(), Fitness::Fit);
+    }
+
+    #[test]
+    fn an_encryption_certificate_is_refused_for_a_signing_slot() {
+        // The realistic CA mix-up: a signing request comes back issued under the
+        // encryption profile. It imports cleanly and then fails every signature the
+        // holder makes, which is why the usage is checked rather than assumed.
+        let summary = summary_of(ENCRYPTION);
+        assert_eq!(summary.signing_verdict(), Fitness::Unfit);
+        assert!(summary.key_usages.iter().any(|u| u == "keyEncipherment"));
+
+        let checks = verify_read_back(&summary, "CN=Ana Silva,OU=ESI,O=Example Organisation", "");
+        let usage = checks
+            .iter()
+            .find(|check| check.name == "key usage")
+            .expect("the usage is one of the checks");
+        assert_eq!(usage.passed, Some(false));
+        assert!(usage.detail.contains("not issued for signing"), "{usage:?}");
+    }
+
+    #[test]
+    fn a_certificate_that_states_no_usage_is_unchecked_and_not_a_failure() {
+        // A minimal internal CA may issue with neither extension. That constrains
+        // nothing, so refusing it would refuse a perfectly usable certificate — and
+        // reporting it as a pass would claim the CA said something it did not.
+        let summary = summary_of(SAMPLE);
+        assert!(summary.key_usages.is_empty());
+        assert_eq!(summary.signing_verdict(), Fitness::NotStated);
+
+        let usage = verify_read_back(&summary, "", "")
+            .into_iter()
+            .find(|check| check.name == "key usage")
+            .unwrap();
+        assert_eq!(usage.passed, None);
+        assert_eq!(usage.to_field(), "key_usage=unchecked");
+    }
+
+    #[test]
+    fn a_read_back_checks_subject_address_and_usage_and_says_the_chain_was_not_checked() {
+        // `features/step-piv-signing-certificate.md` phase 7. The chain is the one
+        // check this build cannot make, and it is reported as unchecked rather than
+        // omitted — a verification that quietly left it out would read as a full one.
+        let summary = summary_of(SIGNING);
+        let checks = verify_read_back(
+            &summary,
+            "CN=Ana Silva,OU=ESI,O=Example Organisation",
+            "ana.silva@example.org",
+        );
+
+        let names: Vec<&str> = checks.iter().map(|check| check.name).collect();
+        assert_eq!(names, vec!["subject", "rfc822Name", "key usage", "chain"]);
+        assert_eq!(
+            checks
+                .iter()
+                .filter(|check| check.passed == Some(false))
+                .count(),
+            0,
+            "{checks:?}"
+        );
+
+        let chain = checks.last().unwrap();
+        assert_eq!(chain.passed, None);
+        assert!(chain.detail.contains("trust store"), "{chain:?}");
+        assert_eq!(chain.to_field(), "chain=unchecked");
+    }
+
+    #[test]
+    fn a_certificate_for_another_holder_fails_the_read_back() {
+        let summary = summary_of(SIGNING);
+        let checks = verify_read_back(
+            &summary,
+            "CN=Bruno Costa,OU=ESI,O=Example Organisation",
+            "bruno.costa@example.org",
+        );
+        let failed: Vec<&str> = checks
+            .iter()
+            .filter(|check| check.passed == Some(false))
+            .map(|check| check.name)
+            .collect();
+        assert_eq!(failed, vec!["subject", "rfc822Name"], "{checks:?}");
+        assert!(
+            checks[1].detail.contains("will not validate"),
+            "the message has to say what goes wrong for the holder: {:?}",
+            checks[1]
+        );
+    }
+
+    #[test]
+    fn a_subject_a_ca_renormalised_is_still_the_same_subject() {
+        // A CA is entitled to reorder and re-space a distinguished name. A check
+        // that failed on that would fail on every real certificate, and a check that
+        // always fails gets switched off.
+        assert!(same_subject(
+            "CN=Ana Silva, OU=ESI, O=Example Organisation",
+            "O=Example Organisation,CN=Ana Silva,OU=ESI"
+        ));
+        assert!(same_subject("CN=Ana Silva", "cn=ana silva"));
+        // But a different name is a different subject, which is the whole point.
+        assert!(!same_subject(
+            "CN=Ana Silva,OU=ESI",
+            "CN=Bruno Costa,OU=ESI"
+        ));
+        assert!(!same_subject("CN=Ana Silva", "CN=Ana Silva,OU=ESI"));
+    }
+
+    #[test]
+    fn a_run_with_nothing_recorded_to_compare_against_reports_unchecked_not_ok() {
+        let summary = summary_of(SIGNING);
+        let checks = verify_read_back(&summary, "", "");
+        assert_eq!(checks[0].passed, None, "{:?}", checks[0]);
+        assert_eq!(checks[1].passed, None, "{:?}", checks[1]);
+        assert!(
+            checks.iter().all(|check| check.passed != Some(false)),
+            "nothing to compare against is not a failure: {checks:?}"
+        );
+    }
+
+    #[test]
+    fn every_fitness_verdict_reads_as_its_own_words() {
+        let labels: Vec<&str> = [Fitness::Fit, Fitness::Unfit, Fitness::NotStated]
+            .iter()
+            .map(|f| f.label())
+            .collect();
+        assert_eq!(
+            labels.len(),
+            labels
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
         );
     }
 
