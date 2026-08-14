@@ -66,16 +66,16 @@ says plainly when a build lacks either.
 
 ## Phases
 
-| # | Phase | State | Notes |
-|---|---|---|---|
-| 1 | Strict `open_existing` / `create_new` with typed errors | Done | the create-by-typo hazard removed |
-| 2 | Settings file: last database, recents, operator identity | Done | atomic write, corruption-tolerant |
-| 3 | Chooser screen: recents, typed path, password, open/create | Done | |
-| 4 | Native file dialogs behind `file-dialog` | Done | `rfd`; XDG portal on Linux, no GTK |
-| 5 | Switch database from Settings | Done | closes the current one first, audited |
-| 6 | Warn when two operators have the same share database open | Todo | needs the concurrency work |
-| 7 | "Copy this database to…" (clone a share database locally) | Todo | `VACUUM INTO` already does the work |
-| 8 | Remember a per-database operator identity | Todo | today the identity is per workstation |
+| # | Phase | Wave | State | Notes |
+|---|---|---|---|---|
+| 1 | Strict `open_existing` / `create_new` with typed errors | 0 | Done | the create-by-typo hazard removed |
+| 2 | Settings file: last database, recents, operator identity | 0 | Done | atomic write, corruption-tolerant |
+| 3 | Chooser screen: recents, typed path, password, open/create | 0 | Done | |
+| 4 | Native file dialogs behind `file-dialog` | 0 | Done | `rfd`; XDG portal on Linux, no GTK |
+| 5 | Switch database from Settings | 0 | Done | closes the current one first, audited |
+| 6 | Warn when two operators have the same share database open | 2 | Todo | needs the concurrency work |
+| 7 | "Copy this database to…" (clone a share database locally) | — | Todo | `VACUUM INTO` already does the work |
+| 8 | Remember a per-database operator identity | 2 | Todo | today the identity is per workstation |
 
 ## Audit events
 

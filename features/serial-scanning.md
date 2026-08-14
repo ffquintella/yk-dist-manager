@@ -134,20 +134,20 @@ unusable.
 
 ## Phases
 
-| # | Phase | State | Notes |
-|---|---|---|---|
-| 1 | Serial parsing and ambiguity rules | Done | 12 unit tests |
-| 2 | `SerialSource` + schema v2, provenance never downgraded | Done | enforced in the upsert |
-| 3 | `rxing` decoder over a luminance frame | Done | tested against a rendered Code 128 |
-| 4 | Camera capture on a thread, with preview | Done | `camera` feature |
-| 4b | `preflight` guard so a camera problem is an error, not a process abort | Done | regression test calls the same entry point the button does |
-| 5 | Typed / wedge entry in the inventory panel | Done | Enter submits |
-| 6 | Decode a photo from disk in the GUI | Todo | `decode_image_file` exists; no button yet |
-| 7 | Camera selection when several are attached | Todo | `available_cameras()` exists |
-| 8 | Batch scanning: keep the camera open and queue serials | Todo | with `features/bulk-enrollment.md` |
-| 9 | "Unverified keys" report | Todo | scanned records never followed by a device read |
-| 10 | Resolve the `block` 0.1.6 chain (patch, upstream fix, or a native AVFoundation path) | **Todo — release blocker** | now applies to the default build |
-| 11 | `NSCameraUsageDescription` in the macOS bundle | **Done** | `packaging/macos/`; verified by `make verify-bundle` |
+| # | Phase | Wave | State | Notes |
+|---|---|---|---|---|
+| 1 | Serial parsing and ambiguity rules | 0 | Done | 12 unit tests |
+| 2 | `SerialSource` + schema v2, provenance never downgraded | 0 | Done | enforced in the upsert |
+| 3 | `rxing` decoder over a luminance frame | 0 | Done | tested against a rendered Code 128 |
+| 4 | Camera capture on a thread, with preview | 0 | Done | `camera` feature |
+| 4b | `preflight` guard so a camera problem is an error, not a process abort | 0 | Done | regression test calls the same entry point the button does |
+| 5 | Typed / wedge entry in the inventory panel | 0 | Done | Enter submits |
+| 6 | Decode a photo from disk in the GUI | — | Todo | `decode_image_file` exists; no button yet |
+| 7 | Camera selection when several are attached | — | Todo | `available_cameras()` exists |
+| 8 | Batch scanning: keep the camera open and queue serials | 2 | Todo | with `features/bulk-enrollment.md` |
+| 9 | "Unverified keys" report | 2 | Todo | scanned records never followed by a device read |
+| 10 | Resolve the `block` 0.1.6 chain (patch, upstream fix, or a native AVFoundation path) | 3 | **Todo — release blocker** | now applies to the default build |
+| 11 | `NSCameraUsageDescription` in the macOS bundle | 0 | **Done** | `packaging/macos/`; verified by `make verify-bundle` |
 
 ## Audit events
 

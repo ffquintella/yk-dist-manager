@@ -77,16 +77,16 @@ hand-over.
 
 ## Phases
 
-| # | Phase | State | Notes |
-|---|---|---|---|
-| 1 | Record with operator, method, receipt reference | Done | |
-| 2 | Link to the bootstrap run; show what was applied | Done | run summary in the table |
-| 3 | Return handling that does not rewrite history | Done | second return refused |
-| 4 | Pending-signature state for remote delivery | Todo | with an age warning for unsigned hand-overs |
-| 5 | Transfer as a first-class action (close + open, one confirmation) | Todo | currently two manual steps |
-| 6 | Receipt / responsibility term generation | Todo | `features/receipts-and-terms.md` |
-| 7 | Overdue and unaccounted reporting | Todo | `features/reports-and-export.md` |
-| 8 | Bulk hand-over (a batch to one unit) | Todo | `features/bulk-enrollment.md` |
+| # | Phase | Wave | State | Notes |
+|---|---|---|---|---|
+| 1 | Record with operator, method, receipt reference | 0 | Done | |
+| 2 | Link to the bootstrap run; show what was applied | 0 | Done | run summary in the table |
+| 3 | Return handling that does not rewrite history | 0 | Done | second return refused |
+| 4 | Pending-signature state for remote delivery | 0 | **Done elsewhere** | shipped as [`receipts-and-terms.md`](receipts-and-terms.md) phase 6's signature state machine: five states derived from the record and what is filed *per kind*, a threshold the unit sets, the banner where the hand-overs are, and `receipt.pending_overdue` written once per hand-over ever |
+| 5 | Transfer as a first-class action (close + open, one confirmation) | 2 | Todo | currently two manual steps |
+| 6 | Receipt / responsibility term generation | 0 | **Done elsewhere** | [`receipts-and-terms.md`](receipts-and-terms.md) — the term, its PDF, the versioned wording and the sealed-envelope slip |
+| 7 | Overdue and unaccounted reporting | 2 | Todo | `features/reports-and-export.md` |
+| 8 | Bulk hand-over (a batch to one unit) | 2 | Todo | `features/bulk-enrollment.md` |
 
 ## Audit events
 

@@ -69,17 +69,17 @@ signature would be worse than useless.
 
 ## Phases
 
-| # | Phase | State | Notes |
-|---|---|---|---|
-| 1 | Document model with validation, media types, digest | Done | 7 unit tests |
-| 2 | `documents` table, foreign key, content-free listings | Done | schema v3 |
-| 3 | Upload from the distribution screen and the term panel | Done | `file-dialog` feature |
-| 4 | Export with digest verification | Done | refuses a mismatch |
-| 5 | "No term filed" badge per hand-over | Done | amber / green |
-| 6 | View a filed document in-app | Todo | needs a PDF/image viewer; export covers it for now |
-| 7 | Overdue-signature report | Todo | open hand-overs with nothing filed after N days |
-| 8 | Attach the generated term automatically | Todo | so the pair (generated, signed) is complete |
-| 9 | Delete/replace a wrongly filed document | Todo | append-only for now, deliberately |
+| # | Phase | Wave | State | Notes |
+|---|---|---|---|---|
+| 1 | Document model with validation, media types, digest | 0 | Done | 7 unit tests |
+| 2 | `documents` table, foreign key, content-free listings | 0 | Done | schema v3 |
+| 3 | Upload from the distribution screen and the term panel | 0 | Done | `file-dialog` feature |
+| 4 | Export with digest verification | 0 | Done | refuses a mismatch |
+| 5 | "No term filed" badge per hand-over | 0 | Done | amber / green |
+| 6 | View a filed document in-app | — | Todo | needs a PDF/image viewer; export covers it for now |
+| 7 | Overdue-signature report | 0 | **Done elsewhere** | shipped as [`receipts-and-terms.md`](receipts-and-terms.md) phase 6: the threshold is the unit's to set, the banner is on the screen where the hand-overs are, and `receipt.pending_overdue` uses the immutable audit trail as its own "already reported" marker |
+| 8 | Attach the generated term automatically | 2 | Todo | so the pair (generated, signed) is complete |
+| 9 | Delete/replace a wrongly filed document | — | Todo | append-only for now, deliberately |
 
 Phase 9 is deliberately unbuilt: making evidence deletable needs a policy first —
 who may, with what record of the deletion.

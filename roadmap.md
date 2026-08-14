@@ -29,8 +29,8 @@ deployment.
 
 | State | Count |
 |---|---|
-| Done | 23 |
-| In progress | 12 |
+| Done | 33 |
+| In progress | 2 |
 | Todo | 8 |
 | **Total tracked items** | **43** (across 38 specs — some specs carry more than one item) |
 
@@ -47,7 +47,7 @@ deployment.
 > its own wave-0 phases finished. See
 > [Wave 0 is closed](#wave-0-is-closed).
 
-Released: **v0.11.0**. Current wave: **Wave 1 — native execution**, code-complete and awaiting hardware verification.
+Released: **v0.11.0**. **Wave 1 is closed** (2026-08-14). Current wave: **Wave 2 — operations at scale.**
 
 **Out of turn, unreleased**: a **way out of a live single-writer lock**, and the refusal
 card an operator meets at **startup** — [`features/cloud-sync-hosting.md`](features/cloud-sync-hosting.md)
@@ -194,42 +194,78 @@ password can be set, changed or removed from Settings.
 > being met: there is code here that only a plugged-in YubiKey can exercise, which is
 > what the wave's own status says.
 
-**Wave 1 is code-complete, and waiting on a key.** Every phase carrying wave `1`
-in every spec under [`features/`](features/) is now either **done** or **built and
-not hardware-verified** — the two exceptions being named below, and neither is an
-implementer's to close. The command that says so, which is the same shape as the one
-that closed Wave 0:
+## Wave 1 is closed (2026-08-14)
+
+**The owner's decision, and it is a judgement rather than a derivation** — which is
+why it carries a date and this section says what it rests on. Every phase carrying
+wave `1` in every spec under [`features/`](features/) is **built**; what is not
+finished is **verification against hardware**, and the wave was closed with that
+outstanding rather than held open for a key.
+
+That is a different standard from the one Wave 0 closed under, and pretending
+otherwise would be the drift this file has already been corrected for twice. So,
+plainly: **a `[x]` in the Wave 1 table means the code exists and is covered by tests
+that need no key. It does not mean a YubiKey has run it.**
+
+Ten phase rows read `**Built** (not hardware-verified)` until this decision and now
+read **Done**, on the owner's instruction that what cannot be tested here is marked
+finished. Every one of them keeps the sentence *the protocol conversation is unverified
+against a key* in its notes, and the table below is the list in one place — because a
+status column somebody scans and a fact somebody needs before handing a key to a person
+are different jobs, and the flip should not have quietly done the second one.
+
+Derived, so a reader can check the first half of the claim — the command prints
+nothing, and it is the same command that closes Wave 0 with a `0` in it:
 
 ```bash
-awk -F'|' '$4 ~ /^ *1 *$/ && $5 !~ /[Dd]one|Built/ {print FILENAME" phase"$2": "$3}' features/*.md
+awk -F'|' '$4 ~ /^ *1 *$/ && $5 !~ /[Dd]one/ {print FILENAME" phase"$2": "$3}' features/*.md
 ```
 
-It prints one row: [db-password](features/db-password-and-encryption.md) phase 7,
-**unlocking with a YubiKey**, and that row is blocked twice over rather than unbuilt.
-It needs an OTP slot to be *programmed* — the one write that is deliberately deferred
-until there is a key to verify the frame against — and turning a challenge-response
-into a database key is a **KDF choice**, which is the ESI's to approve (the same gate
-as phase 4). It is marked optional in its own title, and nothing depends on it.
+It printed one row until this wave closed: [db-password](features/db-password-and-encryption.md)
+phase 7, **unlocking with a YubiKey**, and that row moved to `—` (gating no wave)
+rather than being ticked. It is blocked twice over and neither half is an
+implementer's: it needs an OTP slot *programmed*, which is the one write deliberately
+deferred until a key can verify the frame, and turning a challenge-response into a
+database key **is** a KDF choice, which is the ESI's to approve — the same gate as
+that spec's phase 4. It is marked *optional* in its own title and nothing depends on
+it, which is what makes `—` the honest column rather than a convenience.
 
-The step specs without a Wave column have to be read rather than derived, and their
-remaining phases divide the same way: **somebody else's decision or system** —
-enterprise attestation needs a relying party that verifies it, the internal relying
-party needs somebody to say which service, external escrow needs BastionVault, and
-the three CA issuers are an ESI decision about integrating with a corporate PKI
-(`AGENTS.md` §8) — or **a later wave**: the custody report and expiry tracking belong
-with [reports & export](features/reports-and-export.md), the PIN/PUK unblock flow with
+### What has never met hardware
+
+Named here rather than left in the specs, because this is the list somebody has to
+work through before a key is handed to a person on the strength of it:
+
+| Path | State |
+|---|---|
+| FIDO2 — PIN, minimum length, forced change, `make_credential` | **verified** on a 5.7.4 key, writes included |
+| PIV PIN, PUK, management key | **verified** on a 5C NFC (5.7.4), 2026-08-11 |
+| `GENERATE` and certificate import through the AES-authenticated session | built, unverified |
+| Attestation read, and the certificate **read-back** | built, unverified |
+| Management applet exchange (the parser is covered byte for byte) | built, unverified |
+| OTP access-code write through `ykman` | built, unverified |
+| *Native* OTP configuration frame | **deliberately unwritten** — no crate exposes it, and a wrong frame leaves a slot write-protected by a code nobody holds |
+
+Each says so in its own spec, and each splits the same way: a pure half that is tested
+exhaustively and a protocol conversation no test can reach. "Not hardware-verified"
+means *the conversation is unproven*, not *this code is untested*.
+
+### What is left in the specs, and why none of it is Wave 1
+
+The step specs have no Wave column — they predate it — so their remaining phases were
+read rather than derived. They divide two ways. **Somebody else's decision or
+system**: enterprise attestation needs a relying party that verifies it, the internal
+relying party needs somebody to say which service, external escrow needs BastionVault,
+and the three CA issuers are an **ESI** decision about integrating with a corporate PKI
+(`AGENTS.md` §8). **A later wave**: the custody report and expiry tracking belong with
+[reports & export](features/reports-and-export.md), the PIN/PUK unblock flow with
 [the lifecycle](features/key-lifecycle-and-revocation.md), and OpenPGP is Wave 3 and
-not the chosen mechanism at all.
+was not the chosen mechanism in the first place.
 
-**What "waiting on a key" means, precisely.** FIDO2 is hardware-verified, writes
-included. PIV's PIN, PUK and management key were verified on a 5C NFC (5.7.4) on
-2026-08-11. What has **never met hardware** is: `GENERATE` and the certificate
-import through the AES-authenticated session, the attestation read, the certificate
-read-back, the management applet exchange, and the OTP access-code write through
-`ykman`. Each is written, each is covered by tests that need no key, and each says so
-in its own spec. The *native* OTP configuration frame is the one thing still
-unwritten on purpose: no crate exposes it, and a wrong frame leaves a slot
-write-protected by a code nobody holds.
+One thing closing this wave **raised** rather than settled, and it is in
+[Open questions](#open-questions) with its three ways out: `org-standard`'s OTP
+access-code step applies to no key at all, because a code protects a configuration
+while a programmed OTP slot is what the no-override refusal of 2026-08-13 reads as a
+key that has already been through a procedure.
 
 ## Wave 0 is closed
 
@@ -255,35 +291,34 @@ as it is plugged in. It does **not** mean the tool bootstraps a key — that is 
 and `MockWriter` is still the only implementation of the write traits in a default
 build.
 
-**What that command cannot see, and what the claim rests on.** It reads the
-**Wave** column, and nine specs do not have one — they predate it and were never
-given one: consignment terms, database selection, distribution records, holder
-registry, key inventory, logging, serial scanning, signed-term documents and the
-`ykman` fallback. All nine are `[x]`, and all nine still have unfinished phases.
+**The claim used to rest partly on judgement, and no longer does (2026-08-14).**
+The command reads the **Wave** column, and nine specs did not have one — they predate
+it: consignment terms, database selection, distribution records, holder registry, key
+inventory, logging, serial scanning, signed-term documents and the `ykman` fallback.
+All nine were `[x]` with unfinished phases, so for those rows "Wave 0 is closed" was a
+judgement rather than a derivation, and this file said so.
 
-Those phases were read one by one, and **none of them is wave-0 work**: they are
-later-wave or optional by nature (AD/LDAP lookup, reconciliation reports, batch
-hand-over, applet resets), or they duplicate a phase the spec that owns it has since
-finished — consignment terms 9 and distribution records 4 are the return receipt and
-the signature state machine, which
-[receipts & terms](features/receipts-and-terms.md) 4 and 6 delivered.
+**All nine now carry the column**, which was named here as "the real fix… worth doing
+before the next wave closes, because the same gap will be there" — and it was, so it
+was done when Wave 1 closed. Every remaining phase in them was read and assigned:
+later-wave (a per-holder view, reconciliation reports, batch hand-over, a correlation
+id), `—` for optional or owner-blocked (AD/LDAP needs the ESI-approved integration,
+holder retention needs the DPO, a JSON log sink needs ESI agreement before diverging
+from the G-002 format), or Wave 3 where it belongs to delivery (a rotating log file,
+the `block` 0.1.6 chain).
 
-Four turned out to be **already done elsewhere** and are now marked so, with a
-pointer to where: the log panel (logging 3, shipped as gui-shell 8), search on
-Inventory and on Holders (key inventory 5, holder registry 5, shipped as gui-shell
-3) and the spreadsheet import (key inventory 8, shipped as storage 8). None of them
-was work still owed.
+Eight turned out to be **already done elsewhere** and now say so with a pointer,
+rather than reading as work still owed: the log panel (logging 3) and search on
+Inventory and Holders (key inventory 5, holder registry 5) shipped as gui-shell 8 and
+3; the spreadsheet import (key inventory 8) as storage 8; the return receipt
+(consignment terms 9), the pending-signature state (distribution records 4), the term
+generation (distribution records 6) and the overdue-signature report (signed-term
+documents 7) as [receipts & terms](features/receipts-and-terms.md) 4 and 6; and
+"already configured" detection (key inventory 6) as
+[device detection](features/device-detection.md) 5.
 
-So of the 23 rows in the Wave 0 tables below, **14 are derived** — their specs carry
-the column the rule is written against — and **nine are reasoned**, by having read
-their remaining phases. "Wave 0 is closed" is therefore a derived claim for 14 rows
-and a judgement for nine, and this paragraph is what says so rather than letting a
-reader assume the command covered all of them.
-
-Giving those nine a Wave column is the real fix, and it is a planning decision
-rather than a mechanical one: somebody has to say which wave each remaining phase
-belongs to. Worth doing before the next wave closes, because the same gap will be
-there.
+So **every** row in the Wave 0 tables below is now derived, and the same command with
+a `1` in it derives Wave 1. Neither claim is a paragraph asking to be trusted.
 
 ### Unticked boxes that are not Wave 0
 
@@ -291,13 +326,14 @@ Plenty of phases in `features/` are still Todo. None of them gates this wave, an
 they are grouped here because "the specs are full of Todos, so how is Wave 0 closed?"
 is the first reasonable question a reader has.
 
-**Phases that gate a later wave.** The bootstrap engine's OTP step, the
-OTP/management native transports (the *selection* between transports is done, and
-the PIV writes now reach the card), the wizard's
-post-run attachment, template applicability rules and retry policy, unlocking with a
-YubiKey: all **Wave 1**, all in the Wave 1 table below. A Windows `.ico` and a Linux
-`hicolor` icon are **Wave 3**, with the packaging they attach to. Concurrency,
-batch mode, the signed audit export and the cross-check transport are **Wave 2**.
+**Phases that gate a later wave.** Everything that was listed here as Wave 1 —
+the engine's OTP step, the native transports, the wizard's post-run attachment,
+template applicability rules and the retry policy — is built, and Wave 1 closed on
+2026-08-14; see [Wave 1 is closed](#wave-1-is-closed) for what that does and does not
+mean. Unlocking with a YubiKey moved to `—` rather than being ticked, and the section
+above says why. A Windows `.ico` and a Linux `hicolor` icon are **Wave 3**, with the
+packaging they attach to. Concurrency, batch mode, the signed audit export and the
+cross-check transport are **Wave 2**.
 
 **Decisions that are not the implementer's** (AGENTS.md §8). None of them holds a
 wave-0 phase, which is why they are here rather than in the table above — but each
@@ -329,7 +365,10 @@ Ten of them, and the Wave column is what makes that legitimate — each has ever
 wave-0 phase done and only later-wave work left: native device transport, device
 detection, single-file SQLite storage, the optional database password, the audit
 trail, bootstrap templates, the bootstrap planner, the bootstrap wizard, receipts &
-terms, and the application icon.
+terms, and the application icon. The **Wave 1** rows are now in the same position for
+the same reason, with one difference stated in
+[Wave 1 is closed](#wave-1-is-closed): their remaining work is not only later-wave, it
+also includes hardware verification of paths that are written.
 
 Derive that list too, rather than trusting this paragraph:
 
@@ -422,16 +461,16 @@ The point of the tool: apply the template to a key, safely, with evidence.
 
 | Status | Feature | Notes |
 |---|---|---|
-| `[/]` | Bootstrap executor | [spec](features/bootstrap-engine.md) — **the engine is built and proven against mocks**: sequencing, per-step persistence, abort-on-required-failure, idempotency, resume, an unforgeable confirmation gate, and a sweep asserting no secret reaches any record. Since 0.12.0 the native transport is compiled in by default, so the write path is *reachable*: FIDO2 is hardware-verified, PIV is **implemented but not hardware-verified**, and the OTP **access-code write** now goes through the labelled `ykman` fallback. The certificate import is no longer a placeholder — it takes the certificate the operator brings, checks it against the slot and the holder, and imports it (2026-08-13) — and the `Verify` step now **reads the certificate back off the card** and checks its subject, `rfc822Name` and key usage, failing the step when they disagree. Steps also carry an **attempt budget**, spent only on transport-level failures. What remains is a key to verify PIV against and the *native* OTP frame. |
-| `[/]` | Step: FIDO2 PIN | [spec](features/step-fido2-pin.md) — set/change the PIN over CTAP2, minimum length policy (fw 5.7+), `forcePINChange` so the holder must replace the transport PIN (custody model B), and **retry accounting on screen** (phase 8): both applets' counters are read without spending one, a counter walked below its factory value warns and names what recovery costs, zero **blocks the run**, and the `Verify` step reads them back. Only phase 5 — *change* an existing PIN — is left, and it is implemented and waiting for a key whose current PIN is known. |
-| `[/]` | Step: initial FIDO2 credential | [spec](features/step-fido2-credentials.md) — `authenticatorMakeCredential` with `rk=true` so the credential is resident on the key; `ykman` cannot do this at all. **Phases 2 and 4 done**: a key with no free discoverable slot is refused before the PIN is set rather than by the authenticator's own error, and the credential id, relying party, algorithm and user name are on the run and readable back off the register. What is left needs somebody else's decision or system: listing and deleting credentials from the GUI, enterprise attestation (needs an RP that verifies it) and which internal relying party the credential is bound to. |
-| `[/]` | Step: OTP slot access code | [spec](features/step-otp-access-code.md) — the 6-byte code that write-protects a slot. The **read** landed via `ykman otp info`, and the **write** now goes through the same labelled fallback: `otp settings <slot> --force --new-access-code -` with the code on **stdin**, never in argv (phase 2). Three things about that command were read out of `ykman` 5.9.2's source rather than guessed — the prompt confirms, an *empty* slot is refused outright, and the write resets the slot's other settings — and each is now something the step or the pre-flight says before it runs. The mode-switch consequence (phase 6) and custody of the code (phase 7) are recorded. **Not hardware-verified.** The *native* HID frame stays deliberately unwritten (`native-device-transport.md` phase 4): a wrong frame leaves a slot protected by a code nobody holds. Slot *programming* waits on a different answer — what the slot is for. |
-| `[/]` | Step: PIV PIN / PUK / management key | [spec](features/step-piv-pin-puk-management-key.md) — leave no factory default; a PIN-protected random management key, so nothing needs custody. **No longer blocked** (decision of 2026-08-13): the transport question was answered by writing the exchange rather than by choosing between a crate that cannot do it and a CLI that takes a PIN on its command line. [`device::piv_session`](src/device/piv_session.rs) reads the slot's real algorithm and authenticates with AES — PIN and PUK changes and the `GET METADATA` idempotency read were already hardware-verified through the crate, the AES management-key write on 2026-08-11. **Phase 6 done**: a key still on a factory default is badged on **Attached now**, not only in the wizard's pre-flight — which is seen once, by the operator about to fix it, and never by anybody auditing the fleet. It rests on three `Option<bool>` metadata answers rather than a boolean, so a key nobody read is never accused of holding a default. Remaining: phase 7, the PIN/PUK unblock flow for a returned key (Wave 2's lifecycle work), and phase 5's optional escrow, which waits on external escrow. |
-| `[/]` | Step: PIV signing certificate | [spec](features/step-piv-signing-certificate.md) — on-device key in slot 9c, CSR **with `rfc822Name` SAN**, issued certificate imported, attestation stored. The SAN is why this step goes native, and it is now built: [`device::csr`](src/device/csr.rs) assembles PKCS#10 purely and signs through the slot, with `openssl` reading the SAN back and verifying the signature in an interop test. ECDSA only — RSA needs PKCS#1 padding applied by the caller and is refused rather than guessed. The **import** is done too: PKCS#10 out, the operator's certificate back in, refused unless its public key is the slot's and it carries the holder's `rfc822Name` (phases 4 and 5). **Not hardware-verified.** **Phase 7 is now built**: the `Verify` step reads the slot's certificate back and checks the subject DN (as a set of attributes, since a CA may reorder a name), the holder's `rfc822Name`, and the key usage / EKU — an encryption certificate issued against a signing request is caught before it is trusted rather than at the holder's first signature. A failed check fails the step. The **chain** is reported as `chain=unchecked`, because it needs a trust store this build has not got. Remaining: the chain, and expiry tracking (Wave 2's reports). |
-| `[/]` | CA integration | [spec](features/ca-integration.md) — **phase 1 done, and it is the phase that decides the shape**: the issuer is the **operator** (2026-08-13). The run produces the request, it is signed at whichever CA the deployment uses, and the certificate comes back through the wizard — parsed, summarised, checked against the slot's key and the holder's address, and only then written. **Phase 2's checks 3 and 4 — subject DN and key usage / EKU — are now made**, by the read-back verification; only check 5, the chain to a trusted root, is outstanding, and it is reported as unchecked rather than omitted. An internal pilot CA, BastionVault PKI and an enterprise CA profile stay open as phases 3–5 — each an automation of this path, and each an **ESI** decision about integrating with a corporate PKI (AGENTS.md §8) rather than an implementation waiting to be written. |
-| `[/]` | Device detection (Wave 1 phases) | [spec](features/device-detection.md) — **phases 4, 5 and 6 done.** The applet state is read before a run ([`device::applets`](src/device/applets.rs): PIV slots and PIN retries, FIDO2 `get_info`, OTP slots through `ykman`), an **already-configured key is refused** — no override, per the decision of 2026-08-13, and the refusal names the reset — and a generated key carries its **attestation** into the record. Phase 4 is what switched the earlier checks *on*: the pre-flight had been passing `AppletSnapshot::default()`, so every applet-dependent check was written and never fired. **Corrected after the first real bootstrap attempt (2026-08-13, unreleased):** the refusal fired on a factory-fresh key, because `piv::Key::list` reports the **attestation** slot `f9` that Yubico programmes into every key — a check meant to protect one holder's credential was refusing every key ever made, with no override to press. And the same run skipped five of its eleven steps: the native transport reported `usb_applications: ["PIV"]`, which the pre-flight read as *FIDO2 and OTP are disabled*, so nearly the whole procedure quietly declined to happen. Both were checks resting on a field that meant something other than what they read into it — the pattern phase 4 already fixed once, one level down. **And the field itself is now read** (`native-device-transport.md` phase 5): the management applet answers which applications are enabled, so the pre-flight says *the OTP application is switched off on this key* instead of warning that it could not check. |
-| `[/]` | Native device transport (Wave 1 phases) | [spec](features/native-device-transport.md) — **phase 6 done, and `native-device` is now the default build**: which transport reads the hardware is decided at startup by probing, overridable in Settings, shown as `via: native` / `via: ykman` in the status bar, reported by `--diagnose`, and recorded as `device.transport.selected`. This is the row that made the other two reachable — `YkDistApp::new` previously held a hardcoded `ykman`, so the hardware-verified native PIV and FIDO2 transports were shipped and unused. **FIDO2 (phase 2) is done and hardware-verified**, writes included. **PIV writes (phase 3) are now built** — and, since 2026-08-13, actually reachable on current firmware: `generate` and certificate import used to authenticate through the crate's 3DES `MgmKey`, which a 5.7 key refuses, and both now run on [`device::piv_session`](src/device/piv_session.rs)'s AES-authenticated session. Not hardware-verified. **Phase 5 — the management applet — is now built** ([`device::mgmt`](src/device/mgmt.rs)): CCID `00 1D`, hand-written because no crate covers it, reporting the form factor, the FIPS state and **which applications are enabled**. That last field is the one whose absence caused the same bug twice, in opposite directions, and both readings of silence are now unnecessary. The application names deliberately match `ykman info`'s, because the pre-flight matches on those strings. Not hardware-verified; the parser is pure and covered byte for byte. Remaining: a key to verify PIV and the management exchange against, and the OTP config frame (phase 4, deliberately not hand-rolled without one). |
-| `[/]` | Secrets custody | [spec](features/secrets-custody.md) — **model B decided (2026-08-10)**: transport secret + forced change, nothing retained. `CustodyModel` fixes the vocabulary, the standard template carries the forced-change step, the **generate / show-once / zeroise machinery is built** (`crate::secret`: no `Clone`, no `Serialize`, `Debug` prints `<redacted>`, OS CSPRNG with unbiased digits), and the **sealed-envelope slip** is rendered (`src/envelope.rs`). The two sub-decisions (phase 8 — the PUK and the OTP access code) were answered by the owner on 2026-08-11 and are implemented, and custody of the OTP access code is now recorded per write. Left: the custody **report**, which belongs with [reports & export](features/reports-and-export.md) in Wave 2, and optional external escrow. |
+| `[x]` | Bootstrap executor | [spec](features/bootstrap-engine.md) — **the engine is built and proven against mocks**: sequencing, per-step persistence, abort-on-required-failure, idempotency, resume, an unforgeable confirmation gate, and a sweep asserting no secret reaches any record. Since 0.12.0 the native transport is compiled in by default, so the write path is *reachable*: FIDO2 is hardware-verified, PIV is **implemented but not hardware-verified**, and the OTP **access-code write** now goes through the labelled `ykman` fallback. The certificate import is no longer a placeholder — it takes the certificate the operator brings, checks it against the slot and the holder, and imports it (2026-08-13) — and the `Verify` step now **reads the certificate back off the card** and checks its subject, `rfc822Name` and key usage, failing the step when they disagree. Steps also carry an **attempt budget**, spent only on transport-level failures. What remains is a key to verify PIV against and the *native* OTP frame. |
+| `[x]` | Step: FIDO2 PIN | [spec](features/step-fido2-pin.md) — set/change the PIN over CTAP2, minimum length policy (fw 5.7+), `forcePINChange` so the holder must replace the transport PIN (custody model B), and **retry accounting on screen** (phase 8): both applets' counters are read without spending one, a counter walked below its factory value warns and names what recovery costs, zero **blocks the run**, and the `Verify` step reads them back. Only phase 5 — *change* an existing PIN — is left, and it is implemented and waiting for a key whose current PIN is known. |
+| `[x]` | Step: initial FIDO2 credential | [spec](features/step-fido2-credentials.md) — `authenticatorMakeCredential` with `rk=true` so the credential is resident on the key; `ykman` cannot do this at all. **Phases 2 and 4 done**: a key with no free discoverable slot is refused before the PIN is set rather than by the authenticator's own error, and the credential id, relying party, algorithm and user name are on the run and readable back off the register. What is left needs somebody else's decision or system: listing and deleting credentials from the GUI, enterprise attestation (needs an RP that verifies it) and which internal relying party the credential is bound to. |
+| `[x]` | Step: OTP slot access code | [spec](features/step-otp-access-code.md) — the 6-byte code that write-protects a slot. The **read** landed via `ykman otp info`, and the **write** now goes through the same labelled fallback: `otp settings <slot> --force --new-access-code -` with the code on **stdin**, never in argv (phase 2). Three things about that command were read out of `ykman` 5.9.2's source rather than guessed — the prompt confirms, an *empty* slot is refused outright, and the write resets the slot's other settings — and each is now something the step or the pre-flight says before it runs. The mode-switch consequence (phase 6) and custody of the code (phase 7) are recorded. **Not hardware-verified.** The *native* HID frame stays deliberately unwritten (`native-device-transport.md` phase 4): a wrong frame leaves a slot protected by a code nobody holds. Slot *programming* waits on a different answer — what the slot is for. |
+| `[x]` | Step: PIV PIN / PUK / management key | [spec](features/step-piv-pin-puk-management-key.md) — leave no factory default; a PIN-protected random management key, so nothing needs custody. **No longer blocked** (decision of 2026-08-13): the transport question was answered by writing the exchange rather than by choosing between a crate that cannot do it and a CLI that takes a PIN on its command line. [`device::piv_session`](src/device/piv_session.rs) reads the slot's real algorithm and authenticates with AES — PIN and PUK changes and the `GET METADATA` idempotency read were already hardware-verified through the crate, the AES management-key write on 2026-08-11. **Phase 6 done**: a key still on a factory default is badged on **Attached now**, not only in the wizard's pre-flight — which is seen once, by the operator about to fix it, and never by anybody auditing the fleet. It rests on three `Option<bool>` metadata answers rather than a boolean, so a key nobody read is never accused of holding a default. Remaining: phase 7, the PIN/PUK unblock flow for a returned key (Wave 2's lifecycle work), and phase 5's optional escrow, which waits on external escrow. |
+| `[x]` | Step: PIV signing certificate | [spec](features/step-piv-signing-certificate.md) — on-device key in slot 9c, CSR **with `rfc822Name` SAN**, issued certificate imported, attestation stored. The SAN is why this step goes native, and it is now built: [`device::csr`](src/device/csr.rs) assembles PKCS#10 purely and signs through the slot, with `openssl` reading the SAN back and verifying the signature in an interop test. ECDSA only — RSA needs PKCS#1 padding applied by the caller and is refused rather than guessed. The **import** is done too: PKCS#10 out, the operator's certificate back in, refused unless its public key is the slot's and it carries the holder's `rfc822Name` (phases 4 and 5). **Not hardware-verified.** **Phase 7 is now built**: the `Verify` step reads the slot's certificate back and checks the subject DN (as a set of attributes, since a CA may reorder a name), the holder's `rfc822Name`, and the key usage / EKU — an encryption certificate issued against a signing request is caught before it is trusted rather than at the holder's first signature. A failed check fails the step. The **chain** is reported as `chain=unchecked`, because it needs a trust store this build has not got. Remaining: the chain, and expiry tracking (Wave 2's reports). |
+| `[x]` | CA integration | [spec](features/ca-integration.md) — **phase 1 done, and it is the phase that decides the shape**: the issuer is the **operator** (2026-08-13). The run produces the request, it is signed at whichever CA the deployment uses, and the certificate comes back through the wizard — parsed, summarised, checked against the slot's key and the holder's address, and only then written. **Phase 2's checks 3 and 4 — subject DN and key usage / EKU — are now made**, by the read-back verification; only check 5, the chain to a trusted root, is outstanding, and it is reported as unchecked rather than omitted. An internal pilot CA, BastionVault PKI and an enterprise CA profile stay open as phases 3–5 — each an automation of this path, and each an **ESI** decision about integrating with a corporate PKI (AGENTS.md §8) rather than an implementation waiting to be written. |
+| `[x]` | Device detection (Wave 1 phases) | [spec](features/device-detection.md) — **phases 4, 5 and 6 done.** The applet state is read before a run ([`device::applets`](src/device/applets.rs): PIV slots and PIN retries, FIDO2 `get_info`, OTP slots through `ykman`), an **already-configured key is refused** — no override, per the decision of 2026-08-13, and the refusal names the reset — and a generated key carries its **attestation** into the record. Phase 4 is what switched the earlier checks *on*: the pre-flight had been passing `AppletSnapshot::default()`, so every applet-dependent check was written and never fired. **Corrected after the first real bootstrap attempt (2026-08-13, unreleased):** the refusal fired on a factory-fresh key, because `piv::Key::list` reports the **attestation** slot `f9` that Yubico programmes into every key — a check meant to protect one holder's credential was refusing every key ever made, with no override to press. And the same run skipped five of its eleven steps: the native transport reported `usb_applications: ["PIV"]`, which the pre-flight read as *FIDO2 and OTP are disabled*, so nearly the whole procedure quietly declined to happen. Both were checks resting on a field that meant something other than what they read into it — the pattern phase 4 already fixed once, one level down. **And the field itself is now read** (`native-device-transport.md` phase 5): the management applet answers which applications are enabled, so the pre-flight says *the OTP application is switched off on this key* instead of warning that it could not check. |
+| `[x]` | Native device transport (Wave 1 phases) | [spec](features/native-device-transport.md) — **phase 6 done, and `native-device` is now the default build**: which transport reads the hardware is decided at startup by probing, overridable in Settings, shown as `via: native` / `via: ykman` in the status bar, reported by `--diagnose`, and recorded as `device.transport.selected`. This is the row that made the other two reachable — `YkDistApp::new` previously held a hardcoded `ykman`, so the hardware-verified native PIV and FIDO2 transports were shipped and unused. **FIDO2 (phase 2) is done and hardware-verified**, writes included. **PIV writes (phase 3) are now built** — and, since 2026-08-13, actually reachable on current firmware: `generate` and certificate import used to authenticate through the crate's 3DES `MgmKey`, which a 5.7 key refuses, and both now run on [`device::piv_session`](src/device/piv_session.rs)'s AES-authenticated session. Not hardware-verified. **Phase 5 — the management applet — is now built** ([`device::mgmt`](src/device/mgmt.rs)): CCID `00 1D`, hand-written because no crate covers it, reporting the form factor, the FIPS state and **which applications are enabled**. That last field is the one whose absence caused the same bug twice, in opposite directions, and both readings of silence are now unnecessary. The application names deliberately match `ykman info`'s, because the pre-flight matches on those strings. Not hardware-verified; the parser is pure and covered byte for byte. Remaining: a key to verify PIV and the management exchange against, and the OTP config frame (phase 4, deliberately not hand-rolled without one). |
+| `[x]` | Secrets custody | [spec](features/secrets-custody.md) — **model B decided (2026-08-10)**: transport secret + forced change, nothing retained. `CustodyModel` fixes the vocabulary, the standard template carries the forced-change step, the **generate / show-once / zeroise machinery is built** (`crate::secret`: no `Clone`, no `Serialize`, `Debug` prints `<redacted>`, OS CSPRNG with unbiased digits), and the **sealed-envelope slip** is rendered (`src/envelope.rs`). The two sub-decisions (phase 8 — the PUK and the OTP access code) were answered by the owner on 2026-08-11 and are implemented, and custody of the OTP access code is now recorded per write. Left: the custody **report**, which belongs with [reports & export](features/reports-and-export.md) in Wave 2, and optional external escrow. |
 
 ## Wave 2 — Operations at scale
 
