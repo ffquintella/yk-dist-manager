@@ -1,0 +1,29 @@
+# A one-line fix to a dependency nobody maintains
+# (features/packaging-and-release.md phase 0b).
+#
+# `block` 0.1.6 declares `static _NSConcreteStackBlock: Class;` where `Class` is
+# an uninhabited type, which rustc's `uninhabited_static` lint reports as a future
+# incompatibility: it will become a hard error (rust-lang/rust#74840). The crate
+# has had no release since 2020 and reaches this project through
+# `nokhwa` → `nokhwa-bindings-macos`, so a build that scans a barcode with a
+# camera — the default build — carries it.
+#
+# NRM §5.4.3 makes that a blocker for a *distributed* artefact rather than a
+# warning to live with: an installed build that a toolchain update stops being
+# able to rebuild is a supply problem. Cargo's own advice for a dependency whose
+# maintainer cannot be waited on is `[patch]` with your own copy, which is what
+# this is.
+#
+# **The change is four lines**, marked `PATCHED` in `src/lib.rs`: the opaque
+# `Class` becomes a zero-sized `#[repr(C)]` struct, which is inhabited. Nothing
+# else differs from 0.1.6 except the removal of a test module whose helper crate
+# the published package does not contain. See `README.md` in this directory.
+[package]
+name = "block"
+version = "0.1.6"
+authors = ["Steven Sheldon"]
+edition = "2015"
+license = "MIT"
+description = "Rust interface for Apple's C language extension of blocks (patched copy; see README.md)"
+repository = "http://github.com/SSheldon/rust-block"
+publish = false

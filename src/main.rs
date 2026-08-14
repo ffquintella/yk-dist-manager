@@ -17,7 +17,9 @@ fn main() -> eframe::Result {
     match diagnostics::parse_args(args.iter().map(String::as_str)) {
         Invocation::Gui => {}
         Invocation::Version => {
-            println!("yk-dist-manager {}", yk_dist_manager::VERSION);
+            // The build id rather than the version: a release is identified by
+            // the commit it came from (`features/packaging-and-release.md` phase 2).
+            println!("yk-dist-manager {}", yk_dist_manager::build_id());
             return Ok(());
         }
         Invocation::Help => {

@@ -147,11 +147,11 @@ distributing by courier or post.
 | 1 | Decide the model | **Done (2026-08-10)** | model B — transport secret + forced change, nothing retained |
 | 2 | Typed custody vocabulary on the run | Done | `CustodyModel` + `ChangeEnforcement`; stored in the existing `custody` column, so no migration. A dedicated column arrives with schema v2 if reporting needs one |
 | 3 | Secret input: prompt, generate, show-once, zeroise, redacted `Debug` | **Done** | [`src/secret.rs`](../src/secret.rs) — `zeroize` + the OS CSPRNG, `ShowOnce` wiped on dismissal and on drop |
-| 4 | `forcePINChange` in the FIDO2 step | **In progress** | the executor calls it and audits the enforcement; the CTAP transport behind it is bootstrap-engine phase 5 |
+| 4 | `forcePINChange` in the FIDO2 step | **Done** | the executor calls it and audits the enforcement, and the CTAP transport behind it is hardware-verified on a 5.7.4 key (`step-fido2-pin.md` phase 6). Below 5.7 the firmware cannot enforce it and the pre-flight says so: the signed term becomes the mechanism |
 | 5 | Sealed-envelope slip rendering | **Done** | [`src/envelope.rs`](../src/envelope.rs) — never stored, bytes zeroised, refuses a dismissed panel |
 | 6 | Optional external escrow (BastionVault KV), reference-only in the database | Todo | never the value here |
 | 7 | Custody report: which keys hold which model, and where the change was only *instructed* | Todo | `features/reports-and-export.md` |
-| 8 | Resolve the PUK and OTP-access-code sub-decisions | Todo | defaults implemented; confirmation pending |
+| 8 | Resolve the PUK and OTP-access-code sub-decisions | **Done (2026-08-11)** | both answered by the owner and recorded in `roadmap.md`: the **PUK** travels in the sealed envelope and nothing is retained, and the **OTP access code** does too — which reversed the generate-and-discard default this was built with, so a protected slot can be reprogrammed later without an applet reset. `SecretKind::goes_to_the_holder` is where the answer lives, and the management key is now the only secret that does not travel, because it is protected onto the key itself. Phase 7's custody *report* is separate and still Todo |
 
 ## Audit events
 

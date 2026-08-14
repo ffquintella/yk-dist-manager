@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=YubiKey Distribution Manager
+GenericName=Security token register
+Comment=Track which YubiKey went to whom, and apply the bootstrap procedure
+Exec=yk-dist-manager
+Icon=yk-dist-manager
+Terminal=false
+Categories=Utility;Security;
+Keywords=YubiKey;FIDO2;PIV;security token;inventory;
+StartupNotify=true

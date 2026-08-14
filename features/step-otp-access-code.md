@@ -75,12 +75,52 @@ tool's own database — see `features/db-password-and-encryption.md` Phase 7).
 |---|---|---|---|
 | 1 | Plan entry with a secret placeholder and the fallback command | Done | |
 | 1b | Custody default under model B: generate and discard | Done (default taken) | the holder never needs this code, so the slot is deliberately frozen; confirmation pending — `roadmap.md` #6 |
-| 2 | Executor on the `ykman` path using the prompt form (`--access-code -`) | Todo | no code in argv |
+| 2 | Executor on the `ykman` path using the prompt form (`--access-code -`) | **Done** | [`ykman::set_otp_access_code`](../src/device/ykman.rs) runs `otp settings <slot> --force --new-access-code -` with the code on **stdin**, never in argv, where every process on the workstation can read it (`run_with_stdin`, which logs the arguments and never the input). Three facts read out of `ykman` 5.9.2's own source rather than guessed, each of which decides whether it works at all: the prompt **confirms**, so the code goes in twice; `settings` refuses an **empty** slot, so the step checks that first and explains it; and the write **resets the slot's other settings to their defaults**, which the preview says. The plan already labelled these steps `ykman (fallback)`, so what the operator confirms is what runs — **the code is complete and the protocol conversation is unverified against a key**; the pure half is covered by tests |
 | 3 | Native read path over `hidapi` (slot status, sequence) | Todo — **the `ykman` read landed instead** | `device::ykman::parse_otp_info` answers "which slots are programmed" today, unit-tested against recorded output, and feeds the pre-flight refusal. The *native* frame is still unwritten. Note what neither path can answer: **whether a slot carries an access code** — nothing reports it, so no read ever claims one |
 | 4 | Native write path (access code) | Todo — **blocked on hardware, deliberately** | frame + CRC + status confirmation, hand-rolled because no crate exposes it. Not written without a key to verify against: the failure mode of a wrong frame is a slot write-protected by a code nobody holds, which is unrecoverable from this tool |
 | 5 | Optional slot programming (challenge-response) | Todo | for local unlock use cases |
-| 6 | Warn that a protected slot blocks interface mode switching | Todo | in the wizard, before the run |
-| 7 | Record custody of the access code | Todo | `features/secrets-custody.md` |
+| 6 | Warn that a protected slot blocks interface mode switching | **Done** | a pre-flight warning on the step, alongside the settings reset the write performs, and repeated in the step's own detail. Under model B it ends with the mitigation rather than the problem: the code travels to the holder on the sealed slip (2026-08-11), so the slot can still be reprogrammed later |
+| 7 | Record custody of the access code | **Done** | `secret.custody` per write — step, slot, `custody=sealed-envelope`, `retained=no`. Where it went, never the value (AGENTS.md §2) |
+
+## Open: as specified, this step can never run on a real key (2026-08-14)
+
+Writing the access-code path made a contradiction visible that was invisible while the
+write was unimplemented, and it is **not the implementer's to resolve** — it turns on
+the owner's answer of 2026-08-13 about what counts as an already-configured key.
+
+An access code write-protects a **configuration**. `ykman otp settings` refuses an
+empty slot, and the applet has nothing to protect on one. So the step needs OTP slot 1
+to hold something. But a programmed OTP slot is one of the three signals
+[`device-detection.md`](device-detection.md) phase 5 treats as evidence that a key has
+already been through a procedure, and that refusal is **blocking with no override**.
+The two rules meet like this:
+
+| The key's slot 1 | Pre-flight | This step |
+|---|---|---|
+| empty | run proceeds | **skips** — nothing to protect |
+| programmed | **run refused** | never reached |
+
+Either way the step does not apply, so `org-standard`'s `otp-access-code` is a step
+that cannot complete on any key. Nothing here is wrong in isolation: the skip is
+honest, and the refusal is the owner's decision working as intended.
+
+Three ways out, and the choice is a **policy** one:
+
+1. **Drop the step from the standard procedure.** The unit does not use the OTP slots,
+   which is the likeliest truth — and it is the smallest change: an edit on the
+   Templates screen, no code.
+2. **Program the slot first, then protect it** — phase 5 (challenge-response, a static
+   password, a Yubico OTP registered with somebody). That needs somebody to say *what
+   the slot is for*, which nobody has, and it makes the procedure write a credential
+   the holder was not promised.
+3. **Narrow the phase-5 refusal** so a programmed OTP slot alone is not evidence of a
+   previous bootstrap — the same carve-out already made for the PIV attestation slot
+   `f9` and for a changed management key. Defensible (a factory Yubico OTP credential
+   is not somebody's signing identity) and **the owner's call**, because it weakens the
+   control that stops a live credential being overwritten.
+
+Recorded here rather than decided, per `AGENTS.md` §8, and listed in
+[`roadmap.md`](../roadmap.md) under Open questions.
 
 ## Audit events
 
@@ -88,6 +128,7 @@ tool's own database — see `features/db-password-and-encryption.md` Phase 7).
 |---|---|
 | `bootstrap.step.done` | `step=otp-access-code slot=1 protected=true` |
 | `bootstrap.step.failed` | `step=otp-access-code slot=1 reason=<status>` |
+| `secret.custody` | `step=otp-access-code slot=1 custody=sealed-envelope retained=no` — where the code went, never the value (phase 7) |
 | `otp.slot.programmed` | Phase 5: `slot=2 type=chalresp` |
 
 ## Tests

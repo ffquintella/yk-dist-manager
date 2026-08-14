@@ -21,12 +21,14 @@
 //!   *retired* (withdrawn from the wizard, kept on record); only a version
 //!   nothing refers to can be removed outright. See [`StoredTemplate`].
 
+pub mod applicability;
 pub mod diff;
 pub mod draft;
 pub mod plan;
 pub mod portable;
 pub mod signing;
 
+pub use applicability::{Applicability, Verdict};
 pub use diff::{Change, DiffLine, TemplateDiff};
 pub use draft::{StepDraft, TemplateDraft};
 pub use plan::{Arg, NativeOp, PlannedCommand, Transport, native_op, plan};
@@ -79,6 +81,20 @@ pub enum TemplateError {
          it, so `{later}` could never succeed — move the forced change after it"
     )]
     PinLockedBeforeUse { marker: String, later: String },
+    #[error(
+        "`{value}` is not a firmware version for `{field}` — write it as three numbers, e.g. \
+         `5.7.0`. A bound this cannot read would refuse every key without saying why"
+    )]
+    BadVersionBound { field: &'static str, value: String },
+    #[error("the firmware range is impossible: the lowest allowed is newer than the highest")]
+    ImpossibleVersionRange,
+    #[error(
+        "`{0}` is not an application a YubiKey has — use one of: Yubico OTP, FIDO U2F, FIDO2, \
+         OATH, PIV, OpenPGP, YubiHSM Auth"
+    )]
+    UnknownApplication(String),
+    #[error("step `{step}`: {attempts} attempts is more than the {max} this allows")]
+    TooManyAttempts { step: String, attempts: u8, max: u8 },
 }
 
 /// Values a template can interpolate. Everything here is non-secret.
@@ -196,9 +212,44 @@ pub struct TemplateStep {
     pub enabled: bool,
     /// A failure here aborts the run; otherwise the run continues and the step
     /// is recorded as failed.
+    ///
+    /// This is the **continue-on-failure** half of
+    /// `features/bootstrap-templates.md` phase 7, and it has existed since phase 1;
+    /// [`Self::attempts`] is the retry half.
     pub required: bool,
+    /// How many times the executor attempts this step before recording it failed.
+    ///
+    /// `1` — one attempt — is the behaviour every template had before this field
+    /// existed, and is what the encoding writes as nothing at all, so a stored
+    /// template's bytes, its fingerprint and any signature over it are unchanged
+    /// until somebody raises it.
+    ///
+    /// **Not every failure is retried, whatever this says.** A wrong PIN is not
+    /// (retrying burns the applet's counter towards a lock), a detached key is not
+    /// (there is nothing to retry against), an unsupported operation is not (it
+    /// will be unsupported the second time too). Only a transport-level failure is
+    /// — see [`crate::device::write::WriteError::is_worth_retrying`], which is
+    /// where the policy lives, because it is a property of the error and not of
+    /// the procedure.
+    #[serde(default = "one_attempt", skip_serializing_if = "is_one_attempt")]
+    pub attempts: u8,
     /// Step parameters; values may contain `{{variables}}`.
     pub params: BTreeMap<String, String>,
+}
+
+/// Most attempts a step may be given.
+///
+/// A bound because every input here has one, and a low one because retrying is
+/// for a transport that dropped a frame, not for a key that is refusing. A step
+/// that needs six goes needs an operator, not a loop.
+pub const MAX_ATTEMPTS: u8 = 5;
+
+fn one_attempt() -> u8 {
+    1
+}
+
+fn is_one_attempt(attempts: &u8) -> bool {
+    *attempts <= 1
 }
 
 impl TemplateStep {
@@ -209,6 +260,7 @@ impl TemplateStep {
             description: description.to_owned(),
             enabled: true,
             required: true,
+            attempts: 1,
             params: BTreeMap::new(),
         }
     }
@@ -221,6 +273,21 @@ impl TemplateStep {
     pub fn optional(mut self) -> Self {
         self.required = false;
         self
+    }
+
+    /// Give this step more than one go at a transport-level failure.
+    pub fn with_attempts(mut self, attempts: u8) -> Self {
+        self.attempts = attempts;
+        self
+    }
+
+    /// The attempts this step actually gets, whatever the stored value says.
+    ///
+    /// Clamped rather than trusted: the field is `u8` and reaches the executor
+    /// from a JSON body a hand edit could have set to 200, which would be a loop
+    /// against a key rather than a retry.
+    pub fn attempt_budget(&self) -> u8 {
+        self.attempts.clamp(1, MAX_ATTEMPTS)
     }
 
     pub fn param(&self, key: &str) -> Result<&str, TemplateError> {
@@ -330,6 +397,13 @@ impl TemplateStep {
     /// Everything that must hold before this step is stored.
     fn check(&self) -> Result<(), TemplateError> {
         check_id(&self.id)?;
+        if self.attempts > MAX_ATTEMPTS {
+            return Err(TemplateError::TooManyAttempts {
+                step: self.id.clone(),
+                attempts: self.attempts,
+                max: MAX_ATTEMPTS,
+            });
+        }
         if self.description.trim().is_empty() {
             return Err(TemplateError::Missing("a description on every step"));
         }
@@ -454,6 +528,16 @@ pub struct BootstrapTemplate {
     pub version: String,
     pub description: String,
     pub steps: Vec<TemplateStep>,
+    /// Which keys this procedure may be applied to
+    /// (`features/bootstrap-templates.md` phase 3).
+    ///
+    /// Default is *unrestricted*, and an unrestricted rule serialises to nothing,
+    /// so a template stored before this field existed reads back byte-for-byte
+    /// unchanged — the same contract [`Self::signature`] has, and for the sharper
+    /// reason: the canonical bytes a signature is made over would otherwise
+    /// change under every template in the field at once.
+    #[serde(default, skip_serializing_if = "Applicability::is_unrestricted")]
+    pub applicability: Applicability,
     /// Who signed this procedure, when anybody has
     /// ([`signing`], `features/bootstrap-templates.md` phase 5).
     ///
@@ -484,6 +568,7 @@ impl BootstrapTemplate {
             version: "1".into(),
             description: String::new(),
             steps: Vec::new(),
+            applicability: Applicability::default(),
             signature: None,
         }
     }
@@ -500,6 +585,10 @@ impl BootstrapTemplate {
             version: "1".into(),
             description: self.description.clone(),
             steps: self.steps.clone(),
+            // The rule travels with the procedure: a variant cut from a template
+            // that is only for firmware 5.7 is, until somebody says otherwise,
+            // also only for firmware 5.7.
+            applicability: self.applicability.clone(),
             // A duplicate is a *different* procedure: the id is part of what a
             // signature covers, so carrying the signature across would produce a
             // template that fails verification and looks tampered with. Dropping
@@ -516,6 +605,7 @@ impl BootstrapTemplate {
             version: version.trim().to_owned(),
             description: self.description.trim().to_owned(),
             steps: self.steps.clone(),
+            applicability: self.applicability.clone(),
             // Renumbering keeps the signature, and that is the point of leaving
             // the version out of the canonical bytes: the store assigns version
             // numbers, so a signature that broke on renumbering could never
@@ -571,6 +661,7 @@ impl BootstrapTemplate {
         for step in &self.steps {
             step.check()?;
         }
+        self.applicability.check()?;
         self.validate()?;
         // Every step is planned, including the ones that arrive disabled: the
         // wizard can enable an optional step on any run, and a step that only
@@ -750,6 +841,13 @@ impl BootstrapTemplate {
                 .with_param("expect_fido_pin", "true")
                 .with_param("expect_piv_slot", "9c"),
             ],
+            // **Unrestricted, deliberately.** The standard procedure is the one a
+            // unit applies to whatever it bought, and a rule here would be this
+            // build guessing at a fleet it has never seen. Phase 3 exists so a unit
+            // can write the rule it actually has — two key models, or a procedure a
+            // later firmware changed out from under — not so the shipped template
+            // can carry one.
+            applicability: Applicability::default(),
             // The built-ins ship **unsigned**, and that is not an omission. A
             // signature is only worth what the key behind it is worth, and this
             // build has no organisation's key to sign with — shipping one signed by
@@ -794,6 +892,7 @@ impl BootstrapTemplate {
                     )
                 })
                 .collect(),
+            applicability: full.applicability,
             signature: None,
         }
     }

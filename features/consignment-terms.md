@@ -222,18 +222,18 @@ them.
 
 ## Phases
 
-| # | Phase | State | Notes |
-|---|---|---|---|
-| 1 | Template model keyed by `(id, language, version)` | Done | schema v3 |
-| 2 | Rendering with line omission for optional fields | Done | 18 unit tests |
-| 3 | Optional holder fields (identification number, phone, address) | Done | fill-in-never-blank on re-registration |
-| 4 | pt-BR and en built-ins, seeded idempotently | Done | an edited template survives seeding |
-| 5 | Language selection with documented fallback | Done | the GUI reports a fallback |
-| 6 | Generate, review and save from the distribution screen | Done | plain text |
-| 7 | PDF output | **Done** | `crate::pdf`, hand-written, no dependency and no TeX; Courier from the standard fourteen fonts; the footer names the template version; the signature block survives the page break; the Terms editor exports its preview too |
-| 8 | Template editor in the GUI, with a version bump on edit | Done | Terms screen; the store assigns the version, `choose_template` takes the newest |
-| 9 | Return receipt as a second template id | Todo | closes the custody loop |
-| 10 | Print directly | Todo | platform print dialog |
+| # | Phase | Wave | State | Notes |
+|---|---|---|---|---|
+| 1 | Template model keyed by `(id, language, version)` | 0 | Done | schema v3 |
+| 2 | Rendering with line omission for optional fields | 0 | Done | 18 unit tests |
+| 3 | Optional holder fields (identification number, phone, address) | 0 | Done | fill-in-never-blank on re-registration |
+| 4 | pt-BR and en built-ins, seeded idempotently | 0 | Done | an edited template survives seeding |
+| 5 | Language selection with documented fallback | 0 | Done | the GUI reports a fallback |
+| 6 | Generate, review and save from the distribution screen | 0 | Done | plain text |
+| 7 | PDF output | 0 | **Done** | `crate::pdf`, hand-written, no dependency and no TeX; Courier from the standard fourteen fonts; the footer names the template version; the signature block survives the page break; the Terms editor exports its preview too |
+| 8 | Template editor in the GUI, with a version bump on edit | 0 | Done | Terms screen; the store assigns the version, `choose_template` takes the newest |
+| 9 | Return receipt as a second template id | 0 | **Done elsewhere** | shipped as [`receipts-and-terms.md`](receipts-and-terms.md) phases 4 and 6: the return receipt *is* a second template id, so it is editable, versioned and multilingual for free. Recorded here rather than deleted, because this spec is where a reader looks for it |
+| 10 | Print directly | — | Todo — gates no wave | *Export as PDF…* covers it: the operator prints the file their platform already knows how to print. A print dialog would be a second path to the same bytes, and the one that goes through a file is the one that leaves evidence |
 
 ## Audit events
 

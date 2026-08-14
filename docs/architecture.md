@@ -47,6 +47,7 @@
 | `template` | Templates, variable rendering, the editable draft, and turning a template into a plan | Execute anything, hold a secret value |
 | `versioning` | One answer to "what number does the next edit get?", shared by templates and terms | Know what is being versioned |
 | `pdf` | Setting a monospaced document on A4 pages and writing the PDF: encoding, wrapping, pagination, the cross-reference table | Decide what a document *says* — it is handed lines, and it reads no clock |
+| `incident` | The note that goes to the ESI when a key is lost or stolen: what happened, what the key was carrying, what has been dealt with, what is still owed | Store anything, send anything, or read the clock — it is handed the records and the instant |
 | `store` | The SQLite file: schema, migrations, pragmas, CRUD, audit insertion | Contain business rules that belong in `domain` |
 | `store::cloud` | Making a database in a sync folder (OneDrive, Dropbox, …) strictly sequential: the settle wait, the `<database>.lock` single-writer lock, conflict-copy detection | Pretend to be a distributed lock, or hold anything secret |
 | `store::smb` | Reaching an SMB share: parsing a location, the identity to present, connecting and releasing (`WNetAddConnection2W`, `NetFSMountURLSync`), and reporting a local path | Open a database — it hands back a path and a `StoreConfig`, and `Store` never learns what SMB is. Keep a password anywhere but a zeroed-on-drop `Secret`, or put one in an argument vector |
@@ -103,6 +104,30 @@ rather than dropped: "slot 9c is empty" and "PIV was not read" lead to opposite 
 and the pre-flight refusal of an already-configured key would be unsound if it could not
 tell them apart.
 
+**Which applications a key has enabled comes from the device, not from an applet.**
+[`device::mgmt`](../src/device/mgmt.rs) reads the management applet over CCID
+(`00 1D`) for the form factor, the FIPS state and the per-application enable flags.
+It is the only authoritative answer to "is FIDO2 even switched on", and its absence
+cost this codebase the same bug twice: with the field unreadable, one build reported
+the applet it had just spoken to (and the pre-flight skipped five of eleven steps),
+and the next reported nothing (and the pre-flight had to warn that it could not
+check). Both are readings of *silence*, and neither is needed now the field is read.
+The BER-TLV walker the applets share lives in [`device::tlv`](../src/device/tlv.rs),
+because two length parsers is how one of them ends up subtly different — and the
+failure is not a compile error but a field read out of the middle of the wrong bytes.
+
+**Unknown is a third answer, everywhere a read informs a refusal.** It is the single
+rule this module boundary is built around, and it is spelled differently in each
+place: `Option<Fido2State>` for an applet that did not answer, `Option<bool>` for the
+three PIV "is it still the factory default" flags, `usb_has() -> Option<bool>` for an
+application nobody read, and two lists — refusals and unknowns — in a template's
+applicability verdict. The reason it is worth the repetition is that the *consumers
+read unknown in opposite directions*: the executor must treat "unknown" as "try
+anyway", so a step never skips something that was never applied, while a badge or a
+refusal must treat it as "say nothing", because a warning that fires on a correctly
+configured key is one an operator learns to ignore. A single boolean cannot serve both,
+and every time one has, the bug has looked like a feature working.
+
 **Destroying what is on a key is its own trait, and it takes no secret.**
 [`device::reset`](../src/device/reset.rs) is deliberately not part of `WriteBackend`:
 every method there borrows a `Secret`, and a factory reset destroys the credential rather
@@ -127,7 +152,15 @@ crate: this is one exchange plus its two dependents, not a second PIV implementa
 
 **A certificate that arrives by hand is checked before the write, by pure code.**
 [`device::certificate`](../src/device/certificate.rs) parses PEM or DER, summarises
-what the certificate claims, and refuses one whose public key is not the slot's. It is
+what the certificate claims, and refuses one whose public key is not the slot's. It
+also carries the **read-back** verification the `Verify` step runs against the card:
+subject DN, the holder's `rfc822Name`, and the key usage / EKU, reported per check
+because an operator needs to see *which* disagreed. Two of those checks are subtler
+than they look — a subject is compared as a set of attributes, because a CA may
+reorder and re-space a distinguished name and a check that always fails gets switched
+off; and a certificate that carries *neither* usage extension is reported as "does not
+state a usage" rather than as a pass or a failure, because it constrains nothing and
+saying otherwise would claim the CA said something it did not. It is
 compiled into every build, including the `ykman`-only one, because reading a
 certificate needs no card — and it is where the check lives rather than in the wizard
 so that it is covered by tests (`src/ui/` is outside the coverage gate, and §4 of
@@ -170,10 +203,11 @@ single-user desktop app over one file; none of them would pay for themselves.
 
 ## Where the boundaries will be tested next
 
-- **The executor** (Wave 1) needs write traits per applet, so it can be tested against
-  mocks. It belongs in a new `bootstrap` module, not in `app` — `app` should call it, not
-  contain it.
-- **Per-step run rows** (schema v2) will move `BootstrapRun.steps` out of a JSON blob, so
-  reports can query step outcomes.
+- **The executor** needs write traits per applet, so it can be tested against mocks. It
+  belongs in a new `bootstrap` module, not in `app` — `app` should call it, not contain it.
+  *(Built in Wave 1: `bootstrap::execute`, `device::write`.)*
+- **Per-step run rows** will move `BootstrapRun.steps` out of a JSON blob, so reports can
+  query step outcomes. *(Done as schema v5 — the note said "v2", which was the version it
+  was expected to land in and not the one it did.)*
 - **Operator authentication** turns `app.operator` from a string into an identity, and the
   enforcement points belong in `store`, not `ui`, so a UI bug cannot bypass a role check.

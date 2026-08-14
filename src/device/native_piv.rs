@@ -287,10 +287,13 @@ impl PivWriter for NativePiv {
             })
             .unwrap_or_default();
 
-        // `Some(false)` is the only reading that means "somebody has changed it".
-        // `Some(true)` and `None` both leave the executor to try.
-        let pin_changed_from_default =
-            Self::is_default(&mut key, ManagementSlotId::Pin) == Some(false);
+        // Carried as the applet's own three-way answer rather than flattened to a
+        // boolean: `Some(true)` still default, `Some(false)` changed, `None` the
+        // firmware has no `GET METADATA` or the read failed. The executor reads
+        // unknown as "try anyway"; the inventory badge reads it as "do not accuse
+        // this key" — see `PivState`.
+        let pin_is_default = Self::is_default(&mut key, ManagementSlotId::Pin);
+        let puk_is_default = Self::is_default(&mut key, ManagementSlotId::Puk);
 
         // Read, never reset. `get_pin_retries` reports what is left; a failure to
         // read it is `None` rather than an error, because a retry counter is context
@@ -308,15 +311,15 @@ impl PivWriter for NativePiv {
         // The crate's handle is dropped first: two connections to one reader at
         // the same time is how a session gets refused.
         drop(key);
-        let management_key_changed = super::piv_session::Session::open(serial, "piv.metadata")
+        let management_key_is_default = super::piv_session::Session::open(serial, "piv.metadata")
             .ok()
-            .and_then(|mut session| session.management_key_is_default("piv.metadata"))
-            == Some(false);
+            .and_then(|mut session| session.management_key_is_default("piv.metadata"));
 
         Ok(PivState {
             occupied_slots,
-            management_key_changed,
-            pin_changed_from_default,
+            management_key_is_default,
+            pin_is_default,
+            puk_is_default,
             pin_retries,
         })
     }
@@ -556,6 +559,37 @@ impl PivWriter for NativePiv {
 
         let mut session = Self::authenticated(serial, pin, OP)?;
         session.import_certificate(u8::from(slot_id), &der, OP)
+    }
+
+    fn read_certificate(&mut self, serial: u32, slot: &str) -> Result<Option<String>> {
+        const OP: &str = "piv.read_certificate";
+        let slot_id = Self::parse_slot(slot, OP)?;
+        let mut key = self.open(serial, OP)?;
+
+        // An empty slot is a **state**, not an error: it is what a run whose
+        // certificate has not come back from the CA yet looks like, and the
+        // verification step has to be able to say so rather than fail. The crate
+        // gives one error type for "not found" and for a broken read, so the
+        // distinction is drawn on the only thing available — whether the slot is in
+        // the card's own list of what it holds.
+        let occupied = yubikey::piv::Key::list(&mut key)
+            .map(|keys| keys.iter().any(|k| k.slot() == slot_id))
+            .unwrap_or(false);
+        if !occupied {
+            return Ok(None);
+        }
+
+        match yubikey::certificate::Certificate::read(&mut key, slot_id) {
+            Ok(certificate) => {
+                use x509_cert::der::Encode;
+                let der = certificate.cert.to_der().map_err(|e| WriteError::Failed {
+                    operation: OP,
+                    reason: format!("the slot's certificate could not be re-encoded: {e}"),
+                })?;
+                Ok(Some(pem_encode("CERTIFICATE", &der)))
+            }
+            Err(e) => Err(Self::classify(OP, e, None)),
+        }
     }
 }
 

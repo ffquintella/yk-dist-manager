@@ -80,16 +80,16 @@ a later phase rather than a startup dependency.
 
 ## Phases
 
-| # | Phase | State | Notes |
-|---|---|---|---|
-| 1 | Record with validation, unique e-mail, RFC 4514 subject | Done | |
-| 2 | Holders screen with the count of keys currently held | Done | |
-| 2b | Optional identification number, phone and address | Done | schema v3, for the consignment term; a re-registration fills in and never blanks them |
-| 3 | AD / LDAP lookup to fill the record | Todo | needs the ESI-approved integration |
-| 4 | Deactivate a holder (and refuse new distributions to them) | Todo | `active` exists but is not enforced |
-| 5 | Search and filter | **Done** | shipped as `features/gui-shell.md` phase 3: [`browse::holders`](../src/browse.rs) matches the name, e-mail, unit and registration, with sorting and paging |
-| 6 | Per-holder view: keys held, history, bootstrap evidence | Todo | one screen answering "what does Ana have?" |
-| 7 | Retention: what happens to a holder record when they leave | Todo | blocked on the DPO/retention decision |
+| # | Phase | Wave | State | Notes |
+|---|---|---|---|---|
+| 1 | Record with validation, unique e-mail, RFC 4514 subject | 0 | Done | |
+| 2 | Holders screen with the count of keys currently held | 0 | Done | |
+| 2b | Optional identification number, phone and address | 0 | Done | schema v3, for the consignment term; a re-registration fills in and never blanks them |
+| 3 | AD / LDAP lookup to fill the record | — | Todo | needs the ESI-approved integration |
+| 4 | Deactivate a holder (and refuse new distributions to them) | 2 | Todo | `active` exists but is not enforced |
+| 5 | Search and filter | 0 | **Done** | shipped as `features/gui-shell.md` phase 3: [`browse::holders`](../src/browse.rs) matches the name, e-mail, unit and registration, with sorting and paging |
+| 6 | Per-holder view: keys held, history, bootstrap evidence | 2 | Todo | one screen answering "what does Ana have?" |
+| 7 | Retention: what happens to a holder record when they leave | — | Todo | blocked on the DPO/retention decision |
 
 ## Audit events
 

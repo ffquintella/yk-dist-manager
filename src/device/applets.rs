@@ -48,6 +48,14 @@ pub struct Snapshot {
     pub fido2: Option<Fido2State>,
     pub piv: Option<PivState>,
     pub otp: Option<OtpState>,
+    /// What the **management** applet says: form factor, which applications are
+    /// enabled, FIPS state (`features/native-device-transport.md` phase 5).
+    ///
+    /// The one applet that answers about the *device* rather than about itself, and
+    /// therefore the only authoritative answer to "is FIDO2 even switched on".
+    /// Before it was read, the pre-flight had to warn on every applet-dependent
+    /// step that it could not check.
+    pub management: Option<super::mgmt::DeviceConfig>,
     /// One line per applet that could not be read, naming the applet and why.
     ///
     /// Shown to the operator rather than logged: a refusal that depends on a read is
@@ -57,8 +65,78 @@ pub struct Snapshot {
 
 impl Snapshot {
     /// Did anything answer at all?
+    ///
+    /// The management applet is deliberately **not** counted: it says which
+    /// applications are enabled, and nothing about whether any of them has been
+    /// configured. A snapshot holding only a management read has learned nothing
+    /// about the state the phase-5 refusal rests on, and reporting it as non-empty
+    /// would let a caller trust `already_configured()`'s silence.
     pub fn is_empty(&self) -> bool {
         self.fido2.is_none() && self.piv.is_none() && self.otp.is_none()
+    }
+
+    /// Is this application enabled on the key, as the management applet reports it?
+    ///
+    /// `None` means the applet was not read, which is not `false` — the whole point
+    /// of [`super::mgmt`]'s existence. `applet` is the pre-flight's own vocabulary
+    /// (`FIDO2`, `PIV`, `OTP`), mapped here to the name the applet uses.
+    pub fn application_enabled(&self, applet: &str) -> Option<bool> {
+        let name = match applet {
+            "FIDO2" => "FIDO2",
+            "PIV" => "PIV",
+            "OTP" => "Yubico OTP",
+            _ => return None,
+        };
+        self.management.as_ref()?.usb_has(name)
+    }
+
+    /// The factory defaults this key is **known** to still carry, as sentences for
+    /// the Inventory badge (`features/step-piv-pin-puk-management-key.md` phase 6).
+    ///
+    /// The wizard has warned about these since the pre-flight existed, and that is
+    /// the wrong place for the only warning: it is seen once, by the operator who is
+    /// about to fix it. Somebody auditing the fleet a year later needs to see it on
+    /// the key's own row.
+    ///
+    /// A FIDO2 applet with **no PIN** is included, and it is not a "default" in the
+    /// same sense — there is no value to change. It belongs here anyway: the state a
+    /// badge is for is *this key was never configured*, and an unprotected FIDO2
+    /// applet is that state as much as a factory PIV PIN is.
+    ///
+    /// Silence when nothing was read, always.
+    pub fn factory_defaults(&self) -> Vec<String> {
+        let mut lines: Vec<String> = self
+            .piv
+            .as_ref()
+            .map(|piv| {
+                piv.factory_defaults()
+                    .into_iter()
+                    .map(|name| format!("the {name} is still the factory default"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Some(fido2) = &self.fido2
+            && !fido2.pin_set
+        {
+            lines.push("no FIDO2 PIN is set, so the applet is unprotected".to_owned());
+        }
+        lines
+    }
+
+    /// One line for a table cell: the count and the shortest honest summary.
+    ///
+    /// `None` when there is nothing to report, so a screen can leave the cell empty
+    /// rather than printing "none" against every properly configured key.
+    pub fn factory_default_badge(&self) -> Option<String> {
+        let defaults = self.factory_defaults();
+        match defaults.len() {
+            0 => None,
+            1 => Some(defaults.into_iter().next().unwrap()),
+            n => Some(format!(
+                "{n} factory defaults still present: {}",
+                defaults.join("; ")
+            )),
+        }
     }
 
     /// Does this key already carry a configuration this tool would have applied?
@@ -74,15 +152,21 @@ impl Snapshot {
     /// piece of state a fleet-management tool may legitimately have set without ever
     /// bootstrapping the key, and treating it as evidence would refuse keys that are
     /// merely under management.
+    ///
+    /// Neither is the **attestation certificate in slot f9**
+    /// ([`PivState::configured_slots`]). Yubico programmes it during manufacture, so it
+    /// is on every key the refusal is meant to let through — and counting it made the
+    /// first real bootstrap impossible: the refusal fired on a key out of the box.
     pub fn already_configured(&self) -> Vec<String> {
         let mut evidence = Vec::new();
-        if let Some(piv) = &self.piv
-            && !piv.occupied_slots.is_empty()
-        {
-            evidence.push(format!(
-                "PIV slot(s) {} already hold a certificate",
-                piv.occupied_slots.join(", ")
-            ));
+        if let Some(piv) = &self.piv {
+            let slots = piv.configured_slots();
+            if !slots.is_empty() {
+                evidence.push(format!(
+                    "PIV slot(s) {} already hold a certificate",
+                    slots.join(", ")
+                ));
+            }
         }
         if let Some(fido2) = &self.fido2
             && fido2.pin_set
@@ -111,12 +195,12 @@ impl Snapshot {
             Some(piv) => lines.push(format!(
                 "PIV: slots [{}], management key {}, PIN {}{}",
                 piv.occupied_slots.join(", "),
-                if piv.management_key_changed {
+                if piv.management_key_changed() {
                     "changed"
                 } else {
                     "at default (or unreadable)"
                 },
-                if piv.pin_changed_from_default {
+                if piv.pin_changed_from_default() {
                     "changed"
                 } else {
                     "at default (or unreadable)"
@@ -130,8 +214,19 @@ impl Snapshot {
         }
         match &self.fido2 {
             Some(fido2) => lines.push(format!(
-                "FIDO2: PIN {}, forced change {}{}",
+                "FIDO2: PIN {}{}{}, forced change {}{}",
                 if fido2.pin_set { "set" } else { "not set" },
+                // Read, never burned — `get_info` and `get_pin_retries` spend no
+                // attempt, which is why this is safe on a screen the operator merely
+                // opened (`features/step-fido2-pin.md` phase 8).
+                match fido2.pin_retries {
+                    Some(left) => format!(", {left} attempt(s) left"),
+                    None => String::new(),
+                },
+                match fido2.remaining_credential_slots {
+                    Some(free) => format!(", {free} credential slot(s) free"),
+                    None => String::new(),
+                },
                 if fido2.force_pin_change_set {
                     "pending"
                 } else {
@@ -160,6 +255,10 @@ impl Snapshot {
             )),
             None => lines.push("OTP: not read".to_owned()),
         }
+        match &self.management {
+            Some(config) => lines.extend(config.describe()),
+            None => lines.push("management applet: not read".to_owned()),
+        }
         lines.extend(self.unread.iter().cloned());
         lines
     }
@@ -176,10 +275,20 @@ pub fn read(serial: u32, choice: &TransportChoice) -> Snapshot {
 
     if choice.transport == Transport::Native {
         read_native(serial, &mut snapshot);
+        // The management applet is the only source for *which applications are
+        // enabled*, and reading it is what lets the pre-flight say "the OTP
+        // application is switched off" instead of "the tool could not check".
+        match super::mgmt::read(serial) {
+            Ok(config) => snapshot.management = Some(config),
+            Err(e) => snapshot
+                .unread
+                .push(format!("the management applet was not read: {e}")),
+        }
     } else {
         snapshot.unread.push(format!(
-            "PIV and FIDO2 were not read: this session reads through {}, which has no applet \
-             state read — the native transport does (features/native-device-transport.md)",
+            "PIV, FIDO2 and the management applet were not read: this session reads through {}, \
+             which has no applet state read — the native transport does \
+             (features/native-device-transport.md)",
             choice.transport.label()
         ));
     }
@@ -250,10 +359,51 @@ mod tests {
             fido2: Some(Fido2State::default()),
             piv: Some(piv(&[])),
             otp: Some(OtpState::default()),
+            management: None,
             unread: Vec::new(),
         };
         assert!(snapshot.already_configured().is_empty());
         assert!(!snapshot.is_empty());
+    }
+
+    #[test]
+    fn the_factory_attestation_certificate_is_not_evidence_of_a_previous_bootstrap() {
+        // The bug this test exists for: `piv::Key::list` reports slot f9 on every
+        // YubiKey, because Yubico programmes the attestation certificate there during
+        // manufacture. Counting it as evidence made the phase-5 refusal fire on every
+        // key attached to the tool, so no key could be bootstrapped at all.
+        let snapshot = Snapshot {
+            fido2: Some(Fido2State::default()),
+            piv: Some(piv(&["f9"])),
+            otp: Some(OtpState::default()),
+            management: None,
+            unread: Vec::new(),
+        };
+        assert!(
+            snapshot.already_configured().is_empty(),
+            "a factory-fresh key must not be refused: {:?}",
+            snapshot.already_configured()
+        );
+
+        // And it is still *described*, because what is on the card is what the operator
+        // should be shown — only the refusal narrows.
+        let piv_line = snapshot
+            .describe()
+            .into_iter()
+            .find(|l| l.starts_with("PIV:"))
+            .unwrap();
+        assert!(piv_line.contains("f9"), "{piv_line}");
+
+        // A real certificate alongside it still gives the key away, and the evidence
+        // names only that slot.
+        let bootstrapped = Snapshot {
+            piv: Some(piv(&["9c", "f9"])),
+            ..Snapshot::default()
+        };
+        let evidence = bootstrapped.already_configured();
+        assert_eq!(evidence.len(), 1, "{evidence:?}");
+        assert!(evidence[0].contains("9c"), "{}", evidence[0]);
+        assert!(!evidence[0].contains("f9"), "{}", evidence[0]);
     }
 
     #[test]
@@ -288,18 +438,106 @@ mod tests {
     }
 
     #[test]
+    fn a_key_still_on_its_factory_defaults_is_badged_and_says_which() {
+        // `features/step-piv-pin-puk-management-key.md` phase 6. The wizard has
+        // warned about this since the pre-flight existed; the point of the badge is
+        // that somebody auditing the fleet a year later sees it too.
+        let snapshot = Snapshot {
+            piv: Some(PivState {
+                pin_is_default: Some(true),
+                puk_is_default: Some(true),
+                management_key_is_default: Some(true),
+                ..PivState::default()
+            }),
+            fido2: Some(Fido2State::default()),
+            otp: Some(OtpState::default()),
+            ..Snapshot::default()
+        };
+        let defaults = snapshot.factory_defaults();
+        assert_eq!(defaults.len(), 4, "{defaults:?}");
+        assert!(
+            defaults.iter().any(|l| l.contains("PIV PIN")),
+            "{defaults:?}"
+        );
+        assert!(
+            defaults.iter().any(|l| l.contains("PIV PUK")),
+            "{defaults:?}"
+        );
+        assert!(
+            defaults.iter().any(|l| l.contains("management key")),
+            "{defaults:?}"
+        );
+        assert!(
+            defaults.iter().any(|l| l.contains("FIDO2")),
+            "an unprotected FIDO2 applet is the same state a badge is for: {defaults:?}"
+        );
+
+        let badge = snapshot.factory_default_badge().expect("badged");
+        assert!(badge.starts_with("4 factory defaults"), "{badge}");
+    }
+
+    #[test]
+    fn an_applet_that_did_not_say_is_never_badged_as_holding_a_default() {
+        // The distinction the `Option<bool>` exists for. A busy reader answers
+        // nothing, and a badge that accused a properly configured key of holding a
+        // factory PIN is a badge an operator learns to ignore — after which it is
+        // worth less than no badge at all.
+        let unread = Snapshot {
+            piv: Some(PivState::default()),
+            ..Snapshot::default()
+        };
+        assert!(unread.factory_defaults().is_empty());
+        assert_eq!(unread.factory_default_badge(), None);
+
+        // And a key that has been through the procedure is badged for nothing.
+        let configured = Snapshot {
+            piv: Some(PivState {
+                pin_is_default: Some(false),
+                puk_is_default: Some(false),
+                management_key_is_default: Some(false),
+                ..PivState::default()
+            }),
+            fido2: Some(Fido2State {
+                pin_set: true,
+                ..Fido2State::default()
+            }),
+            ..Snapshot::default()
+        };
+        assert_eq!(configured.factory_default_badge(), None);
+    }
+
+    #[test]
+    fn a_single_default_reads_as_a_sentence_rather_than_a_count() {
+        let snapshot = Snapshot {
+            piv: Some(PivState {
+                pin_is_default: Some(true),
+                ..PivState::default()
+            }),
+            fido2: Some(Fido2State {
+                pin_set: true,
+                ..Fido2State::default()
+            }),
+            ..Snapshot::default()
+        };
+        let badge = snapshot.factory_default_badge().expect("badged");
+        assert_eq!(badge, "the PIV PIN is still the factory default");
+    }
+
+    #[test]
     fn a_managed_key_whose_management_key_was_changed_is_not_treated_as_bootstrapped() {
         // The one signal deliberately excluded: a fleet-management tool may have set
         // it without ever bootstrapping the key, and refusing on it would refuse keys
         // that are merely under management.
         let snapshot = Snapshot {
             piv: Some(PivState {
-                management_key_changed: true,
-                pin_changed_from_default: true,
+                management_key_is_default: Some(false),
+                pin_is_default: Some(false),
+                puk_is_default: Some(false),
                 ..PivState::default()
             }),
             fido2: Some(Fido2State::default()),
             otp: Some(OtpState::default()),
+            management: None,
             unread: Vec::new(),
         };
         assert!(snapshot.already_configured().is_empty());

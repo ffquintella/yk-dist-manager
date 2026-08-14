@@ -15,7 +15,336 @@ Maintenance instructions (see AGENTS.md §5):
 * A database schema change also bumps store::SCHEMA_VERSION and ships a migration.
 -->
 
-## [Unreleased]
+## [0.14.0] - 2026-08-14
+
+### Added
+
+- **What happens to a key after the hand-over** — the whole of
+  `features/key-lifecycle-and-revocation.md` phases 2, 3, 4, 6, 7 and 8, reached from
+  *Lifecycle…* on any Inventory row. One panel, because during an incident these are one
+  job:
+
+  - **A loss is reported, not just marked.** Lost or stolen, when it happened, who said so
+    (required — a register does not assert a loss on its own authority) and what they said.
+    The report and the move to *Lost* are one store operation with the lifecycle asked
+    first, so a key can never be `Lost` with nothing saying why, or carry a report while the
+    register still says it is in somebody's hands. `key.reported_lost` records the kind, the
+    date and the reporter, and **counts** the circumstances rather than quoting them: an
+    audit entry cannot be corrected, and free text sometimes has to be.
+  - **What the key was carrying is worked out, not remembered** — the certificate serial in
+    slot 9c, each resident credential with its relying party, the OTP access code, and where
+    custody of the secrets went. Read back out of the bootstrap run's step details, which is
+    where every other piece of run evidence lives: a stored list would be a second truth
+    about what a run did, and would be empty for every register written before this release.
+    Derived, a register created under schema v1 answers in full.
+  - **Revocation and credential removal are recorded** with the RFC 5280 reason and the
+    reference that makes the claim checkable. They are not *performed*, and that is the same
+    decision that made the operator the issuer on 2026-08-13: the CA that signed the
+    certificate and the relying party that holds the credential are somebody else's systems.
+    A certificate serial matches however the CA's console spelled it — case, `0x`, colons.
+  - **A key cannot be reissued while it still carries the last holder's credentials.**
+    `Store::set_key_status` refuses it by name, per applet and by time: an applet is clear
+    when a reset covering it was recorded *after* the last run that wrote to it. A factory
+    reset records its own sanitisation from its **outcomes**, so an applet that refused is
+    not recorded as clean; a bench reset is recorded by hand and audited as the operator's
+    word (`source=operator`) rather than the tool's observation. `In stock → Bootstrapped`
+    is deliberately not gated — that move *is* the bootstrap.
+  - **The incident note for the ESI** ([`crate::incident`](src/incident.rs)) — text or PDF
+    from one rendering, so the copy on screen cannot disagree with the copy that is sent. It
+    **names its own blind spot** (a service the holder registered directly, a disk the key
+    unlocked, an SSH authorised key) instead of reading as exhaustive, is audited when it is
+    produced, and is deliberately not filed: the facts are already rows, and nothing signs
+    a note. Where it goes is a new setting; unset, the note says so rather than printing a
+    placeholder nobody can act on.
+  - **RMA tracking**: the supplier's case reference, the fault, and a replacement that must
+    already be in the inventory — a case pointing at a serial nobody recorded is the broken
+    reference `delete_key` exists to prevent. The replacement is a link, so the new key keeps
+    its own row and its own history.
+
+  Schema **v6** ships with the migration: `key_incidents`, `key_remediations`, `key_rma`.
+  Three tables, nothing altered, no backfill.
+
+- **A build says which commit it came from** (`features/packaging-and-release.md` phase 2):
+  [`build.rs`](build.rs) embeds it, and `--version`, `--diagnose`, the About box and the
+  Settings footer report `0.13.0 (a1b2c3d4e5f6)`. A version number cannot show that a build
+  came from a tag, which is what the norm requires — `0.13.0` says the same thing built from
+  the tag, from a branch, or from a tree with uncommitted changes. A dirty tree says
+  `-dirty`, no `git` says `unknown`, and both **fail** the artefact verifiers when
+  `YKDM_VERIFY_RELEASE=1`.
+
+- **Linux packages** (phase 5): [`packaging/linux/package.sh`](packaging/linux/package.sh)
+  builds a tarball (always) and a `.deb` (where `dpkg-deb` exists), carrying the binary, the
+  `hicolor` icons, a `.desktop` entry, the **udev rule** that makes FIDO2 and the OTP slots
+  reachable, and install notes that name `pcscd` — the copy that is there when somebody is
+  installing it. [`verify-package.sh`](packaging/linux/verify-package.sh) checks the layout,
+  the rule, the desktop entry and the declared dependencies, then runs the packaged binary
+  with `--diagnose`: the same interrogation the macOS verifier makes.
+
+- **A tagged release workflow** (phase 6):
+  [`release.yml`](.github/workflows/release.yml) re-runs the gate against the tag, builds
+  macOS, Linux and Windows from a fresh checkout, verifies each artefact and attaches them to
+  a **draft** release. Draft on purpose — a release of a tool that holds a token register
+  should not happen automatically at 03:00.
+
+- **The upgrade note writes itself** (phase 8):
+  [`scripts/release-notes.sh`](scripts/release-notes.sh) compares `store::SCHEMA_VERSION`
+  against the previous tag and appends the *upgrade every workstation together* warning when
+  it moved. `StoreError::SchemaTooNew` is only useful if the release notes said so, and that
+  sentence is exactly the one that gets left out. It also refuses to produce notes at all
+  when the changelog has no section for the version.
+
+- **Install and upgrade documentation per platform** (phase 7) in
+  [`docs/operations.md`](docs/operations.md), including what Gatekeeper and SmartScreen do to
+  an unsigned build and why upgrading a shared register is done on every workstation at once.
+
+- **The management applet is read natively** — form factor, **which applications are
+  enabled**, and the FIPS state ([`device::mgmt`](src/device/mgmt.rs),
+  `features/native-device-transport.md` phase 5). It is the last read the native
+  transport was missing, and the one that has caused the same bug twice: with no way
+  to read the enable flags, `device::native` first reported `["PIV"]` — the applet it
+  had just spoken to — which the pre-flight read as *FIDO2 and OTP are disabled* and
+  skipped five of eleven steps on a fully enabled key; corrected to an empty list, the
+  pre-flight then had to warn on every applet-dependent step that it could not check.
+  Both go away now the field is actually read: the pre-flight says *the OTP
+  application is switched off on this key*, or says nothing.
+
+  CCID `00 1D` on AID `A0 00 00 05 27 47 11 17`, written by hand because no crate
+  covers it. The application names are deliberately the ones `ykman info` produces,
+  because the pre-flight matches on those strings and two transports spelling one
+  application differently would make a step skip on one and run on the other. The
+  parser is pure and covered by tests built from the encoding byte for byte; **the
+  card exchange is not hardware-verified**. The BER-TLV walker moved to
+  [`device::tlv`](src/device/tlv.rs) so the PIV session and this share one.
+
+- **Applicability rules per template** (`features/bootstrap-templates.md` phase 3):
+  a firmware floor, a firmware ceiling and the applications a procedure requires. A
+  key the rule does not fit **blocks the run** rather than skipping steps — the
+  distinction being that a wrong *step* skips, while a wrong *procedure* that starts
+  leaves the register saying a key had something applied to it that it was never
+  meant for. A rule that could not be checked (a key entered by barcode has no
+  firmware on record) is a warning, never a refusal.
+
+- **A per-step attempt budget** (`features/bootstrap-templates.md` phase 7).
+  `TemplateStep::attempts`, bounded at five, and **only a transport-level failure
+  spends it** — [`WriteError::is_worth_retrying`](src/device/write.rs) is where that
+  line is drawn, on the error rather than on the procedure, because retrying a
+  rejected PIN walks the applet's counter towards a lock. A retry is audited
+  (`bootstrap.step.retried`) and named in the step's detail, so a flaky reader is
+  visible rather than invisible. `required` remains the continue-on-failure half.
+
+- **The verification step now reads the certificate back off the card** and checks
+  it (`features/step-piv-signing-certificate.md` phase 7,
+  `features/ca-integration.md` phase 2 checks 3 and 4): subject DN, the holder's
+  `rfc822Name`, and the key usage / EKU. An encryption certificate issued against a
+  signing request — the realistic CA mix-up — imports cleanly and then fails every
+  signature the holder makes, and is now caught. A failed check **fails the step**,
+  because a run recording "verified" against a key that cannot sign for its holder is
+  worse than no verification. The **chain** is reported as `chain=unchecked` rather
+  than omitted: it needs a trust store this build does not have.
+
+- **The OTP access code is written**, through `ykman otp settings --new-access-code -`
+  with the code on **stdin** (`features/step-otp-access-code.md` phase 2). Never in
+  argv, where every process on the workstation can read it. The invocation was derived
+  from `ykman` 5.9.2's own source, which decides three things: the prompt confirms, so
+  the code goes in twice; `settings` refuses an **empty** slot, so the step checks that
+  first and says so; and the write resets the slot's other settings to their defaults,
+  which the pre-flight now warns about along with the fact that a protected slot stops
+  the key's interfaces being mode-switched (phase 6). Custody is recorded, never the
+  value (phase 7). **Not hardware-verified.**
+
+- **An Inventory badge for a key still on a factory default**
+  (`features/step-piv-pin-puk-management-key.md` phase 6). The only warning used to be
+  in the wizard's pre-flight — seen once, by the operator about to fix it, and never by
+  anybody auditing the fleet. Three states and three renderings, because a key nobody
+  has read is not a key with nothing wrong with it: *factory defaults*, *configured*,
+  or an invitation to read the applets.
+
+- **Retry counters before and after a run** (`features/step-fido2-pin.md` phase 8).
+  Both applets' counters are read (neither read spends an attempt), a counter walked
+  below its factory value is a warning naming what recovery costs — under custody model
+  B the PUK is in a sealed envelope on its way to the holder — and **zero left blocks
+  the run**, because every step that authenticates would fail.
+
+- **An unfinished run can be picked up off the register**
+  (`features/gui-bootstrap-wizard.md` phase 5). The manual issuer makes the wait
+  routine: the CA takes three days and by then the register has been closed and
+  reopened, so the run exists only as rows in the database. The wizard now lists what
+  is still open, rebuilds the plan from the version the run **recorded** — pinned, so a
+  superseded version the selector cannot offer is still resumable — and reproduces which
+  optional steps that run included.
+
+- **One click from a finished run to the hand-over**
+  (`features/gui-bootstrap-wizard.md` phase 6). The form opens with the key, its holder
+  and *that* run attached — explicitly, rather than "the newest run on this serial",
+  which differs exactly where it matters. Nothing is recorded: a hand-over is a
+  statement that a person took possession of a key, which nothing the tool can see
+  tells it.
+
+- **The credential a run registered is readable back off the record**
+  (`features/step-fido2-credentials.md` phase 4) — credential id, relying party,
+  algorithm and user name, all public by construction. A key with **no free
+  discoverable-credential slot** is now refused before the PIN is set rather than by the
+  authenticator's own error (phase 2's remainder).
+
+### Changed
+
+- **The coverage gate excludes `vendor/`.** `make coverage-core` measures the headless core
+  of *this* project, and cargo instruments a patched path dependency the way it does not
+  instrument a registry one — so `vendor/block` was being counted. It changed nothing
+  (86.11% either way), which is when to fix it rather than once it starts flattering the
+  total.
+
+- **The Inventory row's *mark lost* is now *Lifecycle…***. It set a status and recorded
+  nothing — no reporter, no date, and no list of the credentials that were still live — which
+  is the theatre `features/key-lifecycle-and-revocation.md` opens by warning about. The
+  status change now happens as part of a report that says who told you and when.
+
+- **The macOS bundle no longer carries an institution's name.**
+  `packaging/macos/bundle.sh` defaulted `NSHumanReadableCopyright` to one, which contradicts
+  the decision of 2026-08-11 — the application carries no organisation's name, because the
+  organisation is the operator's setting and it reaches a certificate subject. The default is
+  now the copyright line read out of `LICENSE`, the same single-source-of-truth discipline the
+  version gets from `Cargo.toml`, and `YKDM_COPYRIGHT` is still how a unit states its own.
+  `verify-bundle.sh` checks the plist against this tree: a warning locally, a failure for a
+  release, where the build and the check share one environment.
+
+- **`block` 0.1.6 no longer blocks a released artefact** (`features/packaging-and-release.md`
+  phase 0b). `camera` is a default feature, so every artefact carried a crate that cargo
+  reports as future-incompatible: it declares an `extern` static of an uninhabited type, and
+  NRM §5.4.3 makes that a blocker for a distributed build rather than a warning to live with.
+  There is no upstream fix — no release since 2020, and `block2` is not API-compatible with
+  what `nokhwa` calls — so the fix is the one cargo's own warning recommends: a patched copy
+  in [`vendor/block`](vendor/block/README.md), **four lines**, replacing the uninhabited type
+  with a zero-sized inhabited one. The directory records what changed, why the other three
+  routes (upstream, a native AVFoundation path, `camera` back to opt-in) were not taken, how
+  to verify the claim, and how to revert it. The two alternatives that remain open are the
+  owner's, not an implementer's.
+
+- **`PivState`'s three "still the factory default" answers are `Option<bool>`.**
+  `GET METADATA` may say default, say changed, or not answer at all, and the two
+  consumers read the unknown case opposite ways: the executor must treat it as
+  default so a step tries, while a badge must not accuse a key nobody read.
+  Collapsing them into one boolean made the second impossible. The old readings stay
+  as methods (`pin_changed_from_default()`, `management_key_changed()`) with exactly
+  their previous behaviour, so nothing that depended on them changed.
+
+- **The applet read has one entry point** (`YkDistApp::read_applets`), which records
+  the audit entry and caches what was read for the session. The reset preview and the
+  wizard's pre-flight each wrote their own; a third caller would have written a fourth
+  or forgotten. The cache is never persisted — a stale read of hardware on the
+  register would be worse than none.
+
+- **The canonical bytes a template signature covers gained a second format tag.**
+  A template that uses neither the applicability rule nor a raised attempt budget is
+  encoded exactly as before, **byte for byte**, so every existing signature still
+  verifies and every printed fingerprint is unchanged; one that uses either is
+  `ykdm-template-v2` and has those fields covered. Adding a restriction to a signed
+  template therefore breaks its signature, which is correct — the policy changed —
+  and so does removing one, which is the direction that matters.
+
+- **A pre-flight finding about a step that will not run is no longer raised.** A step
+  whose application is switched off skips, and neither the state it would have found
+  nor the consequences it would have had are worth an operator's attention. Findings
+  nobody needs are how the ones that matter get skimmed past.
+
+  **No schema change**, and the two new template fields are omitted when unused, so a
+  database written by this build opens unchanged in an older one. The consequence worth
+  stating rather than discovering: an older build reading a template that *does* carry
+  an applicability rule ignores it, and would run that procedure against a key the rule
+  excludes. Downgrading a workstation while a restricted template is in use therefore
+  removes the restriction silently. It is not guarded, because guarding it would mean
+  refusing bodies an older build wrote — the opposite compatibility problem — but it is
+  a reason to roll a deployment forward rather than back.
+
+### Fixed
+
+- **A hand-over was written and *then* refused.** Recording a distribution for a key the
+  lifecycle would not move produced *recorded, but status not updated: illegal status
+  transition: In stock -> Distributed*: the record was on the register, the key was still
+  filed as untouched stock, and there was nothing the operator could do about either. The
+  lifecycle is now asked **before** the insert, from the key's own row rather than the
+  cached list, and the refusal says what the key needs and that nothing was recorded. The
+  post-insert refusal stays as the guard for a status that moves between the two reads.
+
+- **A completed bootstrap run now moves the key to `Bootstrapped`.** The lifecycle has
+  always read `InStock → Bootstrapped → Distributed`, but nothing performed the first
+  arrow — the only thing that moved a key was *mark bootstrapped* on the Inventory
+  screen, so a key could be fully configured and still filed as stock, and the operator
+  met that hours later on another screen as a refused hand-over. Only a `Completed` run
+  counts, which is the line the engine already draws (a run with a required step unmet is
+  `Failed` and audited `bootstrap.incomplete` — "the key is not ready to hand over"), and
+  a run never overrules a key marked lost, retired or already handed over. The move is
+  audited `key.status_changed` with the run that earned it.
+
+- **The paperwork banner on the Distribution screen** ran two sentences together and
+  carried runs of spaces through it — the same wrapped-literal-without-continuations
+  slip as the pre-flight refusal in the previous fix.
+
+- **No key could be bootstrapped at all: the "already configured" refusal fired on
+  every YubiKey ever made.** The first real run against a factory-fresh key was blocked
+  with *PIV slot(s) f9 already hold a certificate*, and there is deliberately no
+  override to press — the way out the message names is a factory reset, which on this
+  key would have destroyed nothing and changed nothing.
+
+  Slot `f9` is the **attestation** slot. Yubico programmes a key and certificate into it
+  during manufacture on every YubiKey since firmware 4.3; it is what `piv keys attest`
+  signs a slot's proof with, a PIV reset does not clear it, and this procedure never
+  writes it. So `piv::Key::list` reports it on a key nobody has ever touched, and a
+  refusal resting on the raw slot list refuses every key — including the one it was
+  written to protect, whose *real* evidence would have been a certificate in `9c`.
+
+  [`PivState::configured_slots`](src/device/write.rs) is now what the refusal
+  ([`device::applets`](src/device/applets.rs)) and the reset preview
+  ([`device::reset`](src/device/reset.rs)) consult; `occupied_slots` stays the raw read,
+  because a *description* of the applet should say what is actually on the card. The
+  reset preview no longer lists `f9` as a certificate it is about to destroy either,
+  which it was never going to.
+
+- **Five of the eleven steps skipped themselves on a key that had every application
+  enabled** — the FIDO2 PIN, the minimum-PIN-length policy, the forced change, the
+  initial credential and the OTP access code, each reported as *the FIDO2/OTP
+  application is not enabled on this key*. Nearly the whole procedure, quietly not
+  happening, on the strength of a field nobody had filled in.
+
+  The native transport identifies a key over the PIV applet and reported
+  `usb_applications: ["PIV"]` — the applet it had just spoken to. The per-application
+  enable flags live in the *management* applet (CCID `00 1D`), which no crate covers and
+  this transport does not read, so that one word was a claim that the other two were
+  **disabled**. It now reports an empty list, which is what a record built from a
+  scanned serial already means by it, what the Inventory screen already renders as `—`,
+  and what the pre-flight already treats as no reason to skip a step.
+
+- **A pre-flight that cannot check whether an application is enabled now says so**,
+  instead of being silent about it. When the record's application list was never read
+  *and* the applet did not answer either, each step of that applet raises a `Warning`
+  naming both gaps and saying the step will be attempted — and will fail there rather
+  than skip if the application turns out to be disabled. Not a `Skip`: skipping on that
+  much evidence is how the bug above happened.
+
+- **The refusal's own text was unreadable**, arriving on screen with runs of spaces
+  through the middle of it: a wrapped string literal in `Preflight` was missing its line
+  continuations, so the source's indentation was part of the message. Same wording, now
+  in one paragraph. (Nine other messages elsewhere in the tool have the same defect and
+  are untouched here.)
+
+- **Every macOS bundle built without `YKDM_COPYRIGHT` carried an institution's name.**
+  `packaging/macos/bundle.sh` defaulted `NSHumanReadableCopyright` to one institution, so
+  the `Info.plist` of every `.app` assembled without that variable — including the one the
+  release workflow builds and attaches to a release — put back what v0.5.0 removed from the
+  rest of the build. Packaging is where that decision is easiest to lose: the name is a
+  build variable rather than a string in the source, so no test and no `grep` over `src/`
+  would ever have seen it.
+
+  The default is now the copyright line read out of `LICENSE` — true of this source, and
+  nobody's institution — obtained the way the version is obtained from `Cargo.toml`, so it
+  follows the licence rather than being restated beside it. `YKDM_COPYRIGHT` is unchanged
+  and is still how a unit states its own line. `verify-bundle.sh` now checks the bundled
+  line against what the tree says it should be: a warning locally, where a bundle may have
+  been built in a shell that had the variable set, and a **failure** under
+  `YKDM_VERIFY_RELEASE=1`, so a released artefact cannot carry a name nobody chose. The
+  Linux artefacts were checked at the same time and needed nothing — the `.deb` is
+  maintained by "yk-dist-manager maintainers", and the `.desktop` entry and the udev rule
+  name no vendor.
 
 ### Fixed
 
@@ -1705,7 +2034,9 @@ become rows.
 - Uploaded filenames are treated as data: any directory component is stripped, so a
   name like `../../etc/passwd.pdf` cannot escape.
 
-[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.13.0...v0.14.0
+[0.13.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.9.0...v0.10.0

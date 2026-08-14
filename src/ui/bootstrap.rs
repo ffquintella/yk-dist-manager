@@ -74,10 +74,62 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
     ui.add_space(18.0);
 
     match app.wizard.stage {
-        WizardStage::Selecting => plan_table(app, ui),
+        WizardStage::Selecting => {
+            unfinished_runs(app, ui);
+            plan_table(app, ui);
+        }
         WizardStage::Confirming => confirmation(app, ui),
         WizardStage::Running => run_view(app, ui),
     }
+}
+
+/// Runs on the register that still have something left to do
+/// (`features/gui-bootstrap-wizard.md` phase 5).
+///
+/// Shown on the selection stage because that is where an operator arrives with a
+/// certificate in their hand and a key from last week. Until this existed a resume
+/// could only continue a run still held in memory from the same session — which is
+/// the short half of a wait the manual issuer makes routine.
+fn unfinished_runs(app: &mut YkDistApp, ui: &mut egui::Ui) {
+    let open: Vec<(uuid::Uuid, String)> = crate::bootstrap::resumable(&app.runs)
+        .into_iter()
+        .map(|run| {
+            let (done, failed, skipped, pending) = run.tally();
+            (
+                run.id,
+                format!(
+                    "serial {} · {} v{} · started {} · {done} done, {failed} failed, {skipped} \
+                     skipped, {pending} pending",
+                    run.key_serial,
+                    run.template_id,
+                    run.template_version,
+                    run.started_at.format("%Y-%m-%d %H:%M"),
+                ),
+            )
+        })
+        .collect();
+
+    if open.is_empty() {
+        return;
+    }
+
+    super::titled_card(ui, "Unfinished runs on this register", |ui| {
+        ui.label(
+            "A run whose certificate had not come back yet, or that stopped part-way. Picking one \
+             up rebuilds its plan from the version it recorded and leaves every completed step \
+             alone.",
+        );
+        ui.add_space(8.0);
+        for (id, label) in open {
+            ui.horizontal_wrapped(|ui| {
+                if ui.add(Button::new("Pick up")).clicked() {
+                    app.adopt_run(id);
+                }
+                ui.label(label);
+            });
+        }
+    });
+    ui.add_space(18.0);
 }
 
 /// What will be written, and the one confirmation that authorises it.
@@ -369,6 +421,33 @@ fn run_view(app: &mut YkDistApp, ui: &mut egui::Ui) {
     }
 
     certificate_exchange(app, ui);
+
+    // One click from the evidence to the hand-over
+    // (`features/gui-bootstrap-wizard.md` phase 6). Offered only on a completed
+    // run: a key whose procedure did not finish is not one to hand over, and the
+    // lifecycle refuses it anyway — refusing here says so before the click.
+    if app
+        .wizard
+        .run
+        .as_ref()
+        .is_some_and(|run| run.status == crate::domain::RunStatus::Completed)
+    {
+        ui.add_space(14.0);
+        super::titled_card(ui, "Hand this key over", |ui| {
+            ui.label(
+                "Opens the hand-over form with this key, its holder and this run already \
+                 attached. Nothing is recorded until you confirm it there.",
+            );
+            ui.add_space(8.0);
+            if ui
+                .add(Button::new("Attach to a hand-over…"))
+                .on_hover_text("Fills the Distribution form from this run")
+                .clicked()
+            {
+                app.attach_run_to_handover();
+            }
+        });
+    }
 
     ui.add_space(14.0);
     if ui.add(Button::new("Start another")).clicked() {

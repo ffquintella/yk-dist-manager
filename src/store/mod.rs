@@ -46,6 +46,9 @@ pub use backup::{BackupPolicy, Outcome as BackupOutcome};
 pub use cloud::{LeaseError, LeaseHolder, Renewal, Settled, SyncLease, SyncPolicy};
 
 use crate::audit::{self, AuditEntry, GENESIS};
+use crate::domain::lifecycle::{
+    Dependency, IncidentKind, KeyIncident, Remediation, RemediationKind, RmaCase, Sanitisation,
+};
 use crate::domain::{AttachedDocument, DocumentKind};
 use crate::domain::{
     BootstrapRun, DeliveryMethod, DistributionRecord, Holder, KeyStatus, SerialSource, StepKind,
@@ -55,7 +58,7 @@ use crate::template::{BootstrapTemplate, StoredTemplate};
 use crate::term::TermTemplate;
 
 /// Current schema version, tracked in `PRAGMA user_version`.
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -84,6 +87,14 @@ pub enum StoreError {
     Decode { column: &'static str, value: String },
     #[error("illegal status transition: {from} -> {to}")]
     Transition { from: String, to: String },
+    /// A returned key still carrying a previous holder's credentials may not be
+    /// reissued (`features/key-lifecycle-and-revocation.md` phase 6).
+    ///
+    /// The message is the domain's, not this variant's: [`Sanitisation::refusal`]
+    /// names the applets and the action, because a refusal that only says *not
+    /// sanitised* leaves the operator to guess which applet and how.
+    #[error("{reason}")]
+    NotSanitised { serial: u32, reason: String },
     #[error("serial {serial} has history and cannot be removed: {reason}")]
     HasHistory { serial: u32, reason: String },
     #[error("{id} version {version} cannot be removed: {reason}")]
@@ -413,7 +424,10 @@ pub enum TemplateImport {
     /// Stored under a version this database assigned. `previous` is the newest
     /// version of that id before the import, or `None` for a new template.
     Stored {
-        template: BootstrapTemplate,
+        /// Boxed because it is much the larger of the two variants — a whole
+        /// procedure against a version string — and every caller matches on the
+        /// enum by reference anyway.
+        template: Box<BootstrapTemplate>,
         previous: Option<String>,
     },
     /// A version of this id already describes exactly this procedure, with the
@@ -871,6 +885,9 @@ impl Store {
             self.backfill_run_steps()?;
             self.conn.execute_batch(MIGRATE_V5_DROP)?;
         }
+        if version < 6 {
+            self.conn.execute_batch(MIGRATE_V6)?;
+        }
 
         self.conn
             .pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -1273,6 +1290,15 @@ impl Store {
 
     /// Move a key through its lifecycle, refusing transitions the domain
     /// forbids instead of silently applying them.
+    ///
+    /// Two refusals, not one. The domain's transition table is the first
+    /// ([`KeyStatus::can_transition_to`]), and the second is the **sanitised
+    /// gate** (`features/key-lifecycle-and-revocation.md` phase 6): a key that
+    /// still carries what a bootstrap put on it may not return to stock or be
+    /// prepared for somebody else. That rule cannot live in the transition table,
+    /// because it is not a fact about the two statuses — it is a fact about this
+    /// key's runs and resets, which is why it is enforced here where the record is
+    /// readable. See [`Self::reissue_refusal`] for exactly which moves it covers.
     pub fn set_key_status(&self, serial: u32, next: KeyStatus) -> Result<()> {
         let current = self
             .key_by_serial(serial)?
@@ -1283,11 +1309,59 @@ impl Store {
                 to: next.label().into(),
             });
         }
+        if let Some(refusal) = self.reissue_refusal(serial, current.status, next)? {
+            return Err(refusal);
+        }
         self.conn.execute(
             "UPDATE keys SET status = ?1, updated_at = ?2 WHERE serial = ?3",
             params![key_status_str(next), Utc::now().to_rfc3339(), serial],
         )?;
         Ok(())
+    }
+
+    /// Is this move a **reissue** of a key that has not been sanitised?
+    ///
+    /// `None` when the move is allowed. Which moves are covered, and why each:
+    ///
+    /// * **into `In stock`** — from anywhere. A key in stock is a key the next
+    ///   procedure may pick up, and the previous holder's certificate is still in
+    ///   slot 9c until somebody resets it.
+    /// * **into `Bootstrapped`, except from `In stock`** — because that one
+    ///   exception *is* the bootstrap: the run that has just written the
+    ///   credentials is what moves the key, and gating it would refuse every key
+    ///   the tool has just prepared. Every other route into `Bootstrapped` —
+    ///   `Returned → Bootstrapped` is the one that exists — is a second procedure
+    ///   on a key that has already been through one.
+    ///
+    /// Not covered: `Lost`, `Returned` and `Retired`. A key coming back, going
+    /// missing or leaving service is not being handed to anybody, and refusing to
+    /// record what has happened to a key would be the register declining to hold a
+    /// fact — the opposite of the point.
+    fn reissue_refusal(
+        &self,
+        serial: u32,
+        current: KeyStatus,
+        next: KeyStatus,
+    ) -> Result<Option<StoreError>> {
+        if current == next {
+            return Ok(None);
+        }
+        let is_reissue = match next {
+            KeyStatus::InStock => true,
+            KeyStatus::Bootstrapped => current != KeyStatus::InStock,
+            _ => false,
+        };
+        if !is_reissue {
+            return Ok(None);
+        }
+        let state = self.sanitisation_for(serial)?;
+        if state.is_clear() {
+            return Ok(None);
+        }
+        Ok(Some(StoreError::NotSanitised {
+            serial,
+            reason: state.refusal(serial),
+        }))
     }
 
     /// Replace a key's observation, leaving every other field alone.
@@ -1598,6 +1672,292 @@ impl Store {
         Ok(tally)
     }
 
+    // ------------------------------------------------------------- lifecycle
+
+    /// Every run against one key, newest first, with its steps.
+    ///
+    /// The lifecycle reads a single key's history — what was put on it, and which
+    /// applets were written to — so it asks for that key rather than filtering
+    /// [`Self::runs`] in Rust: an incident on one serial should not cost a read of
+    /// every run the unit has ever performed.
+    pub fn runs_for(&self, serial: u32) -> Result<Vec<BootstrapRun>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, key_serial, holder_id, template_id, template_version, operator,
+                    started_at, finished_at, status, custody
+             FROM bootstrap_runs WHERE key_serial = ?1 ORDER BY started_at DESC",
+        )?;
+        let mut runs = stmt
+            .query_map(params![serial], row_to_run)?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
+
+        let mut steps = self.all_run_steps()?;
+        for run in &mut runs {
+            run.steps = steps.remove(&run.id).unwrap_or_default();
+        }
+        Ok(runs)
+    }
+
+    /// Record a loss report **and** move the key to `Lost`, or neither.
+    ///
+    /// One method because they are one operation, and the ordering is the one
+    /// `features/distribution-records.md` was corrected into: **the lifecycle is
+    /// asked first.** A report written against a key the lifecycle will not move —
+    /// a retired key, say — would leave the register holding an incident for a key
+    /// whose status contradicts it, with nothing the operator could do about
+    /// either half. So the transition is checked, then the report is written, then
+    /// the status is set, all in one transaction.
+    ///
+    /// The audit entry is the caller's: this is the store, and
+    /// `YkDistApp::report_incident` writes `key.reported_lost` with
+    /// [`KeyIncident::audit_detail`].
+    pub fn report_incident(&self, incident: &KeyIncident) -> Result<()> {
+        let current = self
+            .key_by_serial(incident.key_serial)?
+            .ok_or_else(|| StoreError::NotFound(format!("serial {}", incident.key_serial)))?;
+        if current.status != KeyStatus::Lost && !current.status.can_transition_to(KeyStatus::Lost) {
+            return Err(StoreError::Transition {
+                from: current.status.label().into(),
+                to: KeyStatus::Lost.label().into(),
+            });
+        }
+
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO key_incidents (id, key_serial, kind, reported_at, reported_by,
+                                        holder_display, circumstances, recorded_at, recorded_by,
+                                        closed_at, closing_note)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, '')",
+            params![
+                incident.id.to_string(),
+                incident.key_serial,
+                incident_kind_str(incident.kind),
+                incident.reported_at.to_rfc3339(),
+                incident.reported_by,
+                incident.holder_display,
+                incident.circumstances,
+                incident.recorded_at.to_rfc3339(),
+                incident.recorded_by,
+            ],
+        )?;
+        tx.execute(
+            "UPDATE keys SET status = ?1, updated_at = ?2 WHERE serial = ?3",
+            params![
+                key_status_str(KeyStatus::Lost),
+                Utc::now().to_rfc3339(),
+                incident.key_serial
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Every incident on record for one key, newest report first.
+    pub fn incidents_for(&self, serial: u32) -> Result<Vec<KeyIncident>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, key_serial, kind, reported_at, reported_by, holder_display, circumstances,
+                    recorded_at, recorded_by, closed_at, closing_note
+             FROM key_incidents WHERE key_serial = ?1 ORDER BY reported_at DESC",
+        )?;
+        let rows = stmt.query_map(params![serial], row_to_incident)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .collect::<Result<Vec<_>>>()
+    }
+
+    /// Every open incident, for the banner that says an incident is outstanding.
+    pub fn open_incidents(&self) -> Result<Vec<KeyIncident>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, key_serial, kind, reported_at, reported_by, holder_display, circumstances,
+                    recorded_at, recorded_by, closed_at, closing_note
+             FROM key_incidents WHERE closed_at IS NULL ORDER BY reported_at DESC",
+        )?;
+        let rows = stmt.query_map([], row_to_incident)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .collect::<Result<Vec<_>>>()
+    }
+
+    /// Close an incident, keeping the note that says on what basis.
+    ///
+    /// Closing is a claim that nothing is outstanding, which is why the caller has
+    /// to have looked: [`Self::outstanding_for`] is what the screen shows beside
+    /// the button, and a closing note is how a *waived* obligation stays visible
+    /// rather than disappearing. History is not rewritten — the report's own fields
+    /// are untouched.
+    pub fn close_incident(&self, id: Uuid, note: &str) -> Result<KeyIncident> {
+        let changed = self.conn.execute(
+            "UPDATE key_incidents SET closed_at = ?1, closing_note = ?2
+             WHERE id = ?3 AND closed_at IS NULL",
+            params![Utc::now().to_rfc3339(), note.trim(), id.to_string()],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::NotFound(format!("open incident {id}")));
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT id, key_serial, kind, reported_at, reported_by, holder_display, circumstances,
+                    recorded_at, recorded_by, closed_at, closing_note
+             FROM key_incidents WHERE id = ?1",
+        )?;
+        stmt.query_row(params![id.to_string()], row_to_incident)?
+    }
+
+    /// Record that one obligation has been met.
+    pub fn insert_remediation(&self, remediation: &Remediation) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO key_remediations (id, key_serial, incident_id, kind, subject, reference,
+                                           reason, recorded_at, recorded_by, detail)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                remediation.id.to_string(),
+                remediation.key_serial,
+                remediation.incident_id.map(|id| id.to_string()),
+                remediation_kind_str(remediation.kind),
+                remediation.subject,
+                remediation.reference,
+                remediation.reason,
+                remediation.recorded_at.to_rfc3339(),
+                remediation.recorded_by,
+                remediation.detail,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Everything that has been done about this key, newest first.
+    pub fn remediations_for(&self, serial: u32) -> Result<Vec<Remediation>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, key_serial, incident_id, kind, subject, reference, reason, recorded_at,
+                    recorded_by, detail
+             FROM key_remediations WHERE key_serial = ?1 ORDER BY recorded_at DESC",
+        )?;
+        let rows = stmt.query_map(params![serial], row_to_remediation)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .collect::<Result<Vec<_>>>()
+    }
+
+    /// What this key was carrying, read off its runs.
+    pub fn dependencies_for(&self, serial: u32) -> Result<Vec<Dependency>> {
+        Ok(crate::domain::lifecycle::dependencies(
+            &self.runs_for(serial)?,
+        ))
+    }
+
+    /// What is still owed after an incident: the certificates nobody has revoked
+    /// and the credentials nobody has removed.
+    pub fn outstanding_for(&self, serial: u32) -> Result<Vec<Dependency>> {
+        let dependencies = self.dependencies_for(serial)?;
+        let remediations = self.remediations_for(serial)?;
+        Ok(
+            crate::domain::lifecycle::outstanding(&dependencies, &remediations)
+                .into_iter()
+                .cloned()
+                .collect(),
+        )
+    }
+
+    /// Which applets still carry what a run put on them
+    /// (`features/key-lifecycle-and-revocation.md` phase 6).
+    pub fn sanitisation_for(&self, serial: u32) -> Result<Sanitisation> {
+        Ok(crate::domain::lifecycle::sanitisation(
+            &self.runs_for(serial)?,
+            &self.remediations_for(serial)?,
+        ))
+    }
+
+    /// Open an RMA case: the key has physically left for the supplier.
+    pub fn insert_rma(&self, case: &RmaCase) -> Result<()> {
+        if self.key_by_serial(case.key_serial)?.is_none() {
+            return Err(StoreError::NotFound(format!("serial {}", case.key_serial)));
+        }
+        self.conn.execute(
+            "INSERT INTO key_rma (id, key_serial, reference, sent_at, sent_by, fault,
+                                  replacement_serial, replaced_at, closed_at, notes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, NULL, ?7)",
+            params![
+                case.id.to_string(),
+                case.key_serial,
+                case.reference,
+                case.sent_at.to_rfc3339(),
+                case.sent_by,
+                case.fault,
+                case.notes,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Link the replacement the supplier sent back.
+    ///
+    /// The replacement must be **in the inventory already**, and that refusal is
+    /// the point of the method rather than a formality: a case pointing at a serial
+    /// nobody has recorded is the same broken reference `delete_key` refuses to
+    /// create, and the replacement is a new key that has to be intaken like any
+    /// other — read from the hardware, provenance recorded — before it can be said
+    /// to have replaced anything.
+    pub fn link_rma_replacement(&self, id: Uuid, replacement: u32) -> Result<RmaCase> {
+        let case = self.rma_case(id)?;
+        if case.replacement_serial.is_some() {
+            return Err(StoreError::NotFound(format!(
+                "RMA case {id} already has a replacement recorded"
+            )));
+        }
+        if replacement == case.key_serial {
+            return Err(StoreError::NotFound(format!(
+                "serial {replacement} cannot replace itself"
+            )));
+        }
+        if self.key_by_serial(replacement)?.is_none() {
+            return Err(StoreError::NotFound(format!(
+                "serial {replacement} is not in the inventory — record the replacement key first, \
+                 from the hardware, and then link it"
+            )));
+        }
+        self.conn.execute(
+            "UPDATE key_rma SET replacement_serial = ?1, replaced_at = ?2 WHERE id = ?3",
+            params![replacement, Utc::now().to_rfc3339(), id.to_string()],
+        )?;
+        self.rma_case(id)
+    }
+
+    /// Close a case that is not producing a replacement — a refusal, a refund, a
+    /// key written off.
+    pub fn close_rma(&self, id: Uuid, note: &str) -> Result<RmaCase> {
+        let changed = self.conn.execute(
+            "UPDATE key_rma SET closed_at = ?1, notes = ?2
+             WHERE id = ?3 AND closed_at IS NULL AND replacement_serial IS NULL",
+            params![Utc::now().to_rfc3339(), note.trim(), id.to_string()],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::NotFound(format!("open RMA case {id}")));
+        }
+        self.rma_case(id)
+    }
+
+    pub fn rma_case(&self, id: Uuid) -> Result<RmaCase> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, key_serial, reference, sent_at, sent_by, fault, replacement_serial,
+                    replaced_at, closed_at, notes
+             FROM key_rma WHERE id = ?1",
+        )?;
+        stmt.query_row(params![id.to_string()], row_to_rma)?
+    }
+
+    /// Every RMA case for one key, newest first.
+    pub fn rma_cases_for(&self, serial: u32) -> Result<Vec<RmaCase>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, key_serial, reference, sent_at, sent_by, fault, replacement_serial,
+                    replaced_at, closed_at, notes
+             FROM key_rma WHERE key_serial = ?1 ORDER BY sent_at DESC",
+        )?;
+        let rows = stmt.query_map(params![serial], row_to_rma)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .collect::<Result<Vec<_>>>()
+    }
+
     // ---------------------------------------------------------------- import
 
     /// What the register already holds, for [`import::plan`] to compare against.
@@ -1871,7 +2231,7 @@ impl Store {
         let stored = incoming.as_version(&crate::versioning::next_version(&existing));
         self.upsert_template(&stored)?;
         Ok(TemplateImport::Stored {
-            template: stored,
+            template: Box::new(stored),
             previous,
         })
     }
@@ -2607,6 +2967,41 @@ pub fn step_status_from(raw: &str) -> Result<StepStatus> {
     })
 }
 
+/// The stored spelling of an incident kind; see [`key_status_str`].
+pub fn incident_kind_str(kind: IncidentKind) -> &'static str {
+    kind.audit_name()
+}
+
+pub fn incident_kind_from(raw: &str) -> Result<IncidentKind> {
+    IncidentKind::ALL
+        .iter()
+        .copied()
+        .find(|kind| kind.audit_name() == raw)
+        .ok_or_else(|| StoreError::Decode {
+            column: "key_incidents.kind",
+            value: raw.to_owned(),
+        })
+}
+
+/// The stored spelling of a remediation kind; see [`key_status_str`].
+pub fn remediation_kind_str(kind: RemediationKind) -> &'static str {
+    kind.audit_name()
+}
+
+pub fn remediation_kind_from(raw: &str) -> Result<RemediationKind> {
+    Ok(match raw {
+        "certificate-revoked" => RemediationKind::CertificateRevoked,
+        "credential-removed" => RemediationKind::CredentialRemoved,
+        "sanitised" => RemediationKind::Sanitised,
+        other => {
+            return Err(StoreError::Decode {
+                column: "key_remediations.kind",
+                value: other.to_owned(),
+            });
+        }
+    })
+}
+
 pub fn document_kind_str(kind: DocumentKind) -> &'static str {
     match kind {
         DocumentKind::SignedTerm => "signed-term",
@@ -2695,6 +3090,87 @@ fn row_to_holder(row: &rusqlite::Row<'_>) -> RowResult<Holder> {
             identification_number: row_string(row, 7),
             phone: row_string(row, 8),
             address: row_string(row, 9),
+        })
+    })())
+}
+
+fn row_to_incident(row: &rusqlite::Row<'_>) -> RowResult<KeyIncident> {
+    let id: String = row.get(0)?;
+    let kind: String = row.get(2)?;
+    let reported_at: String = row.get(3)?;
+    let recorded_at: String = row.get(7)?;
+    let closed_at: Option<String> = row.get(9)?;
+
+    Ok((|| {
+        Ok(KeyIncident {
+            id: parse_uuid("key_incidents.id", &id)?,
+            key_serial: row_u32(row, 1),
+            kind: incident_kind_from(&kind)?,
+            reported_at: parse_time("key_incidents.reported_at", &reported_at)?,
+            reported_by: row_string(row, 4),
+            holder_display: row_string(row, 5),
+            circumstances: row_string(row, 6),
+            recorded_at: parse_time("key_incidents.recorded_at", &recorded_at)?,
+            recorded_by: row_string(row, 8),
+            closed_at: match closed_at {
+                Some(raw) => Some(parse_time("key_incidents.closed_at", &raw)?),
+                None => None,
+            },
+            closing_note: row_string(row, 10),
+        })
+    })())
+}
+
+fn row_to_remediation(row: &rusqlite::Row<'_>) -> RowResult<Remediation> {
+    let id: String = row.get(0)?;
+    let incident_id: Option<String> = row.get(2)?;
+    let kind: String = row.get(3)?;
+    let recorded_at: String = row.get(7)?;
+
+    Ok((|| {
+        Ok(Remediation {
+            id: parse_uuid("key_remediations.id", &id)?,
+            key_serial: row_u32(row, 1),
+            incident_id: match incident_id {
+                Some(raw) => Some(parse_uuid("key_remediations.incident_id", &raw)?),
+                None => None,
+            },
+            kind: remediation_kind_from(&kind)?,
+            subject: row_string(row, 4),
+            reference: row_string(row, 5),
+            reason: row_string(row, 6),
+            recorded_at: parse_time("key_remediations.recorded_at", &recorded_at)?,
+            recorded_by: row_string(row, 8),
+            detail: row_string(row, 9),
+        })
+    })())
+}
+
+fn row_to_rma(row: &rusqlite::Row<'_>) -> RowResult<RmaCase> {
+    let id: String = row.get(0)?;
+    let sent_at: String = row.get(3)?;
+    let replacement: Option<i64> = row.get(6)?;
+    let replaced_at: Option<String> = row.get(7)?;
+    let closed_at: Option<String> = row.get(8)?;
+
+    Ok((|| {
+        Ok(RmaCase {
+            id: parse_uuid("key_rma.id", &id)?,
+            key_serial: row_u32(row, 1),
+            reference: row_string(row, 2),
+            sent_at: parse_time("key_rma.sent_at", &sent_at)?,
+            sent_by: row_string(row, 4),
+            fault: row_string(row, 5),
+            replacement_serial: replacement.map(|serial| serial as u32),
+            replaced_at: match replaced_at {
+                Some(raw) => Some(parse_time("key_rma.replaced_at", &raw)?),
+                None => None,
+            },
+            closed_at: match closed_at {
+                Some(raw) => Some(parse_time("key_rma.closed_at", &raw)?),
+                None => None,
+            },
+            notes: row_string(row, 9),
         })
     })())
 }
@@ -3054,4 +3530,81 @@ CREATE INDEX IF NOT EXISTS idx_run_steps_kind ON bootstrap_run_steps(kind, statu
 /// The second half of v5, run only once the blob has been turned into rows.
 const MIGRATE_V5_DROP: &str = r#"
 ALTER TABLE bootstrap_runs DROP COLUMN steps;
+"#;
+
+/// Schema v6 — what happens to a key **after** the hand-over
+/// (`features/key-lifecycle-and-revocation.md` phases 2, 3, 4, 6 and 8).
+///
+/// Three tables, and the reason there are three rather than one is that they
+/// answer three different questions an audit asks:
+///
+/// * `key_incidents` — *what happened, who said so, and when.* One row per report;
+///   a key can be lost, recovered and lost again, and flattening that into columns
+///   on `keys` would overwrite the first report with the second.
+/// * `key_remediations` — *and what was done about it.* One row per obligation
+///   met: the certificate revoked at its CA, the credential removed at its relying
+///   party, the applets returned to factory default. One table for the three
+///   because they share a shape — a subject, a reference somebody else can check,
+///   and who recorded it — and because "everything that has been done to this key"
+///   is then one query rather than a union of three.
+/// * `key_rma` — *where the hardware physically went, and what replaced it.* The
+///   replacement is a serial, not a copy of the row: the new key keeps its own
+///   inventory row, its own hand-overs and its own runs.
+///
+/// **What is deliberately not a table**: the *dependency list* — what a key was
+/// carrying. That is read back out of the bootstrap run's step details
+/// ([`crate::domain::lifecycle::dependencies`]), which is where every other piece
+/// of run evidence lives. Storing it would create a second truth about what a run
+/// did, and would leave every register written before this migration with an empty
+/// list; derived, a register from v1 answers in full.
+///
+/// Nothing here is nullable-by-accident: `closed_at`, `replacement_serial`,
+/// `replaced_at` and `closed_at` on the RMA are the four genuinely-unknown facts,
+/// and each is `NULL` until somebody knows it.
+const MIGRATE_V6: &str = r#"
+CREATE TABLE IF NOT EXISTS key_incidents (
+    id              TEXT PRIMARY KEY,
+    key_serial      INTEGER NOT NULL,
+    kind            TEXT NOT NULL,
+    reported_at     TEXT NOT NULL,
+    reported_by     TEXT NOT NULL,
+    holder_display  TEXT NOT NULL DEFAULT '',
+    circumstances   TEXT NOT NULL DEFAULT '',
+    recorded_at     TEXT NOT NULL,
+    recorded_by     TEXT NOT NULL DEFAULT '',
+    closed_at       TEXT,
+    closing_note    TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_incidents_serial ON key_incidents(key_serial);
+
+CREATE TABLE IF NOT EXISTS key_remediations (
+    id           TEXT PRIMARY KEY,
+    key_serial   INTEGER NOT NULL,
+    incident_id  TEXT REFERENCES key_incidents(id),
+    kind         TEXT NOT NULL,
+    subject      TEXT NOT NULL,
+    reference    TEXT NOT NULL DEFAULT '',
+    reason       TEXT NOT NULL DEFAULT '',
+    recorded_at  TEXT NOT NULL,
+    recorded_by  TEXT NOT NULL DEFAULT '',
+    detail       TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_remediations_serial ON key_remediations(key_serial, kind);
+
+CREATE TABLE IF NOT EXISTS key_rma (
+    id                  TEXT PRIMARY KEY,
+    key_serial          INTEGER NOT NULL,
+    reference           TEXT NOT NULL,
+    sent_at             TEXT NOT NULL,
+    sent_by             TEXT NOT NULL DEFAULT '',
+    fault               TEXT NOT NULL DEFAULT '',
+    replacement_serial  INTEGER,
+    replaced_at         TEXT,
+    closed_at           TEXT,
+    notes               TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_rma_serial ON key_rma(key_serial);
 "#;

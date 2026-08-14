@@ -56,6 +56,18 @@ a panic message.
   them into a template.
 - Command construction uses argv vectors, never a shell string; the native transport passes
   secrets as function parameters instead of command-line arguments.
+- **The one secret that has to reach a subprocess goes down its standard input.** The OTP
+  access code is written by `ykman otp settings --new-access-code -`, and the `-` is what
+  makes that acceptable: it means *prompt*, and a prompt reads stdin. An argument vector is
+  readable by every process on the workstation, which is the same reasoning that made the
+  SMB backends native APIs rather than `net use`. `ykman::run_with_stdin` logs the
+  **arguments** and never the input, and the arguments hold no secret by construction. The
+  value goes in twice because that prompt confirms — read out of `ykman`'s own source, not
+  guessed, since a prompt left waiting would hang a run in front of an operator.
+- **Custody of the OTP access code is recorded, never the value** (`secret.custody`: the
+  step, the slot, `custody=sealed-envelope`, `retained=no`). Under the model the owner
+  confirmed on 2026-08-11 the code travels to the holder on the sealed slip, which is what
+  keeps a protected slot reprogrammable later without an applet reset.
 - **A share password is the one secret this tool does handle, and it is handled as a
   transient.** `store::smb::Secret` keeps it as bytes, zeroes them on drop, prints
   `Secret(********)` from `Debug` — so no `{:?}`, no `tracing` field and no panic message can
@@ -134,6 +146,7 @@ is not a fix.
 | Operator name | Accountability for a hand-over and every audit entry | `distributions`, `bootstrap_runs`, `audit` |
 | Operator name + workstation name | Who currently has a cloud-hosted database open, so a second operator is refused by name rather than allowed to fork the register | `<database>.lock` (a file, not a table — see [`../features/cloud-sync-hosting.md`](../features/cloud-sync-hosting.md)) |
 | **Signed term (document)** | The evidence that a key was signed for | `documents.content` |
+| **Loss report** — who reported a key lost or stolen, whose key it was, and the circumstances | The record a possible credential compromise is handled from, and reported to the ESI on (NRM §5.4.4) | `key_incidents` |
 
 Two additions in v0.2.x raise what a copy of this database is worth, and both are
 stated rather than glossed over:
@@ -143,6 +156,20 @@ stated rather than glossed over:
 2. A **signed term** is a scanned document carrying a name, an identification number
    and a handwritten signature, stored inside the database (the reasoning is in
    `../features/signed-term-documents.md`).
+
+The **incident note** (`crate::incident`) is the other document this tool produces about a
+person, and it is the most concentrated: one page saying who held a key, what credentials
+were on it, and which of them are still live. Three decisions follow from that, and each is
+deliberate:
+
+* **It is not stored.** The incident, the dependency list and the remediations are already
+  rows; filing a rendering of them would be a second copy that can go stale, and — unlike a
+  consignment term — nothing signs it, so it is not evidence.
+* **It is produced on demand and audited when it is** (`key.incident_note`, with the format),
+  because a copy leaving the tool is the moment the personal data does.
+* **Its PDF metadata carries no personal data**: `/Title` and `/Subject` name the serial, not
+  the holder, for the same reason the term's do not — metadata travels with a file into mail
+  clients, previews and search indexes.
 
 A **generated term** — text or PDF — is personal data the operator deliberately writes to
 a file, at a path they choose, in order to have it signed. It leaves this tool's
@@ -334,7 +361,19 @@ everything that does not depend on it, and say plainly what is pending. That is 
    (`../features/smb-share-hosting.md`). Reaching a share as the signed-in domain user is
    ordinary file access; *selecting* a domain controller or requesting a Kerberos ticket would
    be an AD integration, and is deliberately not built.
-8. **Enforcement of the PIN change is sometimes procedural** — `forcePINChange` needs
+8. **Revocation and credential removal are recorded, not performed.** A lost key's
+   certificate is revoked at the CA that issued it and its credentials are removed at the
+   relying party that holds them — both somebody else's systems, and the issuer is the
+   operator by the decision of 2026-08-13. The register lists what has to be dealt with,
+   holds the reason and the reference, and refuses to close an incident over a gap silently;
+   it cannot prove the revocation happened. The gap closes when a CA integration exists
+   (`../features/ca-integration.md` phases 3–5), which is an **ESI** decision about
+   integrating with a corporate PKI. Meanwhile the claim is checkable: the trail names who
+   recorded it and the CA's own reference.
+9. **A recorded remediation needs no second pair of eyes**, because there are no roles yet
+   (gap 2). Any operator with the register open can claim a certificate was revoked. *ESI to
+   say whether that needs an approver* (`../features/key-lifecycle-and-revocation.md`).
+10. **Enforcement of the PIN change is sometimes procedural** — `forcePINChange` needs
    firmware 5.7+, and PIV has no equivalent at all. Under custody model B those keys rely on
    the hand-over term's instruction. The run records which applied, so the exposure is
    measurable; closing it would mean either a 5.7+ fleet or model A (holder present).

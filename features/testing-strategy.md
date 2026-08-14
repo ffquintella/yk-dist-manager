@@ -18,7 +18,7 @@ whole even though every part passes.
 
 **Suites in place, and CI now enforces the gate.**
 
-- **753 tests** pass on the default features (`cargo test`), **758** with
+- **913 tests** pass on the default features (`cargo test`), **918** with
   `--all-features` — the encrypted-database paths account for the difference, minus
   the one test that exists only when `encrypted-db` is *off*. The default figure now
   includes the native-transport tests, because `native-device` became a default
@@ -36,6 +36,14 @@ whole even though every part passes.
   unit test decoding the request with the same crate that encoded it checks the round trip
   and not the standard: if `x509-cert` and this code agree on a wrong encoding, both agree.
   Proven load-bearing by swapping `Rfc822Name` for `DnsName` — caught.
+- **One scenario per workflow, including the ones that only go wrong at the end.** The
+  newest is [`behaviour_key_lifecycle.rs`](../tests/behaviour_key_lifecycle.rs), which drives
+  a whole incident through `YkDistApp`: a bootstrapped key is handed over, reported stolen,
+  its certificate and credential are dealt with, the note is produced, the incident is
+  closed, a partial reset leaves the reissue gate closed for the applet that refused, and an
+  RMA links a replacement. It exists because every one of those steps is individually
+  plausible and the failure mode is the *sequence* — a key going back into stock still
+  carrying somebody's certificate is not something a unit test of either half would catch.
 - **Property tests** for the two pieces of pure logic whose risk is the *space of
   inputs* rather than the logic: the audit chain and the RFC 4514 escaper
   ([`property_audit_and_escaping.rs`](../tests/property_audit_and_escaping.rs),
@@ -54,12 +62,29 @@ whole even though every part passes.
 - `cargo check --no-default-features` is part of the pre-commit sweep, because the
   no-camera build is a supported configuration
   (`make check-all`).
-- Core line coverage **86.07%** (region 85.29%), above the 80% floor. It has fallen
+- **The gate excludes `vendor/`**, for a different reason than it excludes `src/ui/`: that
+  code is not this project's. `vendor/block` is a patched copy of a dependency
+  (`features/packaging-and-release.md` phase 0b), and cargo instruments a *path* crate the
+  way it does not instrument a registry one — so without the exclusion the gate would
+  measure somebody else's crate and move when that copy was updated. It made no difference
+  to the number (86.11% either way), which is the point at which to fix it rather than
+  after it starts flattering the total.
+- Core line coverage **86.11%** (region 85.23%), above the 80% floor. It has fallen
   twice for the same structural reason rather than through neglect: from 88.25% when
   `device/native_fido.rs` joined the build, and again when `native-device` became a
   default feature. The hardware transports are reachable only with a key attached, so
   they count against the gate at close to 0% (`native_fido.rs` 3.5%,
   `native_piv.rs` 32%).
+
+  Finishing Wave 1 held it level rather than dropping it, which was not the
+  expectation: almost everything that landed is hardware-facing. What kept it level is
+  that each of those modules splits into a **pure** half and a **card exchange**, and
+  the pure half is where the failure modes are. `device::mgmt`'s TLV parsing is at
+  98.7% while its APDU conversation is at nothing; `device::certificate`'s read-back
+  checks are exhaustively tested with no card in sight. That split is deliberate — it
+  is the same reason `device::csr` assembles PKCS#10 purely and takes the signature as
+  a closure — and it is what makes "not hardware-verified" mean *the protocol
+  conversation is unproven* rather than *this code is untested*.
 
   The pure cores next to them are the answer to that, and they are covered:
   `device/select.rs` 93%, `device/applets.rs` 91%, `device/csr.rs` 90%. That split is
@@ -67,7 +92,7 @@ whole even though every part passes.
   already-configured judgement are all pure functions precisely so they are testable
   without hardware, leaving only the APDU exchange uncovered.
 - Unit suites: `unit_domain.rs` (15), `unit_template.rs` (50), `unit_audit.rs` (17),
-  `unit_ykman_parse.rs` (8), `unit_store.rs` (30), `unit_device_backends.rs` (9),
+  `unit_ykman_parse.rs` (8), `unit_store.rs` (36), `unit_device_backends.rs` (9),
   `unit_records.rs` (16), `unit_logging_format.rs` (6), `unit_term.rs` (45),
   `unit_pdf.rs` (41), `unit_settings.rs` (3), `unit_store_cloud.rs` (14 — the
   cloud-sync single-writer lock), `unit_store_smb.rs` (16 — reaching an SMB share),
@@ -78,10 +103,16 @@ whole even though every part passes.
   `behaviour_bootstrap.rs` (10), `behaviour_storage.rs` (25),
   `behaviour_templates.rs` (13), `behaviour_terms_and_documents.rs` (18),
   `behaviour_executor.rs` (10 — a bootstrap run against mock write transports),
-  `behaviour_smb_share.rs` (6 — a register on a share), plus the two suites that
-  drive `YkDistApp` and therefore own their binary's environment, one scenario each:
-  `behaviour_app_cloud_lock.rs` and `behaviour_app_smb_share.rs` (see their module
-  docs).
+  `behaviour_smb_share.rs` (6 — a register on a share),
+  `behaviour_key_reset.rs` (8 — returning a key to factory default against
+  `MockResetter`, including the power-cycle handshake against synthetic instants),
+  `behaviour_applet_state_and_refusal.rs` (8), `behaviour_certificate_import.rs` (6),
+  plus the suites that drive `YkDistApp` and therefore own their binary's environment,
+  one scenario each: `behaviour_app_cloud_lock.rs`, `behaviour_app_smb_share.rs`,
+  `behaviour_app_key_ready_to_hand_over.rs` — the lifecycle step between a run and a
+  hand-over: the refusal comes before anything is written, and a run that completes
+  is what moves the key — and `behaviour_key_lifecycle.rs`, which is one scenario
+  because the *sequence* is the thing under test (see their module docs).
 - **Three mockable seams**, for the same reason: `device::MockBackend` means no test
   needs a key to *read*, `device::write::MockWriter` means none needs one to
   *write* — it is the only implementation of the write traits in a **default**

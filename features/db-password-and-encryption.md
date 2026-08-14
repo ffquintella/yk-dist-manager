@@ -22,7 +22,11 @@ forced into key management; a production dataset on a share should be.
 
 **Done for Wave 0.** Every phase carrying wave 0 is built, wired and tested; what
 is left is phase 4, which is blocked on the ESI's cipher and KDF parameter set,
-and phase 7, which is Wave 1 work behind `native-otp`.
+and phase 7, which gates **no** wave. It carried a `1` until 2026-08-14, and moving it
+to `—` when Wave 1 closed is a reclassification rather than a demotion: both halves of
+what blocks it are somebody else's — the OTP slot write deferred until a key can verify
+the frame, and the KDF choice the ESI owns (phase 4 above). A phase an implementer
+cannot start does not gate a wave, which is what that column means.
 
 - `StoreConfig::password: Option<String>`; `with_password` treats an empty string
   as "no password" so a blank prompt cannot create an unopenable file.
@@ -97,7 +101,7 @@ the new key, verify it opens and its audit chain verifies, then swap — never
 | 4 | Explicit KDF parameters (`PRAGMA kdf_iter`, cipher page size) | — | Todo | **blocked on the ESI-approved cipher/parameter set** — the one thing here that is not the implementer's to decide (`AGENTS.md` §8). Until then the defaults are SQLCipher's |
 | 5 | "Encrypt an existing plain database" migration | 0 | **Done** | the same operation as phase 2 — a plain source is just one with no key. Backup taken first, audited as `db.encrypted`, and reachable from **Settings → Password protection** |
 | 6 | Password strength meter + policy | 0 | **Done** | [`password::assess`](../src/password.rs) — a 12-character floor with advice rather than mandatory character classes, because the threat is an offline attack on a copied file and composition rules push people towards `Password1!`. The meter is [`ui::password_meter`](../src/ui/mod.rs), shown wherever a password is *chosen*; the floor is enforced by `create_new` and `change_password` rather than by the screen |
-| 7 | Optional: unlock with a YubiKey instead of a typed password | 1 | Todo | HMAC-SHA1 challenge-response (OTP slot 2) as the KDF input — depends on `native-otp` |
+| 7 | Optional: unlock with a YubiKey instead of a typed password | — | Todo — **blocked twice over** | HMAC-SHA1 challenge-response (OTP slot 2) as the KDF input. It needs an OTP slot to be *programmed*, which is the one write `features/step-otp-access-code.md` phase 4 and 5 deliberately leave unwritten until there is a key to verify the frame against; and turning a challenge-response into a database key **is** a KDF choice, which is the ESI's to approve (phase 4 above, `AGENTS.md` §8). Neither half is an implementer's decision, so this is the one Wave 1 row that is not merely unverified — and it is marked *optional* in its own title, so nothing depends on it |
 
 Phase 7 is the interesting one: the tool distributes YubiKeys, so using one to
 open its own database is coherent and removes the shared-password problem.

@@ -83,6 +83,7 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
     let mut status_change: Option<(u32, crate::domain::KeyStatus)> = None;
     let mut note_requested: Option<u32> = None;
     let mut removal_requested: Option<u32> = None;
+    let mut lifecycle_requested: Option<u32> = None;
 
     // Filter, sort and page before painting. The rules are in `crate::browse`,
     // where they are covered; this screen only shows the result.
@@ -192,8 +193,13 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
                         if super::row_button(ui, "observation…").clicked() {
                             note_requested = Some(key.serial);
                         }
-                        if super::row_button_danger(ui, "mark lost").clicked() {
-                            status_change = Some((key.serial, crate::domain::KeyStatus::Lost));
+                        // Where a loss is reported, and everything it obliges
+                        // (`features/key-lifecycle-and-revocation.md`). This
+                        // replaced a bare *mark lost*, which set a status and
+                        // recorded nothing — no reporter, no date, and no list of
+                        // the credentials that were on the key.
+                        if super::row_button(ui, "lifecycle…").clicked() {
+                            lifecycle_requested = Some(key.serial);
                         }
                         if super::row_button_danger(ui, "remove").clicked() {
                             removal_requested = Some(key.serial);
@@ -211,6 +217,9 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
     if let Some(serial) = removal_requested {
         app.request_key_removal(serial);
     }
+    if let Some(serial) = lifecycle_requested {
+        app.open_key_lifecycle(serial);
+    }
 
     if app.inventory.note_serial.is_some() {
         ui.add_space(12.0);
@@ -219,6 +228,10 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
     if let Some(serial) = app.inventory.pending_removal {
         ui.add_space(12.0);
         removal_confirmation(app, ui, serial);
+    }
+    if let Some(serial) = app.lifecycle.serial {
+        ui.add_space(12.0);
+        lifecycle(app, ui, serial);
     }
     if let Some(error) = app.inventory.error.clone() {
         ui.add_space(10.0);
@@ -338,6 +351,656 @@ fn removal_confirmation(app: &mut YkDistApp, ui: &mut egui::Ui, serial: u32) {
                 app.cancel_key_removal();
             }
         });
+    });
+}
+
+/// Everything that has happened to one key since it was handed over, and what is
+/// still owed (`features/key-lifecycle-and-revocation.md` phases 2, 3, 4, 6, 7
+/// and 8).
+///
+/// One panel rather than five, because during an incident they are one job: the
+/// operator has been told a key is gone, and needs — in this order — to record
+/// what they were told, see what was on the key, deal with each of those
+/// elsewhere, record that they did, and produce the note somebody has to send.
+/// Splitting that across screens is how a step gets missed.
+///
+/// The panel paints from `app.lifecycle`, which is read when it opens and after
+/// every write. Nothing here reads the database while the frame is being painted.
+fn lifecycle(app: &mut YkDistApp, ui: &mut egui::Ui, serial: u32) {
+    use elegance::{Badge, BadgeTone};
+
+    let mut close = false;
+    let mut report = false;
+    let mut settle: Option<crate::domain::lifecycle::Dependency> = None;
+    let mut record = false;
+    let mut cancel_settling = false;
+    let mut note_for: Option<uuid::Uuid> = None;
+    let mut close_incident: Option<uuid::Uuid> = None;
+    let mut save_note: Option<bool> = None;
+    let mut sanitise = false;
+    let mut toggles: Vec<(crate::device::reset::Applet, bool)> = Vec::new();
+    let mut send_rma = false;
+    let mut link_replacement: Option<uuid::Uuid> = None;
+    let mut close_rma: Option<uuid::Uuid> = None;
+
+    let panel = &app.lifecycle;
+    let incidents = panel.incidents.clone();
+    let remediations = panel.remediations.clone();
+    let dependencies = panel.dependencies.clone();
+    let cases = panel.rma.clone();
+    let sanitisation = panel.sanitisation.clone();
+    let open_incident = incidents.iter().find(|i| i.is_open()).cloned();
+    let settling = panel.settling.clone();
+    let note = panel.note.clone();
+    let status = app
+        .keys
+        .iter()
+        .find(|key| key.serial == serial)
+        .map(|key| key.status);
+
+    super::titled_card(ui, format!("Lifecycle — serial {serial}"), |ui| {
+        ui.horizontal_wrapped(|ui| {
+            if let Some(status) = status {
+                super::status_badge(ui, status);
+            }
+            ui.add_space(6.0);
+            if sanitisation.is_clear() {
+                ui.add(Badge::new(sanitisation.describe(), BadgeTone::Ok));
+            } else {
+                ui.add(Badge::new(sanitisation.describe(), BadgeTone::Warning))
+                    .on_hover_text(sanitisation.refusal(serial));
+            }
+            ui.add_space(6.0);
+            super::faint(
+                ui,
+                &crate::incident::summarise(&dependencies, &remediations),
+            );
+        });
+
+        // --------------------------------------------------------- the report
+        ui.add_space(14.0);
+        if let Some(incident) = &open_incident {
+            super::notice(
+                ui,
+                CalloutTone::Danger,
+                &format!(
+                    "{} — reported on {} by {}. This key is out of service and its credentials \
+                     have to be dealt with; the list below says which.",
+                    incident.kind.label(),
+                    incident.reported_at.date_naive(),
+                    incident.reported_by
+                ),
+            );
+            if !incident.circumstances.is_empty() {
+                ui.add_space(4.0);
+                super::hint(ui, &incident.circumstances);
+            }
+        } else if app.lifecycle.report_open {
+            report_form(app, ui, &mut report);
+        } else {
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add(Button::new("Report lost or stolen…").accent(Accent::Red))
+                    .on_hover_text(
+                        "records who reported it and when, moves the key to lost, and lists \
+                         what was on it",
+                    )
+                    .clicked()
+                {
+                    app.lifecycle.report_open = true;
+                }
+                if !incidents.is_empty() {
+                    super::faint(ui, &format!("{} incident(s) on record", incidents.len()));
+                }
+            });
+        }
+
+        // ------------------------------------------------- what was on the key
+        ui.add_space(16.0);
+        super::faint(ui, "What this key was carrying");
+        super::hint(
+            ui,
+            "Read off the bootstrap runs, not stored separately — so this is what the register \
+             can prove was applied. A certificate stays valid until it is revoked at its CA, and \
+             a credential stays registered until the relying party removes it: both happen \
+             elsewhere, and are recorded here.",
+        );
+        ui.add_space(6.0);
+        if dependencies.is_empty() {
+            super::notice(
+                ui,
+                CalloutTone::Neutral,
+                "No completed bootstrap run refers to this serial. That is not the same as an \
+                 empty key — one configured outside this tool looks the same from here.",
+            );
+        } else {
+            super::table(
+                ui,
+                "lifecycle-dependencies",
+                &["What", "Identifier", "Detail", "State", ""],
+                |ui| {
+                    for dependency in &dependencies {
+                        ui.label(dependency.kind.label());
+                        super::mono(ui, &dependency.subject);
+                        super::faint(ui, &dependency.detail);
+                        match (
+                            dependency.kind.settled_by(),
+                            dependency.settled_by(&remediations),
+                        ) {
+                            (Some(_), Some(done)) => {
+                                ui.add(Badge::new(done.kind.label(), BadgeTone::Ok))
+                                    .on_hover_text(format!(
+                                        "recorded {} by {}",
+                                        done.recorded_at.date_naive(),
+                                        done.recorded_by
+                                    ));
+                            }
+                            (Some(_), None) => {
+                                ui.add(Badge::new("outstanding", BadgeTone::Danger))
+                                    .on_hover_text(dependency.kind.instruction());
+                            }
+                            (None, _) => {
+                                ui.add(Badge::new("for information", BadgeTone::Neutral))
+                                    .on_hover_text(dependency.kind.instruction());
+                            }
+                        }
+                        if dependency.kind.settled_by().is_some()
+                            && dependency.settled_by(&remediations).is_none()
+                            && super::row_button(ui, "record…").clicked()
+                        {
+                            settle = Some(dependency.clone());
+                        }
+                        ui.end_row();
+                    }
+                },
+            );
+        }
+
+        if let Some(dependency) = &settling {
+            ui.add_space(12.0);
+            settle_form(app, ui, dependency, &mut record, &mut cancel_settling);
+        }
+
+        // ----------------------------------------------------- sanitisation
+        ui.add_space(16.0);
+        super::faint(ui, "Sanitisation before reissue");
+        super::hint(
+            ui,
+            "A key cannot go back into stock, or be prepared for somebody else, while it still \
+             carries what a bootstrap put on it. A factory reset from *Attached now* records \
+             this by itself; the form below is for a key that was reset elsewhere.",
+        );
+        ui.add_space(6.0);
+        if !sanitisation.cleared.is_empty() {
+            for (applet, at) in &sanitisation.cleared {
+                super::hint(
+                    ui,
+                    &format!("• {} — reset recorded {}", applet.label(), at.date_naive()),
+                );
+            }
+        }
+        if !sanitisation.is_clear() {
+            super::notice(ui, CalloutTone::Warning, &sanitisation.refusal(serial));
+        }
+        ui.add_space(6.0);
+        if app.lifecycle.sanitised_open {
+            sanitised_form(app, ui, &mut sanitise, &mut toggles);
+        } else if ui
+            .add(Button::new("Record a reset done elsewhere…").outline())
+            .clicked()
+        {
+            app.lifecycle.sanitised_open = true;
+        }
+
+        // -------------------------------------------------------------- RMA
+        ui.add_space(16.0);
+        super::faint(ui, "Repair and replacement");
+        ui.add_space(6.0);
+        if !cases.is_empty() {
+            super::table(
+                ui,
+                "lifecycle-rma",
+                &["Reference", "Sent", "State", "Replacement", ""],
+                |ui| {
+                    for case in &cases {
+                        super::mono(ui, &case.reference);
+                        super::faint(ui, &case.sent_at.date_naive().to_string());
+                        let tone = match case.state() {
+                            crate::domain::RmaState::Replaced => BadgeTone::Ok,
+                            crate::domain::RmaState::Sent => BadgeTone::Warning,
+                            crate::domain::RmaState::Closed => BadgeTone::Neutral,
+                        };
+                        ui.add(Badge::new(case.state().label(), tone));
+                        super::faint(
+                            ui,
+                            &case
+                                .replacement_serial
+                                .map(|serial| serial.to_string())
+                                .unwrap_or_else(|| "—".to_owned()),
+                        );
+                        ui.horizontal(|ui| {
+                            if case.is_open() {
+                                super::capped_input(
+                                    ui,
+                                    &mut app.lifecycle.rma_replacement,
+                                    24,
+                                    |input| {
+                                        input
+                                            .hint("replacement serial")
+                                            .id_salt(format!("rma-replacement-{}", case.id))
+                                            .desired_width(150.0)
+                                    },
+                                );
+                                if super::row_button(ui, "link replacement").clicked() {
+                                    link_replacement = Some(case.id);
+                                }
+                                if super::row_button(ui, "close, no replacement").clicked() {
+                                    close_rma = Some(case.id);
+                                }
+                            }
+                        });
+                        ui.end_row();
+                    }
+                },
+            );
+            ui.add_space(8.0);
+        }
+        if app.lifecycle.rma_open {
+            rma_form(app, ui, &mut send_rma);
+        } else if ui
+            .add(Button::new("Send to the supplier (RMA)…").outline())
+            .on_hover_text("records the case number and the fault; the key keeps its history")
+            .clicked()
+        {
+            app.lifecycle.rma_open = true;
+        }
+
+        // ----------------------------------------------------- the incidents
+        if !incidents.is_empty() {
+            ui.add_space(16.0);
+            super::faint(ui, "Incidents");
+            ui.add_space(6.0);
+            super::table(
+                ui,
+                "lifecycle-incidents",
+                &["Event", "Reported", "By", "Holder", "State", ""],
+                |ui| {
+                    for incident in &incidents {
+                        ui.label(incident.kind.label());
+                        super::faint(ui, &incident.reported_at.date_naive().to_string());
+                        super::faint(ui, &incident.reported_by);
+                        super::faint(ui, &incident.holder_display);
+                        if incident.is_open() {
+                            ui.add(Badge::new("open", BadgeTone::Danger));
+                        } else {
+                            ui.add(Badge::new("closed", BadgeTone::Neutral))
+                                .on_hover_text(if incident.closing_note.is_empty() {
+                                    "closed with nothing outstanding".to_owned()
+                                } else {
+                                    incident.closing_note.clone()
+                                });
+                        }
+                        ui.horizontal(|ui| {
+                            if super::row_button(ui, "note for the ESI…").clicked() {
+                                note_for = Some(incident.id);
+                            }
+                            if incident.is_open()
+                                && super::row_button(ui, "close incident").clicked()
+                            {
+                                close_incident = Some(incident.id);
+                            }
+                        });
+                        ui.end_row();
+                    }
+                },
+            );
+
+            if open_incident.is_some() {
+                ui.add_space(8.0);
+                super::capped_area(
+                    ui,
+                    &mut app.lifecycle.detail,
+                    crate::domain::MAX_NOTE,
+                    |area| {
+                        area.label("Closing note")
+                            .hint("needed only while something is still outstanding — say why")
+                            .rows(2)
+                            .id_salt("incident-closing-note")
+                    },
+                );
+            }
+        }
+
+        // ------------------------------------------------------------- note
+        if let Some((_, text)) = &note {
+            ui.add_space(16.0);
+            super::faint(ui, "Incident note");
+            super::hint(
+                ui,
+                "Assembled from the register. Read it before it goes anywhere: it names the \
+                 holder and what was on their key. Sending it — and any deadline — is your \
+                 unit's process, not this tool's.",
+            );
+            ui.add_space(6.0);
+            egui::ScrollArea::vertical()
+                .max_height(260.0)
+                .id_salt("incident-note")
+                .show(ui, |ui| {
+                    super::mono(ui, text);
+                });
+            ui.add_space(8.0);
+            ui.horizontal_wrapped(|ui| {
+                if ui.add(Button::new("Copy").outline()).clicked() {
+                    ui.ctx().copy_text(text.clone());
+                }
+                if ui.add(Button::new("Save as text…").outline()).clicked() {
+                    save_note = Some(false);
+                }
+                if ui.add(Button::new("Save as PDF…").outline()).clicked() {
+                    save_note = Some(true);
+                }
+            });
+        }
+
+        if let Some(notice) = &app.lifecycle.notice {
+            ui.add_space(10.0);
+            super::notice(ui, CalloutTone::Neutral, notice);
+        }
+        if let Some(error) = &app.lifecycle.error {
+            ui.add_space(10.0);
+            super::error_label(ui, error);
+        }
+
+        ui.add_space(12.0);
+        if ui.add(Button::new("Close").outline()).clicked() {
+            close = true;
+        }
+    });
+
+    // Deferred, like every other action that would mutate what is being painted.
+    if let Some(dependency) = settle {
+        app.settle_dependency(&dependency);
+    }
+    if cancel_settling {
+        app.cancel_settling();
+    }
+    if record {
+        app.record_remediation();
+    }
+    if report {
+        app.report_key_incident();
+    }
+    for (applet, wanted) in toggles {
+        app.toggle_sanitised_applet(applet, wanted);
+    }
+    if sanitise {
+        app.record_manual_sanitisation();
+    }
+    if send_rma {
+        app.send_key_for_rma();
+    }
+    if let Some(id) = link_replacement {
+        app.record_rma_replacement(id);
+    }
+    if let Some(id) = close_rma {
+        app.close_rma_case(id);
+    }
+    if let Some(id) = note_for {
+        app.generate_incident_note(id);
+    }
+    if let Some(id) = close_incident {
+        app.close_key_incident(id);
+    }
+    if let Some(as_pdf) = save_note {
+        app.save_incident_note(as_pdf);
+    }
+    if close {
+        app.close_key_lifecycle();
+    }
+}
+
+/// The loss report: kind, when, who said so, and what they said.
+fn report_form(app: &mut YkDistApp, ui: &mut egui::Ui, submit: &mut bool) {
+    super::notice(
+        ui,
+        CalloutTone::Warning,
+        "Recording this moves the key to *lost* and starts the list of what has to be dealt \
+         with. Nothing is written until the button below.",
+    );
+    ui.add_space(10.0);
+    ui.horizontal(|ui| {
+        ui.label("Event");
+        let mut kind = app.lifecycle.report_kind;
+        egui::ComboBox::from_id_salt("incident-kind")
+            .selected_text(kind.label())
+            .show_ui(ui, |ui| {
+                for option in crate::domain::IncidentKind::ALL {
+                    ui.selectable_value(&mut kind, option, option.label());
+                }
+            });
+        app.lifecycle.report_kind = kind;
+        ui.add_space(10.0);
+        ui.label("When");
+        super::capped_input(ui, &mut app.lifecycle.report_date, 10, |input| {
+            input
+                .hint("YYYY-MM-DD — today if left empty")
+                .id_salt("incident-date")
+                .desired_width(140.0)
+        });
+    });
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        ui.label("Reported by");
+        super::capped_input(
+            ui,
+            &mut app.lifecycle.reported_by,
+            crate::domain::MAX_TEXT,
+            |input| {
+                input
+                    .hint("the holder, their manager, a security desk")
+                    .id_salt("incident-reporter")
+                    .desired_width(320.0)
+            },
+        );
+    });
+    ui.add_space(8.0);
+    super::capped_area(
+        ui,
+        &mut app.lifecycle.circumstances,
+        crate::domain::MAX_NOTE,
+        |area| {
+            area.label("Circumstances")
+                .hint("what happened, in the reporter's own terms")
+                .rows(3)
+                .id_salt("incident-circumstances")
+        },
+    );
+    ui.add_space(10.0);
+    ui.horizontal(|ui| {
+        if ui
+            .add(Button::new("Record the report").accent(Accent::Red))
+            .clicked()
+        {
+            *submit = true;
+        }
+        if ui.add(Button::new("Cancel").outline()).clicked() {
+            app.lifecycle.report_open = false;
+        }
+    });
+}
+
+/// The form that records a revocation or a removal performed elsewhere.
+fn settle_form(
+    app: &mut YkDistApp,
+    ui: &mut egui::Ui,
+    dependency: &crate::domain::lifecycle::Dependency,
+    submit: &mut bool,
+    cancel: &mut bool,
+) {
+    use crate::domain::lifecycle::DependencyKind;
+
+    super::titled_card(
+        ui,
+        format!("{} {}", dependency.kind.label(), dependency.subject),
+        |ui| {
+            super::hint(ui, dependency.kind.instruction());
+            ui.add_space(8.0);
+
+            if dependency.kind == DependencyKind::Certificate {
+                ui.horizontal(|ui| {
+                    ui.label("Reason");
+                    let mut reason = app.lifecycle.revocation_reason;
+                    egui::ComboBox::from_id_salt("revocation-reason")
+                        .selected_text(reason.audit_name())
+                        .show_ui(ui, |ui| {
+                            for option in crate::domain::RevocationReason::ALL {
+                                ui.selectable_value(&mut reason, option, option.label());
+                            }
+                        });
+                    app.lifecycle.revocation_reason = reason;
+                });
+                super::hint(
+                    ui,
+                    "`keyCompromise` is the only reason that invalidates signatures made before \
+                     the revocation date — which is what a key somebody else may be holding \
+                     calls for.",
+                );
+                ui.add_space(8.0);
+            }
+
+            ui.horizontal(|ui| {
+                ui.label("Reference");
+                super::capped_input(
+                    ui,
+                    &mut app.lifecycle.reference,
+                    crate::domain::MAX_TEXT,
+                    |input| {
+                        input
+                            .hint(match dependency.kind {
+                                DependencyKind::Certificate => "the CA's revocation reference",
+                                _ => "the relying party's ticket, or who confirmed it",
+                            })
+                            .id_salt("remediation-reference")
+                            .desired_width(320.0)
+                    },
+                );
+            });
+            super::hint(
+                ui,
+                "Optional, and worth filling in: it is what lets somebody else check this claim \
+                 without taking the register's word for it.",
+            );
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.add(Button::new("Record it")).clicked() {
+                    *submit = true;
+                }
+                if ui.add(Button::new("Cancel").outline()).clicked() {
+                    *cancel = true;
+                }
+            });
+        },
+    );
+}
+
+/// The form for a key somebody reset with `ykman` on a bench.
+fn sanitised_form(
+    app: &mut YkDistApp,
+    ui: &mut egui::Ui,
+    submit: &mut bool,
+    toggles: &mut Vec<(crate::device::reset::Applet, bool)>,
+) {
+    use crate::device::reset::Applet;
+
+    super::notice(
+        ui,
+        CalloutTone::Warning,
+        "This records your word that the applets below are at factory default. A reset this \
+         tool performed records itself — use this only for one it did not, and say in the \
+         reference how you know.",
+    );
+    ui.add_space(8.0);
+    for applet in Applet::ALL {
+        let mut ticked = app.lifecycle.sanitised_applets.contains(&applet);
+        if ui
+            .checkbox(
+                &mut ticked,
+                format!("{} is at factory default", applet.label()),
+            )
+            .changed()
+        {
+            toggles.push((applet, ticked));
+        }
+    }
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        ui.label("How you know");
+        super::capped_input(
+            ui,
+            &mut app.lifecycle.reference,
+            crate::domain::MAX_TEXT,
+            |input| {
+                input
+                    .hint("e.g. reset with ykman on the bench, 2026-08-14")
+                    .id_salt("sanitised-reference")
+                    .desired_width(360.0)
+            },
+        );
+    });
+    ui.add_space(10.0);
+    ui.horizontal(|ui| {
+        if ui.add(Button::new("Record the sanitisation")).clicked() {
+            *submit = true;
+        }
+        if ui.add(Button::new("Cancel").outline()).clicked() {
+            app.lifecycle.sanitised_open = false;
+        }
+    });
+}
+
+/// The form that opens an RMA case.
+fn rma_form(app: &mut YkDistApp, ui: &mut egui::Ui, submit: &mut bool) {
+    super::hint(
+        ui,
+        "For a key that has physically left for the supplier. The record stays, so “where is \
+         serial 20423633?” has an answer while it is away — and the replacement is linked as a \
+         serial, keeping its own row and its own history.",
+    );
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        ui.label("Case reference");
+        super::capped_input(
+            ui,
+            &mut app.lifecycle.rma_reference,
+            crate::domain::MAX_TEXT,
+            |input| {
+                input
+                    .hint("the supplier's RMA number")
+                    .id_salt("rma-reference")
+                    .desired_width(240.0)
+            },
+        );
+    });
+    ui.add_space(8.0);
+    super::capped_area(
+        ui,
+        &mut app.lifecycle.rma_fault,
+        crate::domain::MAX_NOTE,
+        |area| {
+            area.label("Fault")
+                .hint("what is wrong with it")
+                .rows(2)
+                .id_salt("rma-fault")
+        },
+    );
+    ui.add_space(10.0);
+    ui.horizontal(|ui| {
+        if ui.add(Button::new("Record the despatch")).clicked() {
+            *submit = true;
+        }
+        if ui.add(Button::new("Cancel").outline()).clicked() {
+            app.lifecycle.rma_open = false;
+        }
     });
 }
 
@@ -704,6 +1367,7 @@ fn attached(app: &mut YkDistApp, ui: &mut egui::Ui) {
     let snapshot = app.attached.clone();
     let mut choose: Option<u32> = None;
     let mut reset_requested: Option<u32> = None;
+    let mut read_requested: Option<u32> = None;
 
     // Nothing to say before the first poll lands, and nothing to say on a screen
     // where the watch is not running.
@@ -751,7 +1415,14 @@ fn attached(app: &mut YkDistApp, ui: &mut egui::Ui) {
         super::table(
             ui,
             "attached-keys",
-            &["Serial", "Model", "Firmware", "Applications", ""],
+            &[
+                "Serial",
+                "Model",
+                "Firmware",
+                "Applications",
+                "Configuration",
+                "",
+            ],
             |ui| {
                 for key in &snapshot.keys {
                     let chosen = app.target_serial() == Some(key.serial);
@@ -766,6 +1437,34 @@ fn attached(app: &mut YkDistApp, ui: &mut egui::Ui) {
                             key.usb_applications.join(", ")
                         },
                     );
+                    // What state this key's applets are in, if anybody has looked
+                    // (`features/step-piv-pin-puk-management-key.md` phase 6). Until
+                    // now the only warning about a key still on its factory defaults
+                    // was in the wizard's pre-flight — seen once, by the operator
+                    // about to fix it, and never by anybody auditing the fleet.
+                    //
+                    // Three states and three renderings, because a key nobody has
+                    // read is not a key with nothing wrong with it.
+                    match app.factory_default_badge(key.serial) {
+                        Some(Some(badge)) => {
+                            ui.add(Badge::new("factory defaults", BadgeTone::Warning))
+                                .on_hover_text(badge);
+                        }
+                        Some(None) => {
+                            ui.add(Badge::new("configured", BadgeTone::Ok));
+                        }
+                        None => {
+                            if super::row_button(ui, "check…")
+                                .on_hover_text(
+                                    "reads the applets — PIN retries, PIV slots, which \
+                                     applications are enabled. A read only; nothing is written",
+                                )
+                                .clicked()
+                            {
+                                read_requested = Some(key.serial);
+                            }
+                        }
+                    }
                     ui.horizontal(|ui| {
                         // The chosen key says so in a word as well as by tone.
                         if chosen {
@@ -798,6 +1497,7 @@ fn attached(app: &mut YkDistApp, ui: &mut egui::Ui) {
                         .on_hover_text(reason.clone());
                     super::faint(ui, "—");
                     super::faint(ui, reason);
+                    super::faint(ui, "—");
                     // A key in an unknown state is the case a reset is most for,
                     // so the action is offered here too. The preview will say
                     // which applets it could not read rather than pretending
@@ -830,6 +1530,9 @@ fn attached(app: &mut YkDistApp, ui: &mut egui::Ui) {
     }
     if let Some(serial) = reset_requested {
         app.request_key_reset(serial);
+    }
+    if let Some(serial) = read_requested {
+        app.read_applets(serial);
     }
 }
 

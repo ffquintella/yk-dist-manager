@@ -33,7 +33,7 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
         &format!(
             "yk-dist-manager {} — the database file is the whole deployment; copying it \
              (or a backup) copies everything.",
-            crate::VERSION
+            crate::build_id()
         ),
     );
 }
@@ -78,6 +78,37 @@ fn identity(app: &mut YkDistApp, ui: &mut egui::Ui) {
                  subject and the FIDO2 relying-party id of every key this tool prepares.",
             );
         }
+
+        // Where a lost key is reported (`features/key-lifecycle-and-revocation.md`
+        // phase 7). One field, two documents: it is the address the incident note
+        // names, and the one the sealed-envelope slip tells the holder to use. Left
+        // empty, the note says no address is configured instead of printing
+        // something nobody can act on.
+        ui.add_space(12.0);
+        if super::capped_input(
+            ui,
+            &mut app.settings.report_incidents_to,
+            MAX_TEXT,
+            |input| {
+                input
+                    .label("Report incidents to")
+                    .hint(
+                        "the security team's address — printed on an incident note and on the \
+                           holder's slip",
+                    )
+                    .id_salt("settings-report-incidents-to")
+            },
+        )
+        .lost_focus()
+        {
+            identity_changed = true;
+        }
+        super::hint(
+            ui,
+            "A possible credential compromise is an incident the norm expects to reach the \
+             ESI. This is the address that ends up on the note the tool prepares — who sends \
+             it, and by when, is your unit's process.",
+        );
 
         ui.add_space(12.0);
         appearance(app, ui);

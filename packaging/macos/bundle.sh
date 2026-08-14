@@ -18,7 +18,7 @@
 # Environment:
 #   YKDM_BUNDLE_ID   bundle identifier (default: org.example.yk-dist-manager)
 #   YKDM_FEATURES    cargo features (default: native-device,encrypted-db + defaults)
-#   YKDM_COPYRIGHT   NSHumanReadableCopyright
+#   YKDM_COPYRIGHT   NSHumanReadableCopyright (default: the LICENSE copyright line)
 #
 set -euo pipefail
 
@@ -60,7 +60,16 @@ APP_NAME="YubiKey Distribution Manager"
 BINARY="yk-dist-manager"
 IDENTIFIER="${YKDM_BUNDLE_ID:-org.example.yk-dist-manager}"
 FEATURES="${YKDM_FEATURES:-native-device,encrypted-db}"
-COPYRIGHT="${YKDM_COPYRIGHT:-Fundação Getulio Vargas}"
+
+# NSHumanReadableCopyright, which Finder shows in Get Info. The default names no
+# institution — the organisation is the operator's setting (roadmap decision,
+# 2026-08-11), and a name compiled into the bundle would belong to whoever built
+# it rather than to the unit running it. So the default states what is actually
+# true of this source: the licence it is under, read from LICENSE, the same
+# single-source-of-truth discipline the version gets from Cargo.toml. A unit that
+# wants its own line sets YKDM_COPYRIGHT.
+LICENSE_COPYRIGHT="$(sed -n 's/^\(Copyright (c) .*\)$/\1/p' LICENSE 2>/dev/null | head -1)"
+COPYRIGHT="${YKDM_COPYRIGHT:-${LICENSE_COPYRIGHT:-MIT licensed — see LICENSE}}"
 
 # Single source of truth for the version: the manifest.
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"

@@ -75,7 +75,7 @@ function parameter, and the value is zeroised after use.
 | 5 | Change PIN (`changePIN`) for an already-configured key | Todo | implemented, not yet verified: needs a key whose current PIN is known |
 | 6 | `forcePINChange` executed, with the pre-5.7 procedural fallback recorded | **Done** | hardware-verified on 5.7.4; **must be the last FIDO2 step** |
 | 7 | `setMinPINLength` gated on firmware 5.7+ | **Done** | hardware-verified; irreversible, so the confirmation gate covers it |
-| 8 | Retry-count display before and after, in the wizard | Todo | with a hard warning near zero |
+| 8 | Retry-count display before and after, in the wizard | **Done** | `Fido2State::pin_retries`, read through `get_pin_retries` which spends no attempt. The pre-flight warns at two or fewer and **blocks at zero** — a locked applet fails every step that authenticates, so a confirmed run could only fail — and the warning names what recovery costs, which under model B is a reset and a new certificate. The `Verify` step reads both counters back, so a run that walked one down is on the record |
 
 ## Audit events
 

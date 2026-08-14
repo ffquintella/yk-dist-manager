@@ -62,14 +62,14 @@ Parsing rules that matter:
 
 ## Phases
 
-| # | Phase | State | Notes |
-|---|---|---|---|
-| 1 | Backend + argv invocation + typed errors | Done | `src/device/ykman.rs` |
-| 2 | `list --serials` and `info` parsers with recorded fixtures | Done | `tests/unit_ykman_parse.rs`, 8 tests |
-| 3 | Version detection and compatibility warning | Todo | store `ykman --version` on the bootstrap run |
-| 4 | Interactive-prompt path for secret-carrying steps | Todo | `--access-code -`, `--new-pin -`; needed only while a native path is missing |
-| 5 | `piv info` / `fido info` / `otp info` parsers for verification steps | Todo | feeds `StepKind::Verify` evidence |
-| 6 | Retire the parsers that Phase 5 of the native transport replaces | Todo | keep only what has no native equivalent |
+| # | Phase | Wave | State | Notes |
+|---|---|---|---|---|
+| 1 | Backend + argv invocation + typed errors | 0 | Done | `src/device/ykman.rs` |
+| 2 | `list --serials` and `info` parsers with recorded fixtures | 0 | Done | `tests/unit_ykman_parse.rs`, 8 tests |
+| 3 | Version detection and compatibility warning | 2 | Todo | store `ykman --version` on the bootstrap run |
+| 4 | Interactive-prompt path for secret-carrying steps | 0 | **Done** | `YkmanBackend::run_with_stdin` — the prompt form (`--new-access-code -`) with the value on **stdin**, because an argument vector is readable by every process on the workstation. Its one caller is the OTP access code ([`step-otp-access-code.md`](step-otp-access-code.md) phase 2), which is the only secret-carrying step with no native path; the arguments are logged and the input never is |
+| 5 | `piv info` / `fido info` / `otp info` parsers for verification steps | — | **Closed — not needed** | `Verify` reads the applets natively and reads the certificate back off the card. `parse_otp_info` is the one that earned its keep and exists; writing the other two would be parsing text to learn what the transport already answers in types |
+| 6 | Retire the parsers that Phase 5 of the native transport replaces | — | **Closed — not needed** | the management applet read (`native-device-transport.md` phase 5) gives the native transport everything `ykman info` was parsed for, but `ykman` remains a **supported transport** that `device::select` may choose at runtime — so its parsers are not dead code, they are the other transport's implementation |
 
 ## Audit events
 

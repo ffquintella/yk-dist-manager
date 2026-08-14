@@ -12,7 +12,8 @@
 
 use crate::domain::StepKind;
 use crate::template::{
-    BootstrapTemplate, MAX_STEPS, TemplateError, TemplateStep, parse_params, unique_step_id,
+    Applicability, BootstrapTemplate, MAX_STEPS, TemplateError, TemplateStep, parse_params,
+    unique_step_id,
 };
 
 /// One step of a draft. `params_text` is the editor's `name = value` lines; it
@@ -24,6 +25,9 @@ pub struct StepDraft {
     pub description: String,
     pub enabled: bool,
     pub required: bool,
+    /// Attempts this step gets at a transport-level failure, as the editor holds
+    /// it. `1` is one attempt, which is what every step had before phase 7.
+    pub attempts: u8,
     pub params_text: String,
 }
 
@@ -35,6 +39,7 @@ impl StepDraft {
             description: step.description.clone(),
             enabled: step.enabled,
             required: step.required,
+            attempts: step.attempt_budget(),
             params_text: step.params_text(),
         }
     }
@@ -48,6 +53,7 @@ impl StepDraft {
             description: self.description.trim().to_owned(),
             enabled: self.enabled,
             required: self.required,
+            attempts: self.attempts,
         })
     }
 }
@@ -63,6 +69,9 @@ pub struct TemplateDraft {
     pub name: String,
     pub description: String,
     pub loaded_version: Option<String>,
+    /// Which keys this procedure is for (`features/bootstrap-templates.md`
+    /// phase 3). Default is unrestricted, and the editor shows it as empty boxes.
+    pub applicability: Applicability,
     pub steps: Vec<StepDraft>,
 }
 
@@ -74,6 +83,7 @@ impl TemplateDraft {
             name: template.name.clone(),
             description: template.description.clone(),
             loaded_version: stored.then(|| template.version.clone()),
+            applicability: template.applicability.clone(),
             steps: template.steps.iter().map(StepDraft::from_step).collect(),
         }
     }
@@ -100,6 +110,7 @@ impl TemplateDraft {
             version: "1".into(),
             description: self.description.trim().to_owned(),
             steps,
+            applicability: self.applicability.clone(),
             // An edited procedure is unsigned, and there is nothing to decide
             // here: changing a step changes the bytes a signature was made over.
             // Getting a signature back means exporting the new version and having
@@ -181,6 +192,7 @@ impl TemplateDraft {
                     || !draft.name.is_empty()
                     || !draft.description.is_empty()
                     || !draft.steps.is_empty()
+                    || !draft.applicability.is_unrestricted()
             }
             (Err(_), _) => true,
         }

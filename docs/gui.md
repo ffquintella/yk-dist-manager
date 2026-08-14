@@ -186,6 +186,36 @@ the hardware. The observation is **kept between adds**, so a whole box shares on
 explicitly. The cell shows one line of it (newlines folded, cut with an ellipsis, an em
 dash when empty). A device re-read never touches it.
 
+**lifecycle…** opens everything that has happened to one key since it was handed over, and
+everything a loss obliges (`features/key-lifecycle-and-revocation.md` phases 2, 3, 4, 6, 7
+and 8). It **replaced the row's *mark lost***, which set a status and recorded nothing — no
+reporter, no date, and no list of the credentials that were still live. One panel rather than
+five, because during an incident they are one job, and it reads top to bottom in the order the
+work happens:
+
+* a badge line: the key's status, whether it is **sanitised**, and how many certificates or
+  credentials are still outstanding;
+* **Report lost or stolen…** — the kind, the date (empty means today, and a date in the future
+  is refused), who reported it, and the circumstances. Recording it moves the key to *Lost*; a
+  report with nobody's name on it is refused;
+* **What this key was carrying** — a row per certificate, resident credential, OTP access code
+  and custody location, worked out from the bootstrap runs rather than typed. Each is
+  *outstanding*, *dealt with* (on hover: when, and by whom) or *for information*, and an
+  outstanding one offers **record…**: for a certificate the RFC 5280 reason and the CA's
+  reference, for a credential the relying party's ticket. The tool cannot revoke or remove
+  anything — both happen in somebody else's system — so what it holds is the reference that
+  makes the claim checkable;
+* **Sanitisation before reissue** — which applets are clear and which are not, with the
+  refusal the store will produce spelled out, and *Record a reset done elsewhere…* for a key
+  reset on a bench (audited as the operator's word, not the tool's observation);
+* **Repair and replacement** — the RMA cases, with *link replacement* (a serial that must
+  already be in the inventory) and *close, no replacement*;
+* **Incidents** — one row per report, open or closed, each offering **note for the ESI…**
+  and, while open, **close incident**. Closing with something still outstanding needs a
+  closing note; the trail records how many items were open when it closed;
+* the **note** itself, in a scrollable monospaced block with *Copy*, *Save as text…* and
+  *Save as PDF…*. It is what somebody sends, so it is shown before it goes anywhere.
+
 **remove** never deletes on the click. It opens a panel that names what goes (the
 inventory row and its observation), what stays (the audit trail, which no code path can
 edit), and what the alternative is — removal is for a mistake at intake, retirement is
@@ -206,6 +236,11 @@ selectable.
 The hand-over form (key, holder, delivery method, receipt reference, notes, and whether to
 attach the latest bootstrap run) above the history table. The table shows what was applied —
 the run summary — and offers "record return" on open records only.
+
+The key list names each key's lifecycle state, and a key the lifecycle will not move to
+`Distributed` is refused **before** anything is written: the message names the state, says
+nothing was recorded, and says what the key needs — a completed bootstrap run, or *mark
+bootstrapped* on the Inventory screen for a key configured elsewhere.
 
 Each row carries the **Term** column, which is the *signature state* rather than a count
 of attachments (`features/receipts-and-terms.md` phase 4): `awaiting signature · 3d`,
@@ -359,10 +394,16 @@ no other screen will tell you about.
 
 ### Settings
 
-Operator and organisation (persisted between sessions); the database path, locking mode and
-whether it is password-protected; the device transport; the recent databases; and the
-actions — *Switch database…*, *Open another…*, *Create new…*, integrity check, backup,
-reload. Also the version string, so a screenshot identifies the build.
+Operator, organisation and **where incidents are reported** (persisted between sessions); the
+database path, locking mode and whether it is password-protected; the device transport; the
+recent databases; and the actions — *Switch database…*, *Open another…*, *Create new…*,
+integrity check, backup, reload. Also the **build id** — the version *and the commit* — so a
+screenshot identifies the build rather than only its version number.
+
+*Report incidents to* is one field feeding two documents: the incident note a lost key
+produces, and the sealed-envelope slip that tells the holder where to report a loss. Left
+empty, the note says no address is configured rather than printing a placeholder nobody can
+act on.
 
 A **Password protection** card sets a password on a plain register, changes the one it
 has, or takes it off. It is the only control in the application that can make the

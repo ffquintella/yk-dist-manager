@@ -13,6 +13,7 @@
 //! the operator changes the template.
 
 use crate::domain::{StepKind, YubiKeyRecord};
+use crate::template::Applicability;
 use crate::template::plan::{PlannedCommand, Transport};
 
 /// How much a finding should interrupt the operator.
@@ -73,6 +74,14 @@ pub struct Preflight<'a> {
     pub applets: &'a AppletSnapshot,
     /// True when this build has a transport that can actually write.
     pub can_write: bool,
+    /// Which keys the template says it is for
+    /// (`features/bootstrap-templates.md` phase 3).
+    ///
+    /// Checked here rather than per step because it is a statement about the
+    /// **procedure**: a key it does not fit should not have the run started
+    /// against it at all, where a step gate would let most of the procedure apply
+    /// and leave the wrong one on record.
+    pub applicability: &'a Applicability,
 }
 
 impl Preflight<'_> {
@@ -98,10 +107,21 @@ impl Preflight<'_> {
             return sorted(findings);
         };
 
-        // Before anything about individual steps: has this key been through a
-        // procedure already? A run that overwrites a configured key destroys the
-        // identity somebody is currently relying on, so this is a refusal and not a
-        // warning (`features/device-detection.md` phase 5).
+        // Is this procedure even for this key? Asked before anything about
+        // individual steps: a run that should not have been started is not
+        // improved by knowing which of its steps would have skipped.
+        findings.extend(self.check_applicability(key));
+
+        // How many wrong secrets this key has left in it
+        // (`features/step-fido2-pin.md` phase 8). About the run rather than one
+        // step, because a low counter is a fact about the key an operator should
+        // weigh before starting anything against it.
+        findings.extend(self.check_retry_counters());
+
+        // And has this key been through a procedure already? A run that overwrites
+        // a configured key destroys the identity somebody is currently relying on,
+        // so this is a refusal and not a warning
+        // (`features/device-detection.md` phase 5).
         findings.extend(self.check_already_configured());
 
         for command in self.commands {
@@ -135,6 +155,67 @@ impl Preflight<'_> {
         sorted(findings)
     }
 
+    /// How close each applet is to locking itself
+    /// (`features/step-fido2-pin.md` phase 8, `features/device-detection.md`
+    /// phase 4).
+    ///
+    /// A counter at its factory value is not worth a line. One that has been walked
+    /// down is: a PIV applet with one attempt left is one wrong PIN from needing its
+    /// PUK, and under custody model B the PUK is in a sealed envelope on its way to
+    /// the holder. That is the difference between a run and a reset, and it belongs
+    /// on screen before the operator agrees to anything.
+    ///
+    /// Zero left is **blocking**. Not because the run would damage the key — the
+    /// applet is already locked — but because every step that authenticates would
+    /// fail, and a confirmed run that could only fail is one nobody should be
+    /// invited to start.
+    fn check_retry_counters(&self) -> Vec<Finding> {
+        /// Below this, the counter is worth interrupting the operator over. Three
+        /// is the factory value for both applets, so anything under it means
+        /// somebody has already got a secret wrong on this key.
+        const WARN_AT_OR_BELOW: u8 = 2;
+
+        let mut findings = Vec::new();
+        let mut check = |applet: &str, left: Option<u8>, recovery: &str| {
+            let Some(left) = left else { return };
+            if left == 0 {
+                findings.push(Finding::new(
+                    Severity::Blocking,
+                    "",
+                    format!(
+                        "the {applet} applet has no attempts left and is locked — every step that \
+                         authenticates would fail. {recovery}"
+                    ),
+                ));
+            } else if left <= WARN_AT_OR_BELOW {
+                findings.push(Finding::new(
+                    Severity::Warning,
+                    "",
+                    format!(
+                        "the {applet} applet has only {left} attempt(s) left before it locks, so \
+                         somebody has already got a secret wrong on this key. {recovery}"
+                    ),
+                ));
+            }
+        };
+
+        check(
+            "PIV",
+            self.applets.piv.as_ref().and_then(|piv| piv.pin_retries),
+            "Recovering it needs the PUK, which under custody model B is not retained by this \
+             tool — so in practice it costs a PIV reset and a new certificate.",
+        );
+        check(
+            "FIDO2",
+            self.applets
+                .fido2
+                .as_ref()
+                .and_then(|fido2| fido2.pin_retries),
+            "A FIDO2 applet that locks can only be reset, which destroys every credential on it.",
+        );
+        findings
+    }
+
     /// Refuse a key that already carries a configuration
     /// (`features/device-detection.md` phase 5).
     ///
@@ -159,10 +240,48 @@ impl Preflight<'_> {
             Severity::Blocking,
             "",
             format!(
-                "this key has already been through a procedure — {}. A configured key is only                  ever returned to factory default, and only by the system operator: there is no                  in-place re-bootstrap, because overwriting the credential a holder is currently                  relying on cannot be undone from here. Reset the key to factory default first,                  then start the run against it.",
+                "this key has already been through a procedure — {}. A configured key is only \
+                 ever returned to factory default, and only by the system operator: there is no \
+                 in-place re-bootstrap, because overwriting the credential a holder is currently \
+                 relying on cannot be undone from here. Reset the key to factory default first, \
+                 then start the run against it.",
                 evidence.join("; ")
             ),
         )]
+    }
+
+    /// Refuse a key the template says it is not for
+    /// (`features/bootstrap-templates.md` phase 3).
+    ///
+    /// Two outcomes, and the difference between them is the whole point of
+    /// [`crate::template::Verdict`] having two lists. A rule that was **checked and
+    /// failed** blocks the run. A rule that **could not be checked** — a key
+    /// entered by barcode, with no firmware on record — is a warning: refusing it
+    /// would refuse one of the three supported ways of entering a serial, on the
+    /// strength of something nobody read.
+    fn check_applicability(&self, key: &YubiKeyRecord) -> Vec<Finding> {
+        // The management applet's read wins over the record's list, for the same
+        // reason it does per step: it is what the key says now.
+        let applications: Vec<String> = self
+            .applets
+            .management
+            .as_ref()
+            .map(|config| config.usb_enabled.clone())
+            .filter(|enabled| !enabled.is_empty())
+            .unwrap_or_else(|| key.applications.clone());
+
+        let verdict = self.applicability.verdict(&key.firmware, &applications);
+        verdict
+            .refusals
+            .into_iter()
+            .map(|message| Finding::new(Severity::Blocking, "", message))
+            .chain(
+                verdict
+                    .unknowns
+                    .into_iter()
+                    .map(|message| Finding::new(Severity::Warning, "", message)),
+            )
+            .collect()
     }
 
     fn check_step(&self, command: &PlannedCommand, key: &YubiKeyRecord) -> Vec<Finding> {
@@ -207,6 +326,16 @@ impl Preflight<'_> {
         }
 
         // Applications the key does not have enabled.
+        //
+        // Three sources, in descending order of authority: the **management applet**
+        // read just now (`features/native-device-transport.md` phase 5), the
+        // record's application list, and nothing.
+        //
+        // An **empty** list is "never read", not "none enabled", and is therefore no
+        // reason to skip anything: a record built from a scanned serial has never had
+        // one, and before the management read existed neither had a natively
+        // identified key. Reading emptiness as a claim is what silently reduced an
+        // eleven-step procedure to the PIV steps alone.
         let applet = match command.kind {
             StepKind::Fido2Pin
             | StepKind::Fido2MinPinLength
@@ -220,18 +349,61 @@ impl Preflight<'_> {
             | StepKind::PivCertImport => Some("PIV"),
             StepKind::Verify => None,
         };
-        if let Some(applet) = applet
-            && !key.applications.is_empty()
-            && !key
-                .applications
-                .iter()
-                .any(|a| a.to_uppercase().contains(applet))
-        {
-            findings.push(Finding::new(
-                Severity::Skip,
-                id,
-                format!("the {applet} application is not enabled on this key"),
-            ));
+        if let Some(applet) = applet {
+            match self.applets.application_enabled(applet) {
+                // Read from the key, just now. This is the answer the pre-flight
+                // never had: a definite "switched off" rather than a warning that
+                // the tool could not tell.
+                Some(false) => findings.push(Finding::new(
+                    Severity::Skip,
+                    id,
+                    format!(
+                        "the {applet} application is switched off on this key — read from the \
+                         management applet just now, so this is the key's own state and not a \
+                         stale record. Enable it on the key, or drop this step from the template"
+                    ),
+                )),
+                // Enabled, definitively. Nothing to flag, and in particular no
+                // "never read" warning: it was read.
+                Some(true) => {}
+                None => {
+                    let listed = key
+                        .applications
+                        .iter()
+                        .any(|a| a.to_uppercase().contains(applet));
+                    if !key.applications.is_empty() && !listed {
+                        findings.push(Finding::new(
+                            Severity::Skip,
+                            id,
+                            format!("the {applet} application is not enabled on this key"),
+                        ));
+                    } else if key.applications.is_empty() && !self.applet_answered(applet) {
+                        // Neither read, nor listed, nor answered by the applet itself:
+                        // the tool cannot promise this step will run, and phase 7's rule
+                        // is that such a thing arrives before the run rather than during
+                        // it. Not a skip — skipping on this much would be inventing the
+                        // answer, which is the mistake the empty list already caused once.
+                        findings.push(Finding::new(
+                            Severity::Warning,
+                            id,
+                            format!(
+                                "which applications this key has enabled was never read, and the \
+                                 {applet} applet did not answer either — the step will be \
+                                 attempted, and will fail here rather than skip if the application \
+                                 turns out to be disabled"
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+
+        // A step whose application is switched off is not going to run, so nothing
+        // further about it is worth an operator's attention: neither what state it
+        // would have found, nor what its consequences would have been. Findings
+        // nobody needs are how the ones that matter get skimmed past.
+        if findings.iter().any(|f| f.severity == Severity::Skip) {
+            return findings;
         }
 
         // Already configured. These are the same questions the executor's
@@ -239,6 +411,19 @@ impl Preflight<'_> {
         // than discovered mid-run.
         findings.extend(self.already_applied(command, id));
         findings
+    }
+
+    /// Did this applet answer when the key was read?
+    ///
+    /// A successful read is the one positive signal available without the management
+    /// applet: an applet that answered is an applet that is enabled.
+    fn applet_answered(&self, applet: &str) -> bool {
+        match applet {
+            "FIDO2" => self.applets.fido2.is_some(),
+            "PIV" => self.applets.piv.is_some(),
+            "OTP" => self.applets.otp.is_some(),
+            _ => false,
+        }
     }
 
     fn already_applied(&self, command: &PlannedCommand, id: &str) -> Vec<Finding> {
@@ -289,7 +474,7 @@ impl Preflight<'_> {
                     .applets
                     .piv
                     .as_ref()
-                    .is_some_and(|s| s.pin_changed_from_default)
+                    .is_some_and(|s| s.pin_changed_from_default())
                 {
                     findings.push(Finding::new(
                         Severity::Skip,
@@ -306,6 +491,47 @@ impl Preflight<'_> {
                     id,
                     "an OTP access code is already set — the slot stays as it is",
                 ));
+            }
+            StepKind::OtpAccessCode => {
+                // Two consequences the operator should meet before the run rather
+                // than discover on a key in somebody's hand
+                // (`features/step-otp-access-code.md` phase 6).
+                findings.push(Finding::new(
+                    Severity::Warning,
+                    id,
+                    "protecting an OTP slot stops this key's USB interfaces from being \
+                     mode-switched while the code is set, and the write resets the slot's other \
+                     settings to their defaults. Under custody model B the code travels to the \
+                     holder on the sealed slip, so the slot can still be reprogrammed later",
+                ));
+                // An access code protects a configuration. On an empty slot the
+                // subprocess refuses, and the step would skip mid-run — which phase
+                // 7 of the wizard says belongs here instead.
+                if let Some(otp) = &self.applets.otp {
+                    let slot = command
+                        .args
+                        .iter()
+                        .find_map(|arg| match arg {
+                            crate::template::Arg::Literal(value) if value == "1" => Some(1u8),
+                            crate::template::Arg::Literal(value) if value == "2" => Some(2u8),
+                            _ => None,
+                        })
+                        .unwrap_or(1);
+                    let programmed = match slot {
+                        1 => otp.slot_one_programmed,
+                        _ => otp.slot_two_programmed,
+                    };
+                    if !programmed {
+                        findings.push(Finding::new(
+                            Severity::Skip,
+                            id,
+                            format!(
+                                "OTP slot {slot} holds no configuration, and an access code \
+                                 write-protects a configuration rather than an empty slot"
+                            ),
+                        ));
+                    }
+                }
             }
             _ => {}
         }
@@ -379,14 +605,193 @@ mod tests {
     }
 
     fn check(key: &YubiKeyRecord, applets: &AppletSnapshot) -> Vec<Finding> {
+        check_with(key, applets, &Applicability::default())
+    }
+
+    fn check_with(
+        key: &YubiKeyRecord,
+        applets: &AppletSnapshot,
+        applicability: &Applicability,
+    ) -> Vec<Finding> {
         let commands = commands();
         Preflight {
             commands: &commands,
             key: Some(key),
             applets,
             can_write: true,
+            applicability,
         }
         .run()
+    }
+
+    #[test]
+    fn a_procedure_that_is_not_for_this_key_blocks_the_run_rather_than_skipping_steps() {
+        // The distinction phase 3 exists for. A wrong *step* skips; a wrong
+        // *procedure* must not start, or most of it applies and the register ends
+        // up saying a key had a procedure run against it that it was never meant
+        // for.
+        let key = key_with("5.4.3", &["FIDO2", "PIV", "OTP"]);
+        let rule = Applicability {
+            min_firmware: Some("5.7.0".into()),
+            ..Default::default()
+        };
+        let findings = check_with(&key, &AppletSnapshot::default(), &rule);
+
+        assert!(blocks(&findings), "{findings:?}");
+        let refusal = findings
+            .iter()
+            .find(|f| f.severity == Severity::Blocking)
+            .unwrap();
+        assert!(refusal.message.contains("5.7.0"), "{}", refusal.message);
+        assert!(refusal.message.contains("5.4.3"), "{}", refusal.message);
+        assert!(
+            refusal.step_id.is_empty(),
+            "it is about the run, not one step"
+        );
+    }
+
+    #[test]
+    fn a_rule_that_could_not_be_checked_warns_instead_of_refusing() {
+        // A key entered by barcode has no firmware. Refusing it would refuse one of
+        // the three supported ways of entering a serial on the strength of
+        // something nobody read.
+        let mut key = key_with("5.7.4", &["FIDO2", "PIV", "OTP"]);
+        key.firmware = String::new();
+        let rule = Applicability {
+            min_firmware: Some("5.7.0".into()),
+            ..Default::default()
+        };
+        let findings = check_with(&key, &AppletSnapshot::default(), &rule);
+
+        assert!(!blocks(&findings), "{findings:?}");
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Warning && f.message.contains("not on record")),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_rule_about_applications_is_answered_by_the_management_read_first() {
+        // The record says PIV is on; the key, read just now, says it is off. The
+        // key wins, and the procedure is refused.
+        let key = key_with("5.7.4", &["FIDO2", "PIV", "OTP"]);
+        let applets = AppletSnapshot {
+            management: Some(crate::device::mgmt::DeviceConfig {
+                usb_enabled: vec!["FIDO2".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let rule = Applicability {
+            requires_applications: vec!["PIV".into()],
+            ..Default::default()
+        };
+        let findings = check_with(&key, &applets, &rule);
+
+        assert!(blocks(&findings), "{findings:?}");
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Blocking && f.message.contains("PIV")),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_key_two_wrong_pins_from_needing_its_puk_is_warned_about_before_the_run() {
+        // `features/step-fido2-pin.md` phase 8. Under custody model B the PUK is in
+        // a sealed envelope on its way to the holder, so a blocked PIV PIN costs a
+        // reset and a new certificate — which the operator should weigh before
+        // agreeing to anything, not afterwards.
+        let key = key_with("5.7.4", &["FIDO2", "PIV", "OTP"]);
+        let applets = AppletSnapshot {
+            piv: Some(PivState {
+                pin_retries: Some(1),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let findings = check(&key, &applets);
+
+        let warning = findings
+            .iter()
+            .find(|f| f.severity == Severity::Warning && f.message.contains("PIV applet"))
+            .unwrap_or_else(|| panic!("the counter is flagged: {findings:?}"));
+        assert!(warning.message.contains("1 attempt"), "{}", warning.message);
+        assert!(
+            warning.message.contains("PUK"),
+            "and says what recovering it costs: {}",
+            warning.message
+        );
+        assert!(!blocks(&findings), "a usable key is still usable");
+    }
+
+    #[test]
+    fn a_locked_applet_blocks_the_run_because_every_step_would_fail() {
+        let key = key_with("5.7.4", &["FIDO2", "PIV", "OTP"]);
+        let applets = AppletSnapshot {
+            fido2: Some(Fido2State {
+                pin_retries: Some(0),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let findings = check(&key, &applets);
+        assert!(blocks(&findings), "{findings:?}");
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Blocking && f.message.contains("locked")),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_counter_at_its_factory_value_is_not_worth_a_line() {
+        let key = key_with("5.7.4", &["FIDO2", "PIV", "OTP"]);
+        let applets = AppletSnapshot {
+            piv: Some(PivState {
+                pin_retries: Some(3),
+                ..Default::default()
+            }),
+            fido2: Some(Fido2State {
+                pin_retries: Some(8),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let findings = check(&key, &applets);
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.message.contains("attempt(s) left")),
+            "nothing has gone wrong on this key yet: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_counter_that_was_not_read_is_not_reported_as_zero() {
+        // The same rule as everywhere else in this module: unread is not a value.
+        let key = key_with("5.7.4", &["FIDO2", "PIV", "OTP"]);
+        let applets = AppletSnapshot {
+            piv: Some(PivState::default()),
+            fido2: Some(Fido2State::default()),
+            ..Default::default()
+        };
+        let findings = check(&key, &applets);
+        assert!(
+            !findings.iter().any(|f| f.message.contains("locked")),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_template_with_no_rule_adds_no_finding_at_all() {
+        let key = key_with("5.7.4", &["FIDO2", "PIV", "OTP"]);
+        let with_rule = check_with(&key, &AppletSnapshot::default(), &Applicability::default());
+        assert_eq!(with_rule, check(&key, &AppletSnapshot::default()));
     }
 
     #[test]
@@ -398,6 +803,7 @@ mod tests {
             key: Some(&key),
             applets: &AppletSnapshot::default(),
             can_write: false,
+            applicability: &Applicability::default(),
         }
         .run();
         assert!(blocks(&findings));
@@ -415,6 +821,7 @@ mod tests {
             key: None,
             applets: &AppletSnapshot::default(),
             can_write: true,
+            applicability: &Applicability::default(),
         }
         .run();
         assert!(blocks(&findings));
@@ -487,13 +894,14 @@ mod tests {
             }),
             piv: Some(PivState {
                 occupied_slots: vec!["9c".into()],
-                pin_changed_from_default: true,
+                pin_is_default: Some(false),
                 ..Default::default()
             }),
             otp: Some(OtpState {
                 access_code_set: true,
                 ..Default::default()
             }),
+            management: None,
             unread: Vec::new(),
         };
         let findings = check(&key, &applets);
@@ -550,6 +958,127 @@ mod tests {
         let mut sorted_severities = severities.clone();
         sorted_severities.sort_by(|a, b| b.cmp(a));
         assert_eq!(severities, sorted_severities, "{findings:?}");
+    }
+
+    #[test]
+    fn an_unread_application_list_warns_instead_of_skipping_the_step() {
+        // An empty list is "never read", not "none enabled" — which is what the native
+        // transport produces, because the enable flags live in the management applet it
+        // does not read. Skipping on it silently reduced the procedure to its PIV steps.
+        let key = key_with("5.7.4", &[]);
+        let findings = check(&key, &AppletSnapshot::default());
+        let fido2: Vec<&Finding> = findings
+            .iter()
+            .filter(|f| f.step_id == "fido2-pin")
+            .collect();
+        assert!(
+            fido2.iter().all(|f| f.severity != Severity::Skip),
+            "{fido2:?}"
+        );
+        let warning = fido2
+            .iter()
+            .find(|f| f.severity == Severity::Warning)
+            .unwrap_or_else(|| {
+                panic!("the operator is told the tool could not check: {findings:?}")
+            });
+        assert!(
+            warning.message.contains("never read"),
+            "{}",
+            warning.message
+        );
+        assert!(!blocks(&findings), "{findings:?}");
+    }
+
+    #[test]
+    fn an_applet_that_answered_the_read_needs_no_warning_about_being_enabled() {
+        // The read is the positive signal: an applet that replied is enabled, whatever
+        // the record's application list does or does not say.
+        let key = key_with("5.7.4", &[]);
+        let applets = AppletSnapshot {
+            fido2: Some(Fido2State::default()),
+            piv: Some(PivState::default()),
+            otp: Some(OtpState::default()),
+            management: None,
+            unread: Vec::new(),
+        };
+        let findings = check(&key, &applets);
+        assert!(
+            !findings.iter().any(|f| f.message.contains("never read")),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn the_management_applet_settles_what_the_record_could_only_guess_at() {
+        // Phase 5's payoff. The record has no application list — a scanned serial,
+        // or a native read from before this applet was read — and the applet says
+        // OTP is off. That is a *skip* with a reason, where the same case used to
+        // produce a warning saying the tool could not check.
+        let key = key_with("5.7.4", &[]);
+        let applets = AppletSnapshot {
+            management: Some(crate::device::mgmt::DeviceConfig {
+                usb_enabled: vec!["FIDO2".into(), "PIV".into()],
+                usb_supported: vec!["FIDO2".into(), "PIV".into(), "Yubico OTP".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let findings = check(&key, &applets);
+
+        let otp = findings
+            .iter()
+            .find(|f| f.step_id == "otp-access-code")
+            .expect("the disabled application is flagged");
+        assert_eq!(otp.severity, Severity::Skip);
+        assert!(otp.message.contains("switched off"), "{}", otp.message);
+
+        assert!(
+            !findings.iter().any(|f| f.message.contains("never read")),
+            "an applet that was read must not still be reported as unread: {findings:?}"
+        );
+        assert!(!blocks(&findings), "{findings:?}");
+    }
+
+    #[test]
+    fn a_management_read_that_says_everything_is_on_leaves_the_steps_alone() {
+        let key = key_with("5.7.4", &[]);
+        let applets = AppletSnapshot {
+            management: Some(crate::device::mgmt::DeviceConfig {
+                usb_enabled: vec!["Yubico OTP".into(), "FIDO2".into(), "PIV".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let findings = check(&key, &applets);
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.message.contains("never read") || f.message.contains("switched off")),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_stale_record_does_not_override_what_the_key_just_said() {
+        // The ordering that matters: a record whose application list was written
+        // months ago says OTP is off, and the key says it is on. The key wins —
+        // otherwise an operator who enabled the application would still be told the
+        // step will skip, and it would then run.
+        let key = key_with("5.7.4", &["FIDO2", "PIV"]);
+        let applets = AppletSnapshot {
+            management: Some(crate::device::mgmt::DeviceConfig {
+                usb_enabled: vec!["Yubico OTP".into(), "FIDO2".into(), "PIV".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let findings = check(&key, &applets);
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.step_id == "otp-access-code" && f.severity == Severity::Skip),
+            "{findings:?}"
+        );
     }
 
     #[test]

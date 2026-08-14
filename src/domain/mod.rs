@@ -11,11 +11,16 @@ pub mod distribution;
 pub mod document;
 pub mod holder;
 pub mod key;
+pub mod lifecycle;
 
 pub use bootstrap::{BootstrapRun, RunStatus, StepKind, StepOutcome, StepStatus};
 pub use custody::{ChangeEnforcement, CustodyModel};
 pub use distribution::{DeliveryMethod, DistributionRecord};
 pub use document::{AttachedDocument, DocumentError, DocumentKind};
+pub use lifecycle::{
+    Dependency, DependencyKind, IncidentKind, KeyIncident, Remediation, RemediationKind,
+    RevocationReason, RmaCase, RmaState, Sanitisation,
+};
 // `escape_rfc4514` is re-exported for the property test that pins its
 // reversibility (`features/testing-strategy.md` phase 9): the escaper is what
 // stands between a person's name as they spell it and the `CN` of a certificate

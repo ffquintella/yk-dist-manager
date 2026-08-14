@@ -44,7 +44,9 @@ sub-decisions still open (the PUK, the OTP access code) are in
    validate it *before* generating anything, because a wrong SAN means a reissue.
 3. **Check the gates.** Firmware below 5.7 has no minimum-PIN-length policy; a key with PIV
    disabled cannot take a certificate. These become skips, shown up front, not failures
-   mid-run.
+   mid-run. Which applications are enabled is only known when the key was read through
+   `ykman` — the native path cannot see the management applet — and an *unknown* list is
+   never read as "disabled": those steps are attempted, with a warning saying so.
 4. **Review the plan.** Every step, its transport (`native` / `ykman` / `manual`) and its
    caveats, on screen, before anything is written.
 
@@ -224,18 +226,20 @@ sees what the certificate says (subject, issuer, serial, validity, every
 `rfc822Name`) before the write, and the run is **resumed** to perform it: the
 pre-flight refuses a fresh run on a key that is already configured.
 
-Enforced before the write today: the public key matches slot 9c
+Enforced before the write: the public key matches slot 9c
 (`device::certificate::must_match_public_key`), the `rfc822Name` includes the holder's
-e-mail, and the validity window is read and recorded. Still to do: subject DN,
-`digitalSignature` key usage, `emailProtection` EKU, and the chain — see
-`features/ca-integration.md` phase 2. A certificate failing any check that *is*
-enforced is refused with the specific reason, and nothing reaches the key.
+e-mail, and the validity window is read and recorded. The subject DN and the key usage
+/ EKU are checked too, by the verification step below, which reads the certificate back
+off the card rather than trusting what was just sent to it. Only the **chain** is
+outstanding, and it needs a trust store this build has not got — see
+`features/ca-integration.md` phase 2. A certificate failing any check is refused with
+the specific reason, and nothing reaches the key.
 
 ### 11. Verification — *required*
 
 Reads the key back and stores the end state as evidence: FIDO2 PIN present, credential
-count, OTP slot protected, PIV slot 9c occupied with the expected subject and SAN, plus the
-attestation certificate.
+count, both applets' retry counters, OTP slot protected, the attestation certificate,
+and **the certificate in slot 9c read back off the card and checked**.
 
 ```
 native:  yubikey → piv keys/certificates + ctap-hid-fido2 → get_info
@@ -243,6 +247,21 @@ ykman:   ykman piv info; ykman fido info; ykman otp info
 ```
 
 This is what turns "we ran the procedure" into "here is what the key contains".
+
+Four checks on the read-back certificate, each reported separately because an operator
+needs to know *which* disagreed:
+
+| Check | What fails it |
+|---|---|
+| `subject` | the slot holds a name this run did not ask for. Compared as a set of attributes, since a CA may reorder and re-space a DN |
+| `rfc822Name` | the holder's address is not among the SANs — signatures made with it would not validate against it |
+| `key usage` | an **encryption** certificate in a signing slot: the realistic CA mix-up, which imports cleanly and then fails every signature. Reported as *unchecked* when the certificate carries neither extension, because that constrains nothing |
+| `chain` | **always unchecked**: it needs a trust store this build has not got. Reported rather than omitted, so a verification never reads as more complete than it is |
+
+A failed check **fails the step**, and the step is required — so a run whose
+certificate does not match what it asked for does not reach `Completed`, and the key is
+not offered for hand-over. An empty slot is not a failure: it is the shape of a run
+whose certificate has not come back from the CA yet, and step 10 has already said so.
 
 ## Ordering traps
 
@@ -256,6 +275,10 @@ These are in the executor, not in the operator's head:
 4. The certificate can only be imported after issuance; the run may have to wait.
 5. The OTP access code goes last among the OTP steps: once a slot is protected, further
    changes need the code.
+6. An access code can only be written to a slot that **holds a configuration** — the
+   code write-protects a configuration, and `ykman otp settings` refuses an empty slot
+   outright. On a key whose OTP slots are both empty the step reports that and skips,
+   rather than failing halfway through the procedure.
 
 ## What the record ends up saying
 

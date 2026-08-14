@@ -40,6 +40,9 @@
 
 use zeroize::Zeroizing;
 
+#[cfg(test)]
+use super::tlv::tlvs;
+use super::tlv::{find_tlv, inner_tlv, push_len};
 use super::write::{Result, WriteError};
 
 /// PIV application id.
@@ -780,90 +783,6 @@ fn chain(data: &[u8], max: usize) -> Vec<&[u8]> {
     data.chunks(max).collect()
 }
 
-/// Append a BER length: short form, or `81`/`82` with the count.
-fn push_len(out: &mut Vec<u8>, len: usize) {
-    if len < 0x80 {
-        out.push(len as u8);
-    } else if len <= 0xFF {
-        out.push(0x81);
-        out.push(len as u8);
-    } else {
-        out.push(0x82);
-        out.push((len >> 8) as u8);
-        out.push(len as u8);
-    }
-}
-
-/// Walk a BER-TLV sequence one level deep, handling multi-byte tags and long
-/// lengths.
-///
-/// Both forms are needed here and neither is exotic: the generate response is
-/// tagged `7F 49` (two bytes) and a certificate object carries a length in two
-/// bytes. A parser that assumed one byte of each read the witness correctly and
-/// then silently mis-read everything larger.
-fn tlvs(data: &[u8]) -> Vec<(u32, &[u8])> {
-    let mut out = Vec::new();
-    let mut i = 0;
-
-    while i < data.len() {
-        let mut tag = u32::from(data[i]);
-        // A tag whose low five bits are all set continues into the next bytes,
-        // each with the high bit meaning "one more".
-        if data[i] & 0x1F == 0x1F {
-            loop {
-                i += 1;
-                if i >= data.len() {
-                    return out;
-                }
-                tag = (tag << 8) | u32::from(data[i]);
-                if data[i] & 0x80 == 0 {
-                    break;
-                }
-            }
-        }
-        i += 1;
-        if i >= data.len() {
-            return out;
-        }
-
-        let first = data[i];
-        i += 1;
-        let len = if first < 0x80 {
-            first as usize
-        } else {
-            let count = (first & 0x7F) as usize;
-            if count == 0 || count > 4 || i + count > data.len() {
-                return out;
-            }
-            let mut len = 0usize;
-            for _ in 0..count {
-                len = (len << 8) | data[i] as usize;
-                i += 1;
-            }
-            len
-        };
-
-        if i + len > data.len() {
-            return out;
-        }
-        out.push((tag, &data[i..i + len]));
-        i += len;
-    }
-    out
-}
-
-fn find_tlv(data: &[u8], tag: u32) -> Option<&[u8]> {
-    tlvs(data)
-        .into_iter()
-        .find(|(t, _)| *t == tag)
-        .map(|(_, v)| v)
-}
-
-/// Find a tag nested one level inside another.
-fn inner_tlv(data: &[u8], outer: u32, inner: u32) -> Option<&[u8]> {
-    find_tlv(data, outer).and_then(|value| find_tlv(value, inner))
-}
-
 /// Turn a `GENERATE` response into a DER `SubjectPublicKeyInfo`.
 ///
 /// The card answers with its own encoding — `7F 49 { 86 <point> }` for an elliptic
@@ -1100,68 +1019,8 @@ mod tests {
         assert!(err.detail().contains("yubikey"), "{}", err.detail());
     }
 
-    #[test]
-    fn tlv_parsing_finds_a_nested_tag() {
-        // The witness as the card actually frames it: 0x80 inside 0x7C.
-        let response = [
-            0x7C, 0x12, 0x80, 0x10, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
-        ];
-        let witness = inner_tlv(&response, 0x7C, 0x80).expect("the witness is there");
-        assert_eq!(witness.len(), 16);
-        assert_eq!(witness[0], 1);
-        assert_eq!(inner_tlv(&response, 0x7C, 0x82), None);
-    }
-
-    #[test]
-    fn a_truncated_tlv_does_not_panic() {
-        assert!(tlvs(&[0x7C, 0x10, 0x01]).is_empty());
-        assert!(inner_tlv(&[0x7C], 0x7C, 0x80).is_none());
-        assert!(tlvs(&[0x7F]).is_empty());
-        assert!(tlvs(&[0x7F, 0x49]).is_empty());
-        assert!(tlvs(&[0x53, 0x82, 0x01]).is_empty());
-    }
-
-    #[test]
-    fn a_two_byte_tag_is_read_as_one_tag() {
-        // `7F 49` is how every generate response is framed. A parser that read
-        // one-byte tags saw `7F` with a nonsense length and returned nothing.
-        let response = [0x7F, 0x49, 0x04, 0x86, 0x02, 0xAA, 0xBB];
-        assert_eq!(
-            find_tlv(&response, 0x7F49).map(|v| v.to_vec()),
-            Some(vec![0x86, 0x02, 0xAA, 0xBB])
-        );
-        assert_eq!(
-            inner_tlv(&response, 0x7F49, 0x86).map(|v| v.to_vec()),
-            Some(vec![0xAA, 0xBB])
-        );
-    }
-
-    #[test]
-    fn a_long_length_is_read_as_a_length() {
-        // A certificate object is past 255 bytes, so `82 xx xx` is the normal
-        // case rather than the exotic one.
-        let mut data = vec![0x53, 0x82, 0x01, 0x00];
-        data.extend(std::iter::repeat_n(0xEE, 256));
-        assert_eq!(find_tlv(&data, 0x53).map(|v| v.len()), Some(256));
-
-        let mut short = vec![0x70, 0x81, 0x80];
-        short.extend(std::iter::repeat_n(0x11, 128));
-        assert_eq!(find_tlv(&short, 0x70).map(|v| v.len()), Some(128));
-    }
-
-    #[test]
-    fn lengths_round_trip_through_the_parser() {
-        for len in [0usize, 1, 127, 128, 255, 256, 4096] {
-            let mut encoded = vec![0x70];
-            push_len(&mut encoded, len);
-            encoded.extend(std::iter::repeat_n(0x5A, len));
-            assert_eq!(
-                find_tlv(&encoded, 0x70).map(|v| v.len()),
-                Some(len),
-                "length {len}"
-            );
-        }
-    }
+    // The BER-TLV walker's own tests moved to `device::tlv` with the code, when
+    // the management applet needed the same parser.
 
     #[test]
     fn chaining_splits_only_what_does_not_fit() {

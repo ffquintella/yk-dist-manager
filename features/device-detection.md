@@ -67,7 +67,19 @@ record rather than the key that says whether this tool set one.
 | Enabled applications | — (management applet) | `ykman info` applications table |
 | FIPS | inferred from the model string | same |
 
-The native path deliberately reports an empty `form_factor` rather than guessing.
+The native path deliberately reports an empty `form_factor` **and an empty application
+list** rather than guessing, and the second one is load-bearing rather than tidy: an
+empty list means *not read*, and the pre-flight reads it that way — no reason to skip a
+step. It once reported `["PIV"]`, the applet it had just spoken to, and that one word was
+a claim that FIDO2 and OTP were disabled: five of the eleven steps of the standard
+procedure skipped themselves on a key that had all three enabled. The rule is the same
+one `from_serial` follows — a field nobody read stays empty.
+
+Because that leaves a real gap, the pre-flight now *names* it: an applet whose enablement
+is neither listed nor readable raises a `Warning` per step, saying the step will be
+attempted and will fail there rather than skip if the application turns out to be off.
+Closing the gap properly means the management applet (CCID `00 1D`), which
+`features/ykman-abstraction.md` still owns.
 
 ### Firmware gates
 
@@ -134,8 +146,8 @@ per key with its serial, model, firmware and applications, and *Use this one*.
 | 2 | Background hot-plug polling | 0 | **Done** | [`device::watch`](../src/device/watch.rs) — a thread enumerates on a tick and publishes a snapshot the GUI clones; identification runs **only when the set of serials changes**. 1.5s with a native transport, 4s when every poll is a `ykman` subprocess — chosen from the *live* transport, not the compiled one — and only while a screen that shows attached keys is open |
 | 3 | Explicit picker when several keys are attached | 0 | **Done** | serial, model, firmware and applications per row, with *Use this one*; on the Inventory screen and above the wizard's serial field. Nothing is chosen for the operator, `device.selected` records which one was, and a selection is dropped when that key is unplugged |
 | 4 | Per-applet state read (PIN retries, PIV slots, FIDO PIN set?) | 1 | **Done** | [`device::applets`](../src/device/applets.rs) — read-only, one call per applet, failures recorded as reasons rather than dropped. PIV slots + management-key/PIN-default flags + **PIN retries** natively; FIDO2 via CTAP2 `get_info`; OTP slots via `ykman otp info`, a labelled fallback because no crate exposes the OTP HID status frame. Audited as `device.applets.read` |
-| 5 | "This key is already bootstrapped" **refusal** | 1 | **Done** | `Preflight::check_already_configured` — a `Blocking` finding, before any per-step check, naming the evidence *and* the reset. **No override**, per the decision of 2026-08-13. A changed PIV management key is deliberately not evidence: a fleet-management tool may have set it without ever bootstrapping the key |
-| 6 | Attestation read (`piv keys attest 9c`) | 1 | **Built** (not hardware-verified) | `PivWriter::attest`, plus `KeygenEvidence::attestation_pem` read *at generation time* and stored in the step's detail; the verification step re-reads it. A firmware with no attestation is recorded as `NO attestation — unproven`, never omitted. **No key was attached when this was written**, so the APDU path is unexercised |
+| 5 | "This key is already bootstrapped" **refusal** | 1 | **Done** | `Preflight::check_already_configured` — a `Blocking` finding, before any per-step check, naming the evidence *and* the reset. **No override**, per the decision of 2026-08-13. A changed PIV management key is deliberately not evidence: a fleet-management tool may have set it without ever bootstrapping the key. Neither is **PIV slot `f9`**: it is the factory attestation slot, present on every key since firmware 4.3 and not cleared by a reset, and counting it made the refusal fire on the first factory-fresh key it ever saw — `PivState::configured_slots` is what the refusal rests on, while `occupied_slots` stays the raw read a description shows |
+| 6 | Attestation read (`piv keys attest 9c`) | 1 | **Done** | `PivWriter::attest`, plus `KeygenEvidence::attestation_pem` read *at generation time* and stored in the step's detail; the verification step re-reads it. A firmware with no attestation is recorded as `NO attestation — unproven`, never omitted. **No key was attached when this was written**, so the APDU path is unexercised |
 
 ## Audit events
 

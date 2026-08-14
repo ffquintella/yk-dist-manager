@@ -24,8 +24,12 @@ point at the new holder destroys exactly the information an audit needs.
   `distributed_at`, `distributed_by`, `method`, `receipt_ref`, `bootstrap_run_id`,
   `returned_at`, `returned_to`, `notes`.
 - `is_open()` and `days_held(now)` for the table and reports.
-- Recording a hand-over also moves the key to `Distributed`; a refused transition is
-  reported ("recorded, but status not updated: …") rather than hidden.
+- Recording a hand-over also moves the key to `Distributed`. The lifecycle is asked
+  **before** the record is written, from the key's own row: a key the lifecycle will
+  not move is refused with what it needs and with *nothing recorded*, rather than
+  leaving a hand-over on the register beside a key still filed as stock. The
+  post-insert refusal ("recorded, but status not updated: …") remains for the status
+  that moves between the two reads, and is still surfaced rather than hidden.
 - `mark_returned` only closes a record whose `returned_at` is `NULL`, so a second
   return attempt is refused instead of overwriting who received it.
 - The Distribution screen offers to attach the most recent bootstrap run for the key,
@@ -35,6 +39,17 @@ Not yet done: receipt generation, transfer between holders as a first-class acti
 and reporting.
 
 ## Design
+
+### The lifecycle decides before the record is written
+
+A hand-over is two writes — the distribution row and the key's status — and the
+order of the questions is what makes them one act. Written first and asked second,
+a refusal left a hand-over on the register beside a key still filed as stock, and
+neither half was something the operator could undo (a distribution is append-only,
+and the status refusal was correct). Asked first, the refusal costs nothing and
+names what the key needs. The status is read from the key's own row rather than the
+screen's cached list, and the post-insert refusal stays as the guard for the status
+that moves between the two reads.
 
 ### Denormalised fields are deliberate
 
@@ -62,16 +77,16 @@ hand-over.
 
 ## Phases
 
-| # | Phase | State | Notes |
-|---|---|---|---|
-| 1 | Record with operator, method, receipt reference | Done | |
-| 2 | Link to the bootstrap run; show what was applied | Done | run summary in the table |
-| 3 | Return handling that does not rewrite history | Done | second return refused |
-| 4 | Pending-signature state for remote delivery | Todo | with an age warning for unsigned hand-overs |
-| 5 | Transfer as a first-class action (close + open, one confirmation) | Todo | currently two manual steps |
-| 6 | Receipt / responsibility term generation | Todo | `features/receipts-and-terms.md` |
-| 7 | Overdue and unaccounted reporting | Todo | `features/reports-and-export.md` |
-| 8 | Bulk hand-over (a batch to one unit) | Todo | `features/bulk-enrollment.md` |
+| # | Phase | Wave | State | Notes |
+|---|---|---|---|---|
+| 1 | Record with operator, method, receipt reference | 0 | Done | |
+| 2 | Link to the bootstrap run; show what was applied | 0 | Done | run summary in the table |
+| 3 | Return handling that does not rewrite history | 0 | Done | second return refused |
+| 4 | Pending-signature state for remote delivery | 0 | **Done elsewhere** | shipped as [`receipts-and-terms.md`](receipts-and-terms.md) phase 6's signature state machine: five states derived from the record and what is filed *per kind*, a threshold the unit sets, the banner where the hand-overs are, and `receipt.pending_overdue` written once per hand-over ever |
+| 5 | Transfer as a first-class action (close + open, one confirmation) | 2 | Todo | currently two manual steps |
+| 6 | Receipt / responsibility term generation | 0 | **Done elsewhere** | [`receipts-and-terms.md`](receipts-and-terms.md) — the term, its PDF, the versioned wording and the sealed-envelope slip |
+| 7 | Overdue and unaccounted reporting | 2 | Todo | `features/reports-and-export.md` |
+| 8 | Bulk hand-over (a batch to one unit) | 2 | Todo | `features/bulk-enrollment.md` |
 
 ## Audit events
 
@@ -91,6 +106,12 @@ hand-over.
 - `scenario_returning_a_key_closes_the_record_without_rewriting_history`
 - `scenario_a_key_cannot_be_returned_twice`
 - `scenario_one_key_reissued_to_a_second_holder_keeps_both_records`
+
+`tests/behaviour_app_key_ready_to_hand_over.rs` covers the order of the two writes,
+which only the screen can get wrong: the hand-over of a key in stock is refused with
+**nothing** on the register — no distribution row, no `key.distributed` entry, the key
+still `In stock` — a completed run then moves the key, and the same hand-over goes
+through whole.
 
 Unit coverage for `is_open` / `days_held` sits with the domain tests.
 

@@ -4,7 +4,8 @@
 .DEFAULT_GOAL := help
 .PHONY: help build run run-native diagnose bundle bundle-release run-bundled \
         verify-bundle dmg icons check check-all fmt lint test test-all coverage \
-        coverage-core coverage-html hardware clean release-check
+        coverage-core coverage-html hardware clean release-check linux-package \
+        linux-package-release verify-package release-notes
 
 COVERAGE_FLOOR := 80
 
@@ -44,6 +45,22 @@ run-bundled: bundle ## macOS: launch the bundled app (camera scanning works here
 dmg: ## macOS: assemble a release .app and wrap it in a .dmg
 	packaging/macos/bundle.sh --release --dmg
 
+linux-package: ## Linux: tarball (+ .deb where dpkg-deb exists) from a debug build
+	packaging/linux/package.sh --deb
+
+linux-package-release: ## Linux: the artefacts a release ships, from a release build
+	packaging/linux/package.sh --release --deb
+
+verify-package: ## Linux: check an artefact by asking the packaged binary about itself
+	@artefact=$$(ls -t target/linux/*.tar.gz 2>/dev/null | head -1); \
+	if [ -z "$$artefact" ]; then \
+		echo "no artefact in target/linux — run: make linux-package"; exit 1; \
+	fi; \
+	packaging/linux/verify-package.sh "$$artefact"
+
+release-notes: ## The notes for this version, including the schema upgrade warning
+	scripts/release-notes.sh
+
 icons: ## Re-render every icon from assets/logo.svg (needs librsvg + ImageMagick)
 	assets/render-icons.sh
 
@@ -73,9 +90,15 @@ coverage-core: ## THE GATE: coverage of the headless core (floor: $(COVERAGE_FLO
 	# it the target printed a number and exited 0, so a change that dropped
 	# coverage below the floor passed `make release-check` (AGENTS.md §4 says
 	# such a change "is not ready" — now the build agrees).
+	#
+	# `vendor/` is excluded for a different reason than `src/ui/`: it is not this
+	# project's code at all. `vendor/block` is a patched copy of a dependency
+	# (features/packaging-and-release.md phase 0b), and cargo instruments a path
+	# crate the way it does not instrument a registry one — so without this the
+	# gate would measure somebody else's crate and move when it was updated.
 	cargo llvm-cov --all-features --workspace --summary-only \
 		--fail-under-lines $(COVERAGE_FLOOR) \
-		--ignore-filename-regex '(src/ui/|src/app\.rs|src/main\.rs)'
+		--ignore-filename-regex '(src/ui/|src/app\.rs|src/main\.rs|vendor/)'
 
 coverage: ## Whole-crate coverage, including untested egui paint code
 	cargo llvm-cov --all-features --workspace --summary-only

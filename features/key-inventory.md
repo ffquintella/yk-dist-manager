@@ -63,7 +63,19 @@ Legal transitions (`domain::key::KeyStatus::can_transition_to`):
 | `Lost` | `Returned`, `Retired` |
 | `Retired` | — (terminal) |
 
-Notably absent: `InStock → Distributed`. A behaviour test asserts it is refused.
+Notably absent: `InStock → Distributed`. A behaviour test asserts it is refused, and
+the Distribution screen asks the lifecycle *before* it writes the hand-over, so the
+refusal arrives with nothing recorded.
+
+**What performs `InStock → Bootstrapped`** is the run itself: a bootstrap run that
+settles `Completed` moves the key (`YkDistApp::settle_key_status`), audited
+`key.status_changed` with the run id. Only `Completed` counts — the engine marks a run
+with a required step unmet as `Failed` and audits `bootstrap.incomplete`, "the key is
+not ready to hand over" — and a run never overrules a key that is lost, retired or
+already distributed. *Mark bootstrapped* on the Inventory screen stays for the key
+configured outside the tool; it is no longer the only thing that moves a key, which it
+was until 0.13, and forgetting it surfaced much later as a refused hand-over.
+
 `Bootstrapped → InStock` exists for the case where a bootstrap is undone by an
 applet reset.
 
@@ -112,19 +124,19 @@ real FIPS flag instead.
 
 ## Phases
 
-| # | Phase | State | Notes |
-|---|---|---|---|
-| 1 | Record, upsert on serial, hardware-derived fields | Done | |
-| 1b | Serial provenance (`SerialSource`), never downgraded | Done | schema v2; see `features/serial-scanning.md` |
-| 2 | Guarded lifecycle transitions | Done | refusals surfaced, not swallowed |
-| 3 | Firmware capability gates | Done | 5.7 floor for min-PIN-length |
-| 4 | Batch / invoice / procurement fields in the UI | Todo | column exists in the schema |
-| 5 | Search and filter (serial, holder, status, firmware) | **Done** | shipped as `features/gui-shell.md` phase 3: [`browse::keys`](../src/browse.rs) matches the serial, model, firmware, form factor, batch and observation, with a status filter and paging. **Not** by holder — the Inventory table has no holder column, and "which key does Ana have" is answered on Distribution, where it does |
-| 6 | "Already configured" detection before re-bootstrap | Todo | occupied 9c slot, FIDO PIN already set |
-| 6b | "Unverified keys" view: scanned or typed, never read | Todo | the natural companion to provenance |
-| 7 | Reconciliation report: expected vs present vs unaccounted | Todo | `features/reports-and-export.md` |
-| 8 | Bulk import of an existing spreadsheet | **Done** | shipped as `features/storage-sqlite-single-file.md` phase 8: [`store::import`](../src/store/import.rs) — column mapping, a preview that writes nothing, then apply |
-| 9 | Observation per key, and confirmed removal of an intake mistake | Done | out of turn, v0.4.0 — see the roadmap note |
+| # | Phase | Wave | State | Notes |
+|---|---|---|---|---|
+| 1 | Record, upsert on serial, hardware-derived fields | 0 | Done | |
+| 1b | Serial provenance (`SerialSource`), never downgraded | 0 | Done | schema v2; see `features/serial-scanning.md` |
+| 2 | Guarded lifecycle transitions | 0 | Done | refusals surfaced, not swallowed |
+| 3 | Firmware capability gates | 0 | Done | 5.7 floor for min-PIN-length |
+| 4 | Batch / invoice / procurement fields in the UI | 2 | Todo | column exists in the schema |
+| 5 | Search and filter (serial, holder, status, firmware) | 0 | **Done** | shipped as `features/gui-shell.md` phase 3: [`browse::keys`](../src/browse.rs) matches the serial, model, firmware, form factor, batch and observation, with a status filter and paging. **Not** by holder — the Inventory table has no holder column, and "which key does Ana have" is answered on Distribution, where it does |
+| 6 | "Already configured" detection before re-bootstrap | 1 | **Done elsewhere** | shipped as [`device-detection.md`](device-detection.md) phase 5: a `Blocking` pre-flight finding with **no override**, per the decision of 2026-08-13, resting on `PivState::configured_slots` so the factory attestation slot `f9` is not mistaken for a configuration. The refusal names the factory reset as the way forward |
+| 6b | "Unverified keys" view: scanned or typed, never read | 2 | Todo | the natural companion to provenance |
+| 7 | Reconciliation report: expected vs present vs unaccounted | 2 | Todo | `features/reports-and-export.md` |
+| 8 | Bulk import of an existing spreadsheet | 0 | **Done** | shipped as `features/storage-sqlite-single-file.md` phase 8: [`store::import`](../src/store/import.rs) — column mapping, a preview that writes nothing, then apply |
+| 9 | Observation per key, and confirmed removal of an intake mistake | 0 | Done | out of turn, v0.4.0 — see the roadmap note |
 
 ## Audit events
 
@@ -132,13 +144,14 @@ real FIPS flag instead.
 |---|---|
 | `key.added` | New serial recorded; `source=… verified=… note_chars=<n>` |
 | `key.refreshed` | Known serial re-read |
-| `key.status_changed` | Lifecycle move, with `to=<status>` |
+| `key.status_changed` | Lifecycle move, with `to=<status>`; a move made by a completed run also carries `from=<status> run=<id>` |
 | `key.note_changed` | Observation stored; `note=set\|cleared\|changed\|unchanged chars=<n> was_chars=<n>` — shape, never content |
 | `key.removed` | Inventory row deleted; `status=… source=… model=… note_chars=<n>`. The entry outlives the row |
 
-A refused transition is logged and shown, and (Phase 2 of the audit feature)
-should also be audited: an attempt to hand out an unbootstrapped key is
-information worth keeping.
+A refused transition is logged and shown — a hand-over refused by the lifecycle is
+logged `distribution.refused.lifecycle` with the serial and the state it is in —
+and (Phase 2 of the audit feature) should also be *audited*: an attempt to hand out
+an unbootstrapped key is information worth keeping.
 
 ## Tests
 
@@ -169,6 +182,12 @@ information worth keeping.
 - `scenario_a_key_that_has_been_handed_over_cannot_be_removed_from_the_inventory`
 - `scenario_a_serial_typed_by_mistake_is_removed_with_its_observation`
 - `scenario_an_observation_survives_reading_the_key_again`
+
+`tests/behaviour_app_key_ready_to_hand_over.rs`:
+
+- `scenario_a_key_is_handed_over_once_a_run_has_made_it_ready` — a run that settles
+  `Completed` moves the key and audits the move once (a second run for a key already
+  there writes nothing); a run that ends `Failed` leaves the key where it was.
 
 ## References
 

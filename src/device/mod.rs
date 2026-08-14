@@ -25,6 +25,9 @@ pub mod composite;
 /// only that feature brings in the card the request is signed by.
 #[cfg(feature = "native-piv")]
 pub mod csr;
+/// The management applet — form factor, per-application enable flags, FIPS state.
+/// The parser is always compiled; only the card exchange needs `native-piv`.
+pub mod mgmt;
 pub mod mock;
 #[cfg(feature = "native-piv")]
 pub mod native;
@@ -43,6 +46,8 @@ pub mod piv_session;
 pub mod reinsert;
 pub mod reset;
 pub mod select;
+/// BER-TLV, shared by every applet that answers in it. Pure, always compiled.
+pub mod tlv;
 pub mod watch;
 pub mod write;
 pub mod ykman;

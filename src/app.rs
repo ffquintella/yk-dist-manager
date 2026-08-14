@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::audit::AuditEntry;
 use crate::device::{DeviceInfo, YubiKeyBackend};
+use crate::domain::lifecycle::Dependency;
 use crate::domain::{
     BootstrapRun, DeliveryMethod, DistributionRecord, Holder, KeyStatus, StepOutcome, StepStatus,
     YubiKeyRecord,
@@ -447,6 +448,90 @@ pub struct InventoryPanel {
     pub error: Option<String>,
 }
 
+/// What has happened to one key since it was handed over, and the forms that
+/// record the next thing (`features/key-lifecycle-and-revocation.md` phases 2, 3,
+/// 4, 6, 7 and 8).
+///
+/// Read once when the panel is opened and after every write, rather than every
+/// frame: an incident is answered over hours, the panel is open while somebody
+/// works through a list, and re-reading five tables sixty times a second to paint
+/// the same sentences would make an operator's screen the busiest reader of a
+/// register that may be on a share.
+pub struct LifecyclePanel {
+    /// Serial the panel is about. `None` while it is closed.
+    pub serial: Option<u32>,
+
+    /// The loss report being drafted, and the fields it needs.
+    pub report_open: bool,
+    pub report_kind: crate::domain::IncidentKind,
+    /// `YYYY-MM-DD`, empty meaning today
+    /// ([`crate::domain::lifecycle::parse_report_date`]).
+    pub report_date: String,
+    pub reported_by: String,
+    pub circumstances: String,
+
+    /// The dependency whose remediation is being recorded — the subject, because
+    /// that is what identifies it in the list and in the record.
+    pub settling: Option<Dependency>,
+    pub revocation_reason: crate::domain::RevocationReason,
+    pub reference: String,
+    pub detail: String,
+
+    /// The applets an operator is claiming were reset outside this tool.
+    pub sanitised_applets: Vec<crate::device::reset::Applet>,
+    pub sanitised_open: bool,
+
+    /// The RMA forms: one to send, one to link what came back.
+    pub rma_open: bool,
+    pub rma_reference: String,
+    pub rma_fault: String,
+    pub rma_replacement: String,
+
+    /// The incident note, once produced, and which incident it is about.
+    pub note: Option<(uuid::Uuid, String)>,
+
+    /// What the register says right now, reloaded after each write.
+    pub incidents: Vec<crate::domain::KeyIncident>,
+    pub remediations: Vec<crate::domain::Remediation>,
+    pub dependencies: Vec<Dependency>,
+    pub rma: Vec<crate::domain::RmaCase>,
+    pub sanitisation: crate::domain::Sanitisation,
+
+    pub error: Option<String>,
+    pub notice: Option<String>,
+}
+
+impl Default for LifecyclePanel {
+    fn default() -> Self {
+        Self {
+            serial: None,
+            report_open: false,
+            report_kind: crate::domain::IncidentKind::Lost,
+            report_date: String::new(),
+            reported_by: String::new(),
+            circumstances: String::new(),
+            settling: None,
+            revocation_reason: crate::domain::RevocationReason::KeyCompromise,
+            reference: String::new(),
+            detail: String::new(),
+            sanitised_applets: Vec::new(),
+            sanitised_open: false,
+            rma_open: false,
+            rma_reference: String::new(),
+            rma_fault: String::new(),
+            rma_replacement: String::new(),
+            note: None,
+            incidents: Vec::new(),
+            remediations: Vec::new(),
+            dependencies: Vec::new(),
+            rma: Vec::new(),
+            sanitisation: crate::domain::Sanitisation::default(),
+            error: None,
+            notice: None,
+        }
+    }
+}
+
 /// The factory reset waiting for the operator to confirm it, and what it found
 /// (`features/key-lifecycle-and-revocation.md` phase 5).
 ///
@@ -552,6 +637,14 @@ pub struct DistForm {
     pub receipt_ref: String,
     pub notes: String,
     pub link_last_run: bool,
+    /// The run this hand-over is attached to, when the operator arrived from the
+    /// post-run summary (`features/gui-bootstrap-wizard.md` phase 6).
+    ///
+    /// Set explicitly rather than left to `link_last_run`'s "the newest run on this
+    /// serial", because the two differ exactly where it matters: a key that was
+    /// reset and bootstrapped again has more than one run, and *this* hand-over is
+    /// for the one the operator was just looking at.
+    pub run_id: Option<uuid::Uuid>,
     pub error: Option<String>,
 }
 
@@ -564,6 +657,7 @@ impl Default for DistForm {
             receipt_ref: String::new(),
             notes: String::new(),
             link_last_run: true,
+            run_id: None,
             error: None,
         }
     }
@@ -705,6 +799,15 @@ pub struct Wizard {
     /// What was read out of that certificate, so the operator sees whose it is
     /// before it reaches the key.
     pub certificate_preview: Option<Result<crate::device::certificate::Summary, String>>,
+    /// The exact template version a **resumed** run used, pinned.
+    ///
+    /// `template_index` indexes `YkDistApp::templates`, which is the newest version
+    /// of each id — what a *new* run may be started from. A run being finished days
+    /// later may have applied a version that has since been superseded, and that
+    /// version is not in that list at all, so the wizard's own selector cannot
+    /// express it. Pinning is how (`features/gui-bootstrap-wizard.md` phase 5);
+    /// cleared when the wizard is reset, so it cannot leak into the next run.
+    pub pinned_template: Option<BootstrapTemplate>,
     /// The PIV PIN, typed for a resume only.
     ///
     /// A `String` in the wizard and a [`crate::secret::Secret`] the moment it is
@@ -800,6 +903,19 @@ pub struct YkDistApp {
     pub distributions: Vec<DistributionRecord>,
     pub runs: Vec<BootstrapRun>,
     pub audit_view: Vec<AuditEntry>,
+    /// Applet reads made this session, by serial.
+    ///
+    /// A cache with one rule: a serial that is **not** in here has not been read,
+    /// and no screen may say anything about its applets. That is what lets the
+    /// Inventory badge a key still on its factory defaults
+    /// (`features/step-piv-pin-puk-management-key.md` phase 6) without ever
+    /// accusing a key nobody looked at — the same distinction every reader in
+    /// `device::applets` turns on.
+    ///
+    /// Not persisted. It is a read of hardware at a moment, and a stale one on the
+    /// register would be worse than none: the key it describes may be in somebody
+    /// else's hand by then.
+    pub applet_reads: std::collections::HashMap<u32, crate::device::applets::Snapshot>,
     /// What the wizard may offer: the newest version of each template in use.
     pub templates: Vec<BootstrapTemplate>,
     /// Every template version on record, retired ones included, with its run
@@ -811,6 +927,8 @@ pub struct YkDistApp {
     pub inventory: InventoryPanel,
     /// The factory reset waiting to be confirmed, and what it did.
     pub reset: ResetPanel,
+    /// What has happened to one key since the hand-over, and what is still owed.
+    pub lifecycle: LifecyclePanel,
     pub wizard: Wizard,
     pub template_editor: TemplateEditor,
     pub term_panel: TermPanel,
@@ -923,12 +1041,14 @@ impl YkDistApp {
             distributions: Vec::new(),
             runs: Vec::new(),
             audit_view: Vec::new(),
+            applet_reads: std::collections::HashMap::new(),
             templates: Vec::new(),
             template_catalogue: Vec::new(),
             holder_form: HolderForm::default(),
             dist_form: DistForm::default(),
             inventory: InventoryPanel::default(),
             reset: ResetPanel::default(),
+            lifecycle: LifecyclePanel::default(),
             wizard: Wizard::default(),
             template_editor: TemplateEditor::default(),
             term_panel: TermPanel::default(),
@@ -2181,16 +2301,48 @@ impl YkDistApp {
         self.reset.typed.clear();
         self.reset.outcomes.clear();
         self.reset.error = None;
-        self.reset.observed = crate::device::applets::read(serial, &self.transport);
+        self.reset.observed = self.read_applets(serial);
+        self.status = format!("serial {serial}: nothing has been written — read the preview");
+    }
 
-        if !self.reset.observed.is_empty() {
+    /// Read one key's applets, record what was read, and remember it for the
+    /// screens.
+    ///
+    /// **A read and only a read** — `get_info`, the PIV slot list, the retry
+    /// counters, the management applet's device info, `ykman otp info`. That is what
+    /// makes it safe to call from a button the operator pressed, and `AGENTS.md`
+    /// forbids anything stronger happening as a side effect of a screen.
+    ///
+    /// One entry point rather than three, because the audit entry belongs to the
+    /// read: the reset preview and the wizard's pre-flight both used to write their
+    /// own, and a third caller would have written a fourth or forgotten.
+    pub fn read_applets(&mut self, serial: u32) -> crate::device::applets::Snapshot {
+        let snapshot = crate::device::applets::read(serial, &self.transport);
+        // Recorded because refusals downstream rest on it, and "what did the tool
+        // see" is the first question when one is disputed. States, slots and counts
+        // only — never a secret.
+        if !snapshot.is_empty() {
             self.record(
                 "device.applets.read",
                 &serial.to_string(),
-                &self.reset.observed.describe().join(" | "),
+                &snapshot.describe().join(" | "),
             );
         }
-        self.status = format!("serial {serial}: nothing has been written — read the preview");
+        self.applet_reads.insert(serial, snapshot.clone());
+        snapshot
+    }
+
+    /// The factory defaults a key is known to still carry, or `None` when its
+    /// applets have not been read this session
+    /// (`features/step-piv-pin-puk-management-key.md` phase 6).
+    ///
+    /// `None` and "no defaults" are different answers and the screen renders them
+    /// differently: a key nobody has looked at gets an invitation to look, not a
+    /// clean bill of health.
+    pub fn factory_default_badge(&self, serial: u32) -> Option<Option<String>> {
+        self.applet_reads
+            .get(&serial)
+            .map(|snapshot| snapshot.factory_default_badge())
     }
 
     /// Abandon a reset the operator asked about and then declined.
@@ -2497,6 +2649,12 @@ impl YkDistApp {
                 };
                 tracing::warn!(event = "key.reset", serial, done, failed);
                 self.reset.outcomes = outcomes;
+                // What the reset achieved is also what clears the reissue gate
+                // (`features/key-lifecycle-and-revocation.md` phase 6): the
+                // applets it returned to factory default carry nothing of the
+                // previous holder's, and until that is on record the store will
+                // refuse to put this key back into stock.
+                self.record_reset_sanitisation(serial);
                 // Re-read, so the panel shows the key as it is now rather than as
                 // it was when the operator opened the panel. A reset that claims
                 // to have worked and a key that still holds a certificate is
@@ -2531,6 +2689,657 @@ impl YkDistApp {
             .filter(|run| run.key_serial == serial)
             .count();
         (distributions, runs)
+    }
+
+    // ------------------------------------------------------------- lifecycle
+    //
+    // What happens to a key after the hand-over
+    // (`features/key-lifecycle-and-revocation.md`). Every method here follows the
+    // same three rules the rest of this file does: the store refuses before
+    // anything is written, the refusal is shown rather than swallowed, and a write
+    // that succeeded is audited before the panel says so.
+
+    /// Open the lifecycle panel for one key, reading what the register holds.
+    pub fn open_key_lifecycle(&mut self, serial: u32) {
+        // One panel at a time on this screen: the other two are a destructive
+        // reset and a row deletion, and none of the three should be answerable
+        // while another is open.
+        self.inventory.note_serial = None;
+        self.inventory.pending_removal = None;
+        self.reset.serial = None;
+
+        let holder = self.holder_display_for(serial);
+        self.lifecycle = LifecyclePanel {
+            serial: Some(serial),
+            reported_by: holder,
+            ..LifecyclePanel::default()
+        };
+        self.reload_lifecycle();
+    }
+
+    pub fn close_key_lifecycle(&mut self) {
+        self.lifecycle = LifecyclePanel::default();
+    }
+
+    /// Re-read the five things the panel shows. Called on open and after a write.
+    fn reload_lifecycle(&mut self) {
+        let Some(serial) = self.lifecycle.serial else {
+            return;
+        };
+        let Some(store) = &self.store else {
+            self.lifecycle.error = Some("no database is open".into());
+            return;
+        };
+        let read = (|| {
+            Ok::<_, crate::store::StoreError>((
+                store.incidents_for(serial)?,
+                store.remediations_for(serial)?,
+                store.dependencies_for(serial)?,
+                store.rma_cases_for(serial)?,
+                store.sanitisation_for(serial)?,
+            ))
+        })();
+        match read {
+            Ok((incidents, remediations, dependencies, rma, sanitisation)) => {
+                self.lifecycle.incidents = incidents;
+                self.lifecycle.remediations = remediations;
+                self.lifecycle.dependencies = dependencies;
+                self.lifecycle.rma = rma;
+                self.lifecycle.sanitisation = sanitisation;
+            }
+            Err(e) => {
+                tracing::error!(event = "key.lifecycle.read.failed", serial, reason = %e);
+                self.lifecycle.error = Some(e.to_string());
+            }
+        }
+    }
+
+    /// The holder this key was last handed to, as the register named them.
+    ///
+    /// The hand-over is the source rather than the holder table, because the
+    /// question is *who had this key*, and a key handed over twice has had two
+    /// holders. Empty when it has never been handed over — a key lost from the
+    /// drawer is a real case, and inventing a holder for it would be worse than
+    /// saying nothing.
+    pub fn holder_display_for(&self, serial: u32) -> String {
+        self.distributions
+            .iter()
+            .filter(|record| record.key_serial == serial)
+            .max_by_key(|record| record.distributed_at)
+            .map(|record| record.holder_display.clone())
+            .unwrap_or_default()
+    }
+
+    /// The open incident for this key, if there is one.
+    pub fn open_incident(&self) -> Option<&crate::domain::KeyIncident> {
+        self.lifecycle.incidents.iter().find(|i| i.is_open())
+    }
+
+    /// Record a loss or theft, and move the key to `Lost`
+    /// (`features/key-lifecycle-and-revocation.md` phase 2).
+    ///
+    /// The report and the status change are one store operation, so a key can
+    /// never be `Lost` with nothing saying why, or carry a report while the
+    /// register still says it is in somebody's hands.
+    pub fn report_key_incident(&mut self) {
+        use crate::domain::KeyIncident;
+        use crate::domain::lifecycle::parse_report_date;
+
+        self.lifecycle.error = None;
+        self.lifecycle.notice = None;
+        let Some(serial) = self.lifecycle.serial else {
+            return;
+        };
+
+        let reported_at = match parse_report_date(&self.lifecycle.report_date, chrono::Utc::now()) {
+            Ok(at) => at,
+            Err(e) => {
+                self.lifecycle.error = Some(e);
+                return;
+            }
+        };
+        let holder = self.holder_display_for(serial);
+        let incident = match KeyIncident::new(
+            serial,
+            self.lifecycle.report_kind,
+            reported_at,
+            &self.lifecycle.reported_by,
+            &holder,
+            &self.lifecycle.circumstances,
+            &self.operator,
+        ) {
+            Ok(incident) => incident,
+            Err(e) => {
+                self.lifecycle.error = Some(e.to_string());
+                return;
+            }
+        };
+
+        let Some(store) = &self.store else {
+            self.lifecycle.error = Some("no database is open".into());
+            return;
+        };
+        if let Err(e) = store.report_incident(&incident) {
+            tracing::warn!(event = "key.incident.refused", serial, reason = %e);
+            self.lifecycle.error = Some(e.to_string());
+            return;
+        }
+
+        // One event for both kinds, with the kind in the detail: the trail is
+        // filtered by event name, and "show me the keys that went missing" is one
+        // question rather than two.
+        self.record(
+            "key.reported_lost",
+            &format!("serial:{serial}"),
+            &incident.audit_detail(),
+        );
+        // The certificate this key carried is the reason the reason field exists:
+        // a key nobody can produce is a compromised key until somebody says
+        // otherwise.
+        self.lifecycle.revocation_reason =
+            crate::domain::RevocationReason::for_incident(incident.kind);
+        self.status = format!(
+            "serial {serial} recorded as {} — {} still to deal with",
+            incident.kind.label().to_lowercase(),
+            crate::incident::summarise(&self.lifecycle.dependencies, &self.lifecycle.remediations)
+        );
+        self.lifecycle.report_open = false;
+        self.lifecycle.circumstances.clear();
+        self.lifecycle.report_date.clear();
+        self.reload_lifecycle();
+        self.refresh();
+    }
+
+    /// Start recording that one dependency has been dealt with.
+    pub fn settle_dependency(&mut self, dependency: &Dependency) {
+        self.lifecycle.error = None;
+        self.lifecycle.notice = None;
+        self.lifecycle.reference.clear();
+        self.lifecycle.detail.clear();
+        self.lifecycle.settling = Some(dependency.clone());
+    }
+
+    pub fn cancel_settling(&mut self) {
+        self.lifecycle.settling = None;
+        self.lifecycle.error = None;
+    }
+
+    /// Record the revocation or the removal the operator has just performed
+    /// elsewhere (phases 3 and 4).
+    ///
+    /// "Elsewhere" is the whole shape of this: the CA that issued the certificate
+    /// and the relying party that holds the credential are somebody else's
+    /// systems, so what this tool can do is know *what* has to be dealt with, and
+    /// hold the reference that proves it was. See
+    /// [`crate::domain::lifecycle`] for why that is the honest design rather than
+    /// a missing feature.
+    pub fn record_remediation(&mut self) {
+        use crate::domain::lifecycle::{DependencyKind, Remediation};
+
+        self.lifecycle.error = None;
+        let Some(serial) = self.lifecycle.serial else {
+            return;
+        };
+        let Some(dependency) = self.lifecycle.settling.clone() else {
+            return;
+        };
+        let incident = self.open_incident().map(|incident| incident.id);
+
+        let built = match dependency.kind {
+            DependencyKind::Certificate => Remediation::certificate_revoked(
+                serial,
+                incident,
+                &dependency.subject,
+                self.lifecycle.revocation_reason,
+                &self.lifecycle.reference,
+                &self.operator,
+                &self.lifecycle.detail,
+            ),
+            DependencyKind::Credential => Remediation::credential_removed(
+                serial,
+                incident,
+                &dependency.subject,
+                dependency
+                    .detail
+                    .trim_start_matches("relying party ")
+                    .trim(),
+                &self.lifecycle.reference,
+                &self.operator,
+            ),
+            // Neither is anybody's ticket, and the panel offers no button for
+            // them; reached only if one is ever added without this arm.
+            DependencyKind::OtpAccessCode | DependencyKind::Custody => {
+                self.lifecycle.error = Some(
+                    "this entry is recorded for information — there is nothing to close".into(),
+                );
+                return;
+            }
+        };
+        let remediation = match built {
+            Ok(remediation) => remediation,
+            Err(e) => {
+                self.lifecycle.error = Some(e.to_string());
+                return;
+            }
+        };
+
+        let Some(store) = &self.store else {
+            self.lifecycle.error = Some("no database is open".into());
+            return;
+        };
+        if let Err(e) = store.insert_remediation(&remediation) {
+            tracing::warn!(event = "key.remediation.refused", serial, reason = %e);
+            self.lifecycle.error = Some(e.to_string());
+            return;
+        }
+        self.record(
+            remediation.kind.audit_event(),
+            &format!("serial:{serial}"),
+            &remediation.audit_detail(),
+        );
+        self.status = format!("serial {serial}: {} recorded", remediation.kind.label());
+        self.lifecycle.settling = None;
+        self.lifecycle.reference.clear();
+        self.lifecycle.detail.clear();
+        self.reload_lifecycle();
+    }
+
+    /// Record that applets were returned to factory default **outside** this tool
+    /// (phase 6).
+    ///
+    /// The counterpart of *mark bootstrapped* on the same screen, and it exists
+    /// for the same reason: the register has to be able to say what is true about
+    /// a key somebody handled with `ykman` on a bench. The reference field is
+    /// where they say how they know — because this one claim, unlike a reset this
+    /// tool performed, rests entirely on the operator's word.
+    pub fn record_manual_sanitisation(&mut self) {
+        use crate::domain::lifecycle::Remediation;
+
+        self.lifecycle.error = None;
+        let Some(serial) = self.lifecycle.serial else {
+            return;
+        };
+        if self.lifecycle.sanitised_applets.is_empty() {
+            self.lifecycle.error =
+                Some("choose the applets that were reset — nothing was recorded".into());
+            return;
+        }
+
+        let applets = self.lifecycle.sanitised_applets.clone();
+        let remediation = match Remediation::sanitised(
+            serial,
+            &applets,
+            &self.lifecycle.reference,
+            &self.operator,
+            "recorded by the operator; this tool did not perform the reset",
+        ) {
+            Ok(remediation) => remediation,
+            Err(e) => {
+                self.lifecycle.error = Some(e.to_string());
+                return;
+            }
+        };
+
+        let Some(store) = &self.store else {
+            self.lifecycle.error = Some("no database is open".into());
+            return;
+        };
+        if let Err(e) = store.insert_remediation(&remediation) {
+            self.lifecycle.error = Some(e.to_string());
+            return;
+        }
+        self.record(
+            remediation.kind.audit_event(),
+            &format!("serial:{serial}"),
+            &format!("{} source=operator", remediation.audit_detail()),
+        );
+        self.status = format!(
+            "serial {serial}: {} recorded as sanitised",
+            crate::device::reset::describe(&applets)
+        );
+        self.lifecycle.sanitised_open = false;
+        self.lifecycle.sanitised_applets.clear();
+        self.lifecycle.reference.clear();
+        self.reload_lifecycle();
+    }
+
+    /// Record the sanitisation a reset this tool performed has just achieved.
+    ///
+    /// Called from [`Self::run_confirmed_reset`] rather than by the operator,
+    /// because the reset is the evidence: an applet the transport reported as
+    /// reset — or as already at factory default — is an applet nothing of the
+    /// previous holder's is on. A failed applet is not recorded, which is why this
+    /// reads the outcomes rather than the request.
+    ///
+    /// Public so a behaviour test can drive it from a set of outcomes: the reset
+    /// that produces them needs a plugged-in key, and the rule this enforces — a
+    /// reset is what clears the gate — is one no test should have to take on trust.
+    pub fn record_reset_sanitisation(&mut self, serial: u32) {
+        use crate::domain::lifecycle::{Remediation, cleared_by};
+
+        let cleared = cleared_by(&self.reset.outcomes);
+        if cleared.is_empty() {
+            return;
+        }
+        let Ok(remediation) = Remediation::sanitised(
+            serial,
+            &cleared,
+            "factory reset by this tool",
+            &self.operator,
+            "recorded from the reset's own outcomes",
+        ) else {
+            return;
+        };
+
+        let Some(store) = &self.store else { return };
+        match store.insert_remediation(&remediation) {
+            Ok(()) => {
+                let detail = remediation.audit_detail();
+                self.record(
+                    remediation.kind.audit_event(),
+                    &format!("serial:{serial}"),
+                    &format!("{detail} source=reset"),
+                );
+            }
+            Err(e) => {
+                // Loud, not silent: the key is clean and the register cannot say
+                // so, which is the state the reissue gate will refuse in.
+                tracing::error!(event = "key.sanitised.record.failed", serial, reason = %e);
+                self.reset.error = Some(format!(
+                    "the reset ran, and the register could not record the sanitisation: {e}. \
+                     Record it by hand from *Lifecycle…* before this key is reissued"
+                ));
+            }
+        }
+        if self.lifecycle.serial == Some(serial) {
+            self.reload_lifecycle();
+        }
+    }
+
+    /// Close an incident once nothing is outstanding — or say why it is being
+    /// closed anyway.
+    pub fn close_key_incident(&mut self, id: uuid::Uuid) {
+        self.lifecycle.error = None;
+        let Some(serial) = self.lifecycle.serial else {
+            return;
+        };
+        let settled =
+            crate::incident::is_settled(&self.lifecycle.dependencies, &self.lifecycle.remediations);
+        let note = self.lifecycle.detail.trim().to_owned();
+        if !settled && note.is_empty() {
+            self.lifecycle.error = Some(
+                "something on this key has not been dealt with. Record what was done — or write \
+                 in the note why it is being closed without it, so the gap is visible rather \
+                 than quiet"
+                    .into(),
+            );
+            return;
+        }
+
+        let Some(store) = &self.store else {
+            self.lifecycle.error = Some("no database is open".into());
+            return;
+        };
+        match store.close_incident(id, &note) {
+            Ok(incident) => {
+                self.record(
+                    "key.incident_closed",
+                    &format!("serial:{serial}"),
+                    &format!(
+                        "kind={} outstanding={} note_chars={}",
+                        incident.kind.audit_name(),
+                        crate::domain::lifecycle::outstanding(
+                            &self.lifecycle.dependencies,
+                            &self.lifecycle.remediations
+                        )
+                        .len(),
+                        note.chars().count()
+                    ),
+                );
+                self.status = format!("serial {serial}: incident closed");
+                self.lifecycle.detail.clear();
+                self.reload_lifecycle();
+            }
+            Err(e) => self.lifecycle.error = Some(e.to_string()),
+        }
+    }
+
+    /// Produce the incident note for the ESI (phase 7).
+    ///
+    /// Held in the panel so the operator can read it before it goes anywhere, and
+    /// audited as an export the moment it is produced: the note carries the
+    /// holder's name and what was on their key, so a copy leaving the tool is an
+    /// event the register should hold.
+    pub fn generate_incident_note(&mut self, id: uuid::Uuid) {
+        let Some(serial) = self.lifecycle.serial else {
+            return;
+        };
+        let Some(incident) = self
+            .lifecycle
+            .incidents
+            .iter()
+            .find(|incident| incident.id == id)
+            .cloned()
+        else {
+            return;
+        };
+
+        let key = self.keys.iter().find(|key| key.serial == serial).cloned();
+        let holder = self
+            .distributions
+            .iter()
+            .filter(|record| record.key_serial == serial)
+            .max_by_key(|record| record.distributed_at)
+            .and_then(|record| {
+                self.holders
+                    .iter()
+                    .find(|holder| holder.id == record.holder_id)
+            })
+            .cloned();
+
+        let request = crate::incident::NoteRequest {
+            incident: &incident,
+            key: key.as_ref(),
+            holder: holder.as_ref(),
+            dependencies: &self.lifecycle.dependencies,
+            remediations: &self.lifecycle.remediations,
+            organisation: &self.org,
+            prepared_by: &self.operator,
+            report_to: &self.settings.report_incidents_to,
+            prepared_at: chrono::Utc::now(),
+        };
+        let text = crate::incident::text(&request);
+        self.record(
+            "key.incident_note",
+            &format!("serial:{serial}"),
+            &format!(
+                "kind={} outstanding={} format=text",
+                incident.kind.audit_name(),
+                crate::domain::lifecycle::outstanding(
+                    &self.lifecycle.dependencies,
+                    &self.lifecycle.remediations
+                )
+                .len()
+            ),
+        );
+        self.lifecycle.note = Some((id, text));
+        self.status = format!("serial {serial}: incident note prepared");
+    }
+
+    /// Write the note the panel is showing to a file, as text or as a PDF.
+    pub fn save_incident_note(&mut self, as_pdf: bool) {
+        let Some(serial) = self.lifecycle.serial else {
+            return;
+        };
+        let Some((id, text)) = self.lifecycle.note.clone() else {
+            self.lifecycle.error = Some("prepare the note first".into());
+            return;
+        };
+        let Some(incident) = self
+            .lifecycle
+            .incidents
+            .iter()
+            .find(|incident| incident.id == id)
+            .cloned()
+        else {
+            return;
+        };
+
+        let (bytes, extension) = if as_pdf {
+            let key = self.keys.iter().find(|key| key.serial == serial).cloned();
+            let request = crate::incident::NoteRequest {
+                incident: &incident,
+                key: key.as_ref(),
+                holder: None,
+                dependencies: &self.lifecycle.dependencies,
+                remediations: &self.lifecycle.remediations,
+                organisation: &self.org,
+                prepared_by: &self.operator,
+                report_to: &self.settings.report_incidents_to,
+                prepared_at: chrono::Utc::now(),
+            };
+            (
+                crate::pdf::render(&crate::incident::document(&request)),
+                "pdf",
+            )
+        } else {
+            (text.into_bytes(), "txt")
+        };
+
+        let suggested = format!("{}.{extension}", crate::incident::filename(&incident));
+        if let Some(path) = self.save_bytes(&suggested, &bytes) {
+            self.record(
+                "key.incident_note",
+                &format!("serial:{serial}"),
+                &format!("format={extension} bytes={}", bytes.len()),
+            );
+            self.status = format!("incident note written to {}", path.display());
+            self.lifecycle.notice = Some(format!(
+                "written to {} — it names the holder and what was on their key, so treat it as \
+                 the record it is",
+                path.display()
+            ));
+        }
+    }
+
+    /// Send a key to the supplier, opening an RMA case (phase 8).
+    pub fn send_key_for_rma(&mut self) {
+        use crate::domain::RmaCase;
+
+        self.lifecycle.error = None;
+        let Some(serial) = self.lifecycle.serial else {
+            return;
+        };
+        let case = match RmaCase::open(
+            serial,
+            &self.lifecycle.rma_reference,
+            &self.lifecycle.rma_fault,
+            chrono::Utc::now(),
+            &self.operator,
+        ) {
+            Ok(case) => case,
+            Err(e) => {
+                self.lifecycle.error = Some(e.to_string());
+                return;
+            }
+        };
+
+        let Some(store) = &self.store else {
+            self.lifecycle.error = Some("no database is open".into());
+            return;
+        };
+        if let Err(e) = store.insert_rma(&case) {
+            self.lifecycle.error = Some(e.to_string());
+            return;
+        }
+        self.record(
+            "key.rma.sent",
+            &format!("serial:{serial}"),
+            &case.audit_detail(),
+        );
+        self.status = format!("serial {serial}: RMA {} opened", case.reference);
+        self.lifecycle.rma_open = false;
+        self.lifecycle.rma_reference.clear();
+        self.lifecycle.rma_fault.clear();
+        self.reload_lifecycle();
+    }
+
+    /// Link the replacement the supplier sent back.
+    pub fn record_rma_replacement(&mut self, id: uuid::Uuid) {
+        self.lifecycle.error = None;
+        let Some(serial) = self.lifecycle.serial else {
+            return;
+        };
+        let typed = self.lifecycle.rma_replacement.trim().to_owned();
+        let Ok(replacement) = typed.parse::<u32>() else {
+            self.lifecycle.error = Some(format!(
+                "`{typed}` is not a serial — type the replacement's number"
+            ));
+            return;
+        };
+
+        let Some(store) = &self.store else {
+            self.lifecycle.error = Some("no database is open".into());
+            return;
+        };
+        match store.link_rma_replacement(id, replacement) {
+            Ok(case) => {
+                self.record(
+                    "key.rma.replaced",
+                    &format!("serial:{serial}"),
+                    &case.audit_detail(),
+                );
+                self.status = format!(
+                    "serial {serial}: replaced by serial {replacement} under RMA {}",
+                    case.reference
+                );
+                self.lifecycle.rma_replacement.clear();
+                self.reload_lifecycle();
+            }
+            Err(e) => self.lifecycle.error = Some(e.to_string()),
+        }
+    }
+
+    /// Close an RMA that is not producing a replacement.
+    pub fn close_rma_case(&mut self, id: uuid::Uuid) {
+        self.lifecycle.error = None;
+        let Some(serial) = self.lifecycle.serial else {
+            return;
+        };
+        let note = self.lifecycle.rma_fault.trim().to_owned();
+        let Some(store) = &self.store else {
+            self.lifecycle.error = Some("no database is open".into());
+            return;
+        };
+        match store.close_rma(id, &note) {
+            Ok(case) => {
+                self.record(
+                    "key.rma.closed",
+                    &format!("serial:{serial}"),
+                    &format!(
+                        "{} note_chars={}",
+                        case.audit_detail(),
+                        note.chars().count()
+                    ),
+                );
+                self.status = format!("serial {serial}: RMA {} closed", case.reference);
+                self.lifecycle.rma_fault.clear();
+                self.reload_lifecycle();
+            }
+            Err(e) => self.lifecycle.error = Some(e.to_string()),
+        }
+    }
+
+    /// Tick or untick one applet on the manual sanitisation form.
+    pub fn toggle_sanitised_applet(&mut self, applet: crate::device::reset::Applet, wanted: bool) {
+        self.lifecycle.sanitised_applets.retain(|a| *a != applet);
+        if wanted {
+            self.lifecycle.sanitised_applets.push(applet);
+        }
+        self.lifecycle.sanitised_applets = crate::device::reset::Applet::ALL
+            .into_iter()
+            .filter(|a| self.lifecycle.sanitised_applets.contains(a))
+            .collect();
     }
 
     #[cfg(feature = "camera")]
@@ -4543,7 +5352,90 @@ impl YkDistApp {
 
     /// Selected template, if any.
     pub fn selected_template(&self) -> Option<&BootstrapTemplate> {
-        self.templates.get(self.wizard.template_index)
+        // A pinned version wins: it is the one a resumed run actually applied, and
+        // it may no longer be in the list the wizard offers.
+        self.wizard
+            .pinned_template
+            .as_ref()
+            .or_else(|| self.templates.get(self.wizard.template_index))
+    }
+
+    /// Every template version on record, including superseded and retired ones.
+    ///
+    /// The wizard offers only the newest of each for a *new* run; a **resume** needs
+    /// the exact version the run recorded, whatever has happened since.
+    fn template_version(&self, id: &str, version: &str) -> Option<BootstrapTemplate> {
+        self.template_catalogue
+            .iter()
+            .map(|stored| &stored.template)
+            .find(|template| template.id == id && template.version == version)
+            .cloned()
+    }
+
+    /// Take up an unfinished run off the register and set the wizard up to finish it
+    /// (`features/gui-bootstrap-wizard.md` phase 5).
+    ///
+    /// The case this is for: the CA took three days, the register has been closed
+    /// and reopened, and the run the operator wants to finish exists only as rows in
+    /// the database. Everything the wizard needs is rebuilt from those rows — the
+    /// serial, the exact template version, and which optional steps the original run
+    /// included — so the plan the executor indexes against is the plan the run was
+    /// made from.
+    ///
+    /// It deliberately does **not** start anything. The wizard lands on the run view
+    /// with the certificate field waiting, and finishing it is still the operator
+    /// pressing the button that resumes.
+    pub fn adopt_run(&mut self, run_id: uuid::Uuid) {
+        let Some(run) = self.runs.iter().find(|run| run.id == run_id).cloned() else {
+            self.wizard.error = Some("that run is no longer on the register".into());
+            return;
+        };
+        let Some(template) = self.template_version(&run.template_id, &run.template_version) else {
+            self.wizard.error = Some(format!(
+                "this run applied {} version {}, which is not in this register — a run cannot be \
+                 resumed without the procedure it recorded",
+                run.template_id, run.template_version
+            ));
+            return;
+        };
+        if let Some(refusal) = crate::bootstrap::resume_refusal(&template, &run) {
+            self.wizard.error = Some(refusal);
+            return;
+        }
+
+        self.wizard.serial = run.key_serial.to_string();
+        self.wizard.holder_index = run
+            .holder_id
+            .and_then(|id| self.holders.iter().position(|holder| holder.id == id))
+            .unwrap_or(self.wizard.holder_index);
+        self.wizard.step_enabled = crate::bootstrap::step_selection(&template, &run);
+        self.wizard.pinned_template = Some(template);
+        self.wizard.certificate_pem.clear();
+        self.wizard.certificate_preview = None;
+        self.wizard.error = None;
+
+        self.build_plan();
+        // The plan has to line up with the run's steps or the executor would index
+        // one against the other. `step_selection` is built to make it, and this says
+        // so rather than trusting it — the failure would be silent and would write
+        // to a key.
+        if self.wizard.plan.len() != run.steps.len() {
+            self.wizard.error = Some(format!(
+                "this run recorded {} step(s) and the procedure plans {} — it cannot be resumed \
+                 safely",
+                run.steps.len(),
+                self.wizard.plan.len()
+            ));
+            self.wizard.pinned_template = None;
+            return;
+        }
+
+        self.wizard.run = Some(run);
+        self.wizard.stage = WizardStage::Running;
+        self.status = format!(
+            "picked up an unfinished run on serial {} — load the certificate and finish it",
+            self.wizard.serial
+        );
     }
 
     /// Build the (dry-run) plan for the wizard's current selection.
@@ -4806,13 +5698,24 @@ impl YkDistApp {
         self.wizard.stage = crate::app::WizardStage::Running;
         match outcome {
             Ok(run) => {
-                self.status = format!(
-                    "run {:?}: {} done, {} failed, {} skipped",
-                    run.status,
-                    run.tally().0,
-                    run.tally().1,
-                    run.tally().2
+                let (done, failed, skipped, _) = run.tally();
+                let tally = format!(
+                    "run {:?}: {done} done, {failed} failed, {skipped} skipped",
+                    run.status
                 );
+                self.status = match self.settle_key_status(serial, &run) {
+                    Ok(true) => {
+                        format!("{tally} — serial {serial} is bootstrapped and ready to hand over")
+                    }
+                    Ok(false) => tally,
+                    Err(e) => {
+                        // The run happened; the key is filed as something it is no
+                        // longer. That has to be met here, not on the Distribution
+                        // screen an hour later.
+                        self.wizard.error = Some(e.clone());
+                        format!("{tally} — but serial {serial} was not moved: {e}")
+                    }
+                };
                 self.wizard.run = Some(run);
             }
             Err(e) => {
@@ -4821,6 +5724,63 @@ impl YkDistApp {
             }
         }
         self.refresh();
+    }
+
+    /// Move a key to `Bootstrapped` when the run that just finished says it is.
+    ///
+    /// The lifecycle has always read `InStock → Bootstrapped → Distributed`, but
+    /// nothing performed the first arrow: the only thing that moved a key was a
+    /// button on the Inventory screen, so a key could be fully configured and
+    /// still be filed as untouched stock. The operator met that hours later, on
+    /// another screen, as a refused hand-over.
+    ///
+    /// Only a `Completed` run counts, which is the same line the engine already
+    /// draws: a run with a required step unmet is marked `Failed` and audited
+    /// `bootstrap.incomplete` — "the key is not ready to hand over".
+    ///
+    /// `Ok(true)` when the key moved, `Ok(false)` when there was nothing to move
+    /// it to, `Err` when the move was refused — which the caller has to show,
+    /// because a key filed as something it is no longer is the whole bug.
+    pub fn settle_key_status(
+        &mut self,
+        serial: u32,
+        run: &crate::domain::BootstrapRun,
+    ) -> Result<bool, String> {
+        if run.status != crate::domain::RunStatus::Completed {
+            return Ok(false);
+        }
+        let Some(store) = &self.store else {
+            return Ok(false);
+        };
+        let current = match store.key_by_serial(serial) {
+            Ok(Some(found)) => found.status,
+            Ok(None) => return Ok(false),
+            Err(e) => {
+                tracing::error!(event = "key.status.read.failed", serial, reason = %e);
+                return Err(e.to_string());
+            }
+        };
+        // Already there, or somewhere a run has no business overruling — a key
+        // marked lost during a resume is not quietly returned to the shelf.
+        if current == KeyStatus::Bootstrapped || !current.can_transition_to(KeyStatus::Bootstrapped)
+        {
+            return Ok(false);
+        }
+        if let Err(e) = store.set_key_status(serial, KeyStatus::Bootstrapped) {
+            tracing::error!(event = "key.status.write.failed", serial, reason = %e);
+            return Err(e.to_string());
+        }
+        self.record(
+            "key.status_changed",
+            &format!("serial:{serial}"),
+            &format!(
+                "to={} from={} run={}",
+                KeyStatus::Bootstrapped.audit_name(),
+                current.audit_name(),
+                run.id
+            ),
+        );
+        Ok(true)
     }
 
     /// The write transport for this build, if it has one.
@@ -4848,6 +5808,62 @@ impl YkDistApp {
         self.wizard.secrets = None;
     }
 
+    /// Carry a finished run straight to a hand-over
+    /// (`features/gui-bootstrap-wizard.md` phase 6).
+    ///
+    /// The summary already shows the evidence; what was missing was the step after
+    /// it. Retyping the serial and re-picking the holder on the Distribution screen
+    /// is three chances to pick the wrong row, in the one place in this application
+    /// where the wrong row means a security token recorded against somebody who does
+    /// not have it.
+    ///
+    /// It fills the form and switches screens. It deliberately does **not** record
+    /// anything: a hand-over is a statement that a person took physical possession
+    /// of a key, and nothing the tool can see tells it that has happened.
+    pub fn attach_run_to_handover(&mut self) {
+        let Some(run) = self.wizard.run.clone() else {
+            self.wizard.error = Some("there is no finished run to attach".into());
+            return;
+        };
+        if run.status != crate::domain::RunStatus::Completed {
+            self.wizard.error = Some(format!(
+                "this run is {} — a key is handed over once its procedure has completed, so \
+                 finish it first",
+                format!("{:?}", run.status).to_lowercase()
+            ));
+            return;
+        }
+        let Some(key_index) = self
+            .keys
+            .iter()
+            .position(|key| key.serial == run.key_serial)
+        else {
+            self.wizard.error = Some(format!(
+                "serial {} is not in the inventory, so there is nothing to hand over",
+                run.key_serial
+            ));
+            return;
+        };
+
+        self.dist_form = DistForm {
+            key_index,
+            // The run knows whose key it was prepared for. Left at whatever the form
+            // happened to hold, this is precisely the field that gets mis-picked.
+            holder_index: run
+                .holder_id
+                .and_then(|id| self.holders.iter().position(|holder| holder.id == id))
+                .unwrap_or_default(),
+            run_id: Some(run.id),
+            ..DistForm::default()
+        };
+        self.tab = Tab::Distribution;
+        self.status = format!(
+            "hand-over ready for serial {}: the run that prepared it is attached — check the \
+             holder and the receipt reference before recording it",
+            run.key_serial
+        );
+    }
+
     /// Start again, leaving the recorded run on file.
     pub fn reset_wizard(&mut self) {
         self.dismiss_secrets();
@@ -4856,6 +5872,10 @@ impl YkDistApp {
         self.wizard.run = None;
         self.wizard.plan.clear();
         self.wizard.error = None;
+        // A pinned version belongs to the run that was being finished. Left in
+        // place it would silently decide the *next* run's procedure, and a
+        // superseded version is exactly the one a new run must not use.
+        self.wizard.pinned_template = None;
     }
 
     /// Run the pre-flight against the current plan and move to the confirmation.
@@ -4881,29 +5901,25 @@ impl YkDistApp {
         // info`. Nothing here writes, which is what makes it safe to run as the
         // operator moves through the wizard rather than only on a button.
         let applets = match serial {
-            Some(serial) => crate::device::applets::read(serial, &self.transport),
+            Some(serial) => self.read_applets(serial),
             None => AppletSnapshot::default(),
         };
-        // Recorded, because a refusal downstream rests on it and "what did the tool
-        // see" is the first question when one is disputed. States and slots only —
-        // never a secret, and never a PIN.
-        if let Some(serial) = serial
-            && !applets.is_empty()
-        {
-            self.record(
-                "device.applets.read",
-                &serial.to_string(),
-                &applets.describe().join(" | "),
-            );
-        }
-        // Looked up after the recording above, so the audit write does not have to
+        // Looked up after the recording inside that read, so the audit write does not have to
         // borrow around a reference into `self.keys`.
         let key = serial.and_then(|s| self.keys.iter().find(|k| k.serial == s));
+        // A template with no rule is unrestricted, which is also what an
+        // unselected one has to read as: the missing-template case is already the
+        // wizard's own error, and inventing a rule here would report it twice.
+        let applicability = self
+            .selected_template()
+            .map(|template| template.applicability.clone())
+            .unwrap_or_default();
         self.wizard.findings = Preflight {
             commands: &self.wizard.plan,
             key,
             applets: &applets,
             can_write: Self::can_write_to_a_key(),
+            applicability: &applicability,
         }
         .run();
 
@@ -5028,14 +6044,25 @@ impl YkDistApp {
             return;
         };
 
-        let run_id = if self.dist_form.link_last_run {
-            self.runs
-                .iter()
-                .find(|r| r.key_serial == key.serial)
-                .map(|r| r.id)
-        } else {
-            None
-        };
+        // An explicitly attached run wins over "the newest one on this serial": the
+        // operator came here from that run's summary, and a key bootstrapped twice
+        // has two.
+        let run_id = self
+            .dist_form
+            .run_id
+            .filter(|id| {
+                self.runs
+                    .iter()
+                    .any(|r| r.id == *id && r.key_serial == key.serial)
+            })
+            .or_else(|| {
+                self.dist_form.link_last_run.then(|| {
+                    self.runs
+                        .iter()
+                        .find(|r| r.key_serial == key.serial)
+                        .map(|r| r.id)
+                })?
+            });
 
         let record = DistributionRecord {
             id: uuid::Uuid::new_v4(),
@@ -5054,12 +6081,47 @@ impl YkDistApp {
         };
 
         let Some(store) = &self.store else { return };
+
+        // The lifecycle is asked *before* the record is written. Asking after it
+        // produced the worst of both answers: a hand-over on the register, the key
+        // still sitting in stock, and a refusal the operator could do nothing
+        // about. The key's own row decides it, not the cached list, because a
+        // stale copy would decide it wrong.
+        let current = match store.key_by_serial(key.serial) {
+            Ok(Some(found)) => found.status,
+            Ok(None) => {
+                self.dist_form.error =
+                    Some(format!("serial {} is not in the inventory", key.serial));
+                return;
+            }
+            Err(e) => {
+                self.dist_form.error = Some(e.to_string());
+                return;
+            }
+        };
+        if current != KeyStatus::Distributed && !current.can_transition_to(KeyStatus::Distributed) {
+            self.dist_form.error = Some(format!(
+                "serial {} is {} — a key is handed over once a bootstrap run has completed on \
+                 it. Nothing was recorded: run the bootstrap, or mark the key bootstrapped on \
+                 the Inventory screen, and record the hand-over then.",
+                key.serial,
+                current.label()
+            ));
+            tracing::warn!(
+                event = "distribution.refused.lifecycle",
+                serial = key.serial,
+                status = current.audit_name()
+            );
+            return;
+        }
+
         if let Err(e) = store.insert_distribution(&record) {
             self.dist_form.error = Some(e.to_string());
             return;
         }
         if let Err(e) = store.set_key_status(key.serial, KeyStatus::Distributed) {
-            // The hand-over is recorded; the status refusal is surfaced, not hidden.
+            // The pre-flight above should have caught this; if the status moved
+            // under us between the two reads, the refusal is still surfaced.
             self.dist_form.error = Some(format!("recorded, but status not updated: {e}"));
         }
         let details = format!(
@@ -5305,7 +6367,7 @@ impl YkDistApp {
 
         elegance::Modal::new("about", &mut open)
             .heading("YubiKey Distribution Manager")
-            .subtitle(format!("version {}", crate::VERSION))
+            .subtitle(format!("version {}", crate::build_id()))
             .max_width(620.0)
             .show(ui.ctx(), |ui| {
                 ui.vertical_centered(|ui| {
@@ -5389,7 +6451,10 @@ impl YkDistApp {
                             elegance::Badge::new(crate::VERSION, elegance::BadgeTone::Neutral)
                                 .preserve_case(),
                         )
-                        .on_hover_text("what this build is, and what it can reach — click")
+                        .on_hover_text(format!(
+                            "build {} — what this build is, and what it can reach. Click",
+                            crate::build_id()
+                        ))
                         .interact(egui::Sense::click())
                         .clicked()
                     {

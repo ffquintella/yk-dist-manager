@@ -12,6 +12,62 @@ Requirements per platform (the native transports link against system libraries):
 | Windows | The **Smart Card** service running |
 | Linux | `pcscd` running, `libpcsclite`, a udev rule granting your user access to the YubiKey HID device, and — for camera scanning — read access to the V4L2 device (usually the `video` group) |
 
+### Installing a release
+
+Every build installed anywhere comes from a **tag** (NRM: no hand-built binaries), and the
+build says which commit it came from — `yk-dist-manager --version` prints
+`0.13.0 (a1b2c3d4e5f6)`, and a build from an uncommitted tree says `-dirty`. If a build on a
+workstation cannot name its commit, it did not come from a release.
+
+**macOS.** Open the `.dmg` and drag the application to `/Applications`. Until the project
+has a Developer ID certificate the bundle is ad-hoc signed, so Gatekeeper refuses it on
+first launch: right-click → **Open** → *Open* is the documented way past that, and the
+camera permission will be asked for again after each new version, because macOS remembers
+the grant against the signature. Both go away when the certificate arrives
+([`../features/packaging-and-release.md`](../features/packaging-and-release.md) phase 3b).
+
+**Linux.** Either package works; the `.deb` is the one that puts the udev rule in place for
+you.
+
+```bash
+sudo apt install ./yk-dist-manager_0.13.0_amd64.deb     # pulls pcscd and libpcsclite1
+# or, on any distribution:
+sudo tar -C / -xzf yk-dist-manager-0.13.0-amd64.tar.gz
+sudo udevadm control --reload-rules && sudo udevadm trigger   # tarball only
+sudo systemctl enable --now pcscd
+```
+
+Then unplug and re-plug the key: the udev rule applies when the device is enumerated. Two
+symptoms of skipping it, both of which look like broken hardware — PIV works and FIDO2
+reports *no device* (missing rule), or nothing works at all (`pcscd` not running). The
+requirements are also in `/usr/share/doc/yk-dist-manager/README.install`, which travels
+inside the artefact.
+
+**Windows.** Unzip anywhere and run the executable. It is unsigned until the project has an
+Authenticode certificate, so SmartScreen warns on first run: *More info* → *Run anyway*.
+Check that the **Smart Card** service is running (`sc query SCardSvr`) — the PIV applet is
+unreachable without it.
+
+### Upgrading
+
+The register is one file, and its **schema version** is what matters when more than one
+workstation shares it:
+
+1. Read the release notes. A release that moves the schema says so, in a section titled
+   *Upgrade note* — generated from the code rather than remembered
+   (`scripts/release-notes.sh`).
+2. **Take a backup** before the first launch of the new version if the register is on a
+   share or in a synchronising folder. *Settings → Back up now*, or copy the file.
+3. **Upgrade every workstation that shares the register.** The migration runs on first open;
+   after that an older build refuses the file (`schema version … is newer than this build
+   supports`) rather than working against a schema it does not understand. That refusal is
+   deliberate, and it is why they are upgraded together.
+4. The migration needs **write access**, so a read-only session cannot perform it — open the
+   register normally on the workstation that upgrades it first.
+
+Nothing is uninstalled or reset by an upgrade: settings, recent databases and the register
+itself are untouched.
+
 Camera scanning is compiled in by default. For a build with no camera code at all:
 
 ```bash
@@ -524,14 +580,25 @@ bootstrap run** — nothing else touches the key while a run is writing to it.
      checks that depend on it produced nothing, so this pre-flight looked at less than it
      appears to have.
    * a **low PIN retry count** — a key one wrong PIN from needing its PUK.
+   * **"which applications this key has enabled was never read"** — the native transport
+     identifies a key over its PIV applet and cannot see the management applet's enable
+     flags, so the record's *Applications* column reads `—`. The step is attempted rather
+     than skipped, and will fail there if that application really is disabled. To fill the
+     column in, read the key with the `ykman` transport (Settings → transport), which
+     reports the applications table.
 5. Run it *(Wave 1; today: **Record dry run**)*.
 5. **Distribution** — select the key and holder, set the delivery method, put the signed
    term's reference in *Receipt*, leave *Attach the most recent bootstrap run* ticked, and
    **Record distribution**.
 6. Confirm the Distribution table shows the hand-over with what was applied.
 
-If the key status refuses to advance ("illegal status transition"), the key was never marked
-bootstrapped — that is the guard working, not a bug.
+A run that **completes** moves the key to *Bootstrapped* itself, so step 5 normally finds a
+key the lifecycle will hand over. If the hand-over is refused — *serial … is In stock — a
+key is handed over once a bootstrap run has completed on it* — nothing was recorded, and
+the key genuinely is not ready: either the run did not complete (a required step unmet is
+recorded as failed, with `bootstrap.incomplete` naming the steps), or the key was
+configured outside this tool. For the second case, **Inventory → mark bootstrapped**, then
+record the hand-over. That is the guard working, not a bug.
 
 ## Runbook: a key that is already configured
 
@@ -552,6 +619,13 @@ What to do:
 A changed PIV **management key** on its own is not treated as evidence and will not refuse
 the run: a fleet-management tool may have set it without the key ever having been
 bootstrapped.
+
+Neither is **PIV slot `f9`**. That is the attestation slot, and Yubico programmes a
+certificate into it on every key at manufacture — it is not cleared by a reset and this
+tool never writes it. The applet description still shows it, because it is genuinely on
+the card, but a refusal that counted it would refuse every key ever made. If an older
+build refused your key with *PIV slot(s) f9 already hold a certificate*, that was this
+bug, and resetting the key would have changed nothing.
 
 If the refusal seems wrong, the pre-flight names the evidence it found — quote that line.
 An applet reported as *not read* is worth checking too: the refusal only speaks for the
@@ -698,24 +772,79 @@ and no hand-over is involved.
 1. **Distribution** → find the open record → **record return**.
 2. The key moves to `Returned`. It is **not** ready for reuse: the previous holder's
    certificate is still valid and their FIDO credentials are still on the key.
-3. Before reissuing: revoke the old certificate, reset the applets you are reusing, and
-   record it. (Automated in
-   [`../features/key-lifecycle-and-revocation.md`](../features/key-lifecycle-and-revocation.md);
-   until then, do it manually and note it.)
+3. Before reissuing: reset the applets and revoke the old certificate. The tool now enforces
+   the first half and tracks the second — see *Runbook: reissuing a key to somebody else*.
 
 ## Runbook: a key is lost or stolen
 
-Treat it as a possible credential compromise, not an inventory problem.
+Treat it as a possible credential compromise, not an inventory problem. One panel does all
+of it: **Inventory** → the row → **Lifecycle…**.
 
-1. **Inventory → mark lost.** Record when and who reported it.
-2. Find what was on it: **Distribution** → the record → its bootstrap run. That tells you the
-   certificate to revoke and the credentials to remove.
-3. **Revoke the PIV certificate** at the issuing CA with reason `keyCompromise`.
-4. **Remove the FIDO2 credential(s)** from the relying party.
-5. Check for other dependencies: SSH authorised keys, a challenge-response slot used to
-   unlock something.
-6. **Report to the ESI.** A possible credential compromise is an incident under NRM §5.4.4.
-7. Keep the record. A lost key is never deleted from the inventory.
+1. **Report lost or stolen…** Choose which of the two it was, the date it happened (today if
+   you leave it empty), who told you, and what they said. Recording it moves the key to
+   *Lost*; a report with nobody's name on it is refused, because a register does not assert a
+   loss on its own authority.
+2. **Read *What this key was carrying*.** The panel has already worked it out from the
+   bootstrap runs: the certificate serial in slot 9c, each resident credential with its
+   relying party, whether an OTP access code went out, and where the secrets went. Anything
+   somebody has to act on says **outstanding**.
+3. **Revoke the PIV certificate** at the CA that issued it, with reason `keyCompromise` —
+   the only reason that invalidates signatures made before the revocation date, which is
+   what a key somebody else may be holding calls for. Then **record…** on that row, with the
+   CA's reference. The tool cannot revoke it for you: the issuer is your CA, not this
+   application.
+4. **Remove the FIDO2 credential(s)** at the relying party, using the credential id the
+   panel shows — that is what the relying party stores — and record it the same way.
+5. **Check by hand what the register cannot know**: a service the holder registered the key
+   with directly, a disk or password manager the key unlocked, an SSH authorised key derived
+   from a PIV slot. The incident note lists these as a *Check by hand* section rather than
+   pretending to be exhaustive.
+6. **Report to the ESI.** *note for the ESI…* on the incident row assembles it: what
+   happened, what was on the key, what has been dealt with and when, and what is still owed.
+   Copy it, or save it as text or a PDF. Set the address once in **Settings** → *report
+   incidents to*, and it appears on every note. Sending it — and any deadline — is your
+   unit's process; the tool records that the note was produced, not that it was sent. A
+   possible credential compromise is an incident under NRM §5.4.4.
+7. **Close the incident** when nothing is outstanding. If something is being left undone
+   deliberately, write why in the closing note: the register will not close over a gap
+   silently, and the trail records how many items were still open when it closed.
+8. Keep the record. A lost key is never deleted from the inventory.
+
+If the key turns up: **record return** takes it to *Returned*, and it cannot be reissued
+until it is sanitised — see the next runbook.
+
+## Runbook: reissuing a key to somebody else
+
+A returned key is not reusable, and the tool refuses to pretend otherwise: putting it back
+into stock, or preparing it for a new holder, is refused while it still carries what a
+bootstrap put on it. The refusal names the applets.
+
+1. **Factory reset it** — *Attached now* → **factory reset…** (see the runbook above). The
+   reset records the sanitisation itself, for the applets that actually answered: one that
+   refused is not recorded as clean, and the gate stays closed for it.
+2. **Or, if it was reset elsewhere** — with `ykman` on a bench, say — **Lifecycle…** →
+   *Record a reset done elsewhere…*, tick the applets and say how you know. That records
+   your word rather than the tool's observation, and the audit entry says so
+   (`source=operator`).
+3. **Revoke the previous holder's certificate** if that has not been done. A reset destroys
+   the private key; it does not tell the CA. The panel keeps listing the certificate as
+   outstanding until the revocation is recorded.
+4. Then the key moves back to *In stock* and can be bootstrapped for the new holder.
+
+## Runbook: a faulty key going back to the supplier
+
+**Inventory** → the row → **Lifecycle…** → *Send to the supplier (RMA)…*
+
+1. Record the supplier's **case reference** — required, because an RMA nobody can quote is
+   an RMA nobody can chase — and what is wrong with it.
+2. The key keeps its history and its row. "Where is serial 20423633?" has an answer while it
+   is away.
+3. When the replacement arrives, **record it in the inventory first** (read it from the
+   hardware, so its serial is verified), then type its serial into the case and **link
+   replacement**. A case cannot point at a serial the register does not know.
+4. If nothing comes back, **close, no replacement** with a note. Then retire the original —
+   retirement keeps the record, and a retired key's certificate must be revoked if it was
+   not already.
 
 ## Runbook: backup
 
