@@ -1,6 +1,6 @@
 # Data model
 
-Schema **v3**, tracked in `PRAGMA user_version`. One SQLite file holds everything.
+Schema **v6**, tracked in `PRAGMA user_version`. One SQLite file holds everything.
 Source of truth: `SCHEMA_V1` in [`src/store/mod.rs`](../src/store/mod.rs).
 
 Conventions:
@@ -216,6 +216,87 @@ deployment: a path breaks the moment the file moves to a share. The consequence 
 signed term is personal data inside the database — is covered in
 [security-and-compliance.md](security-and-compliance.md).
 
+## `key_incidents` — a key reported lost or stolen (v6)
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | TEXT PK | UUID |
+| `key_serial` | INTEGER | Which key. Not a foreign key to `keys(id)`: the report is about a serial, and it outlives an inventory row |
+| `kind` | TEXT | `lost` \| `stolen`. Two kinds because they are not the same event — one may turn up, the other is evidence of intent — and they revoke the same credentials for different reasons |
+| `reported_at` | TEXT | When it happened, typed by the operator: a loss is reported after the fact |
+| `reported_by` | TEXT | Who said so — the holder, their manager, a security desk. **Required** |
+| `holder_display` | TEXT | The holder as the register knew them, copied so the report still reads after a holder row is edited |
+| `circumstances` | TEXT | What happened, in the reporter's terms. Bounded by `domain::MAX_NOTE`, and **never quoted into the audit trail** — the entry counts the characters, because an entry cannot be corrected and this is a field that gets corrected |
+| `recorded_at`, `recorded_by` | TEXT | When the register was told, and by which operator |
+| `closed_at` | TEXT NULL | Set when every obligation has been met, or deliberately waived |
+| `closing_note` | TEXT | On what basis it was closed. The one thing that makes a waiver visible rather than quiet |
+
+One row per report: a key can be lost, recovered and lost again, and flattening that into
+columns on `keys` would overwrite the first report with the second. `Store::report_incident`
+writes the row **and** moves the key to `lost` in one transaction, asking the lifecycle
+first — so the register can never hold a report for a key whose status contradicts it.
+
+Index: `idx_incidents_serial`.
+
+## `key_remediations` — and what was done about it (v6)
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | TEXT PK | UUID |
+| `key_serial` | INTEGER | Which key |
+| `incident_id` | TEXT NULL → `key_incidents(id)` | Nullable: a sanitisation before reissue answers no incident |
+| `kind` | TEXT | `certificate-revoked` \| `credential-removed` \| `sanitised` |
+| `subject` | TEXT | What was dealt with: a certificate serial, a credential id, or the applets joined by `+` (`fido2+piv+otp`) — the same spelling the reset's own audit entries use |
+| `reference` | TEXT | The CA's revocation reference, the relying party's ticket, or how an operator knows an applet was reset. What lets somebody else check the claim |
+| `reason` | TEXT | For a revocation, the RFC 5280 reason (`keyCompromise`, …). Empty for the other kinds |
+| `recorded_at`, `recorded_by` | TEXT | |
+| `detail` | TEXT | Free text; for a credential removal it carries `rp=<relying party>` |
+
+One table for three kinds because they share one shape — *this specific thing has been dealt
+with, elsewhere, and here is the reference* — and because "everything that has been done to
+this key" is then one query rather than a union of three.
+
+**Two of the three are records of work done in another system**, and that is the design
+rather than a gap: a certificate is revoked at the CA that issued it and a credential is
+removed at the relying party that holds it. See
+[`../features/key-lifecycle-and-revocation.md`](../features/key-lifecycle-and-revocation.md).
+
+`sanitised` rows are what the **reissue gate** reads: `Store::set_key_status` refuses to put
+a key back into stock, or to prepare it for a new holder, unless every applet a run wrote to
+has a sanitisation recorded *after* that run.
+
+Index: `idx_remediations_serial` on `(key_serial, kind)`.
+
+## `key_rma` — a key sent back to the supplier (v6)
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | TEXT PK | UUID |
+| `key_serial` | INTEGER | The faulty key; refused unless it is in the inventory |
+| `reference` | TEXT | The supplier's case number. **Required** — an RMA nobody can quote is an RMA nobody can chase |
+| `sent_at`, `sent_by` | TEXT | |
+| `fault` | TEXT | What is wrong with it |
+| `replacement_serial` | INTEGER NULL | The key that replaced it. Must already be in the inventory: a case pointing at a serial nobody recorded is the broken reference `delete_key` exists to prevent |
+| `replaced_at` | TEXT NULL | |
+| `closed_at` | TEXT NULL | Closed with **no** replacement — a refusal, a refund, a write-off |
+| `notes` | TEXT | |
+
+The replacement is a *link*, not a copy: the new key keeps its own inventory row, its own
+hand-overs and its own runs. An answered case is answered — neither a second replacement nor
+a closure may overwrite one.
+
+Index: `idx_rma_serial`.
+
+### What is deliberately *not* a table
+
+**What a key was carrying.** The certificate serial, the credential ids and their relying
+parties, the OTP access code and where custody of the secrets went are read back out of
+`bootstrap_run_steps.detail` by `domain::lifecycle::dependencies`, which is where every
+other piece of run evidence lives (`bootstrap::credential_evidence`,
+`bootstrap::certificate_request`). Two reasons, and the second is the stronger one: a stored
+list would be a second truth about what a run did, and it would be empty for every register
+written before v6 — derived, a register created under v1 answers in full.
+
 ## `audit` — the trail
 
 | Column | Type | Notes |
@@ -263,11 +344,14 @@ Shipped so far:
 | v3 | optional holder fields, `term_templates`, `documents` |
 | v4 | `templates.retired_at` — a procedure can be withdrawn without being deleted |
 | v5 | `bootstrap_run_steps` — per-step rows; drops `bootstrap_runs.steps` |
+| v6 | `key_incidents`, `key_remediations`, `key_rma` — what happens to a key after the hand-over |
 
 A test builds a v1 database by hand — including a run whose steps are a JSON blob
 in serde's old spelling — and opens it with the current build, asserting the chain
-carries it to v5 with every step intact and in order
-(`a_v1_database_migrates_forward_keeping_its_rows`).
+carries it to the current version with every step intact and in order
+(`a_v1_database_migrates_forward_keeping_its_rows`). The same test asserts what v6 needs no
+backfill for: the dependency list is derived, so that v1 run's FIDO2 PIN is what the
+sanitisation gate reports as outstanding without a single row having been migrated.
 
 v5's backfill runs in **Rust, not SQL**: mapping `Fido2Pin` to `fido2-pin` in SQL
 would be a twelve-branch `CASE` hand-kept in step with `StepKind::slug`, and the
@@ -275,7 +359,10 @@ first divergence would be silent. A blob that cannot be parsed leaves that run
 with no step rows and an `error` log line, rather than refusing to open the
 register — covered by `a_run_with_an_unreadable_step_blob_keeps_its_record`.
 
-Planned: **v6** — a `batches` table for bulk enrolment.
+v6 adds three tables and alters nothing, which is why it is a single `execute_batch` with
+no backfill: the facts it holds are ones nobody was recording before.
+
+Planned: **v7** — a `batches` table for bulk enrolment.
 
 ## Personal data summary
 
@@ -286,6 +373,10 @@ Planned: **v6** — a `batches` table for bulk enrolment.
 | `distributions` | `holder_display` (name + e-mail), `distributed_by`, `returned_to` | Ordinary personal data |
 | `bootstrap_runs` | `operator`, `holder_id` | Ordinary personal data (identifier) |
 | `documents` | `content` — a signed term carries a name, an identification number and a **signature** | Personal data in document form |
+| `key_incidents` | `reported_by`, `holder_display`, `circumstances` — who reported a loss, whose key it was, and what happened | Ordinary personal data. The circumstances are the operator's free text about an event involving a person, so they are bounded, never audited verbatim, and never a place for anything else |
+| `key_remediations` | `recorded_by`; a credential id and a certificate serial identify a *key*, not a person, but they are linked to one through the run | Ordinary personal data (identifier) |
+| `key_rma` | `sent_by` | Ordinary personal data |
+| *(not a table)* the incident note | The holder's name, e-mail and unit, and what was on their key, rendered as text or PDF for the ESI | Personal data in document form — and **not stored**: it is produced on demand from the rows above, because the register already holds the facts and nothing signs a note. A saved copy is a file the operator chose the location of |
 | `audit` | `actor`, `target`, `details` may name a person | Ordinary personal data |
 | *(not a table)* `<database>.lock` | `operator`, `host`, `pid` — who currently has a cloud-hosted database open ([`../features/cloud-sync-hosting.md`](../features/cloud-sync-hosting.md)) | Ordinary personal data, deleted when the database is closed |
 

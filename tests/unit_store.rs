@@ -3,7 +3,7 @@
 
 use yk_dist_manager::device::DeviceInfo;
 use yk_dist_manager::domain::{
-    DeliveryMethod, DistributionRecord, Holder, KeyStatus, YubiKeyRecord,
+    BootstrapRun, DeliveryMethod, DistributionRecord, Holder, KeyStatus, YubiKeyRecord,
 };
 use yk_dist_manager::store::{
     Location, SCHEMA_VERSION, Store, StoreConfig, StoreError, delivery_from, delivery_str,
@@ -454,6 +454,22 @@ fn a_v1_database_migrates_forward_keeping_its_rows() {
     );
     assert_eq!(runs[0].custody, "sealed-envelope");
 
+    // v6's tables arrived, and the lifecycle reads through them without a
+    // backfill: what a key was carrying is derived from the run that put it there,
+    // so a register written under v1 answers the question in full.
+    assert!(store.incidents_for(20_423_633).unwrap().is_empty());
+    assert!(store.remediations_for(20_423_633).unwrap().is_empty());
+    assert!(store.rma_cases_for(20_423_633).unwrap().is_empty());
+    assert_eq!(
+        store
+            .sanitisation_for(20_423_633)
+            .unwrap()
+            .outstanding
+            .len(),
+        1,
+        "the v1 run set a FIDO2 PIN, so that applet is what a reissue would need reset"
+    );
+
     // And the step rows are now queryable as rows, which is the point of v5.
     let tally = store.step_outcome_tally().unwrap();
     assert_eq!(
@@ -696,4 +712,208 @@ fn history_counts_report_what_refers_to_a_serial() {
     );
     store.insert_run(&run).unwrap();
     assert_eq!(store.key_history_counts(20_423_633).unwrap(), (0, 1));
+}
+
+// ------------------------------------------------------------------ lifecycle
+//
+// The refusals that protect a reissue (`features/key-lifecycle-and-revocation.md`
+// phases 6 and 8). The workflow itself is a behaviour test
+// (`behaviour_key_lifecycle.rs`); these are the edges.
+
+/// A run that wrote to one applet, so a key has something to be sanitised of.
+fn run_writing(serial: u32, kind: yk_dist_manager::domain::StepKind) -> BootstrapRun {
+    use yk_dist_manager::domain::{StepOutcome, StepStatus};
+
+    let mut step = StepOutcome::planned(kind.slug(), kind, "written");
+    step.status = StepStatus::Done;
+    step.finished_at = Some(chrono::Utc::now());
+    let mut run = BootstrapRun::new(serial, None, "org-standard", "2", "felipe", vec![step]);
+    run.settle();
+    run
+}
+
+#[test]
+fn a_key_carrying_a_previous_holders_credentials_cannot_go_back_into_stock() {
+    use yk_dist_manager::device::reset::Applet;
+    use yk_dist_manager::domain::{Remediation, StepKind};
+
+    let store = Store::open_in_memory().unwrap();
+    store.upsert_key(&key(20_423_633)).unwrap();
+    store
+        .insert_run(&run_writing(20_423_633, StepKind::PivCertImport))
+        .unwrap();
+    store
+        .set_key_status(20_423_633, KeyStatus::Bootstrapped)
+        .unwrap();
+    store
+        .set_key_status(20_423_633, KeyStatus::Distributed)
+        .unwrap();
+    store
+        .set_key_status(20_423_633, KeyStatus::Returned)
+        .unwrap();
+
+    // Coming back is never refused — the register must be able to record what has
+    // happened to a key. Going back out is.
+    match store.set_key_status(20_423_633, KeyStatus::Bootstrapped) {
+        Err(StoreError::NotSanitised { serial, reason }) => {
+            assert_eq!(serial, 20_423_633);
+            assert!(reason.contains("PIV"), "the applet is named: {reason}");
+        }
+        other => panic!("expected NotSanitised, got {other:?}"),
+    }
+    assert_eq!(
+        store.key_by_serial(20_423_633).unwrap().unwrap().status,
+        KeyStatus::Returned,
+        "a refused transition changes nothing"
+    );
+
+    // Retiring it is not a reissue, so it is allowed even unsanitised: a key going
+    // out of service is a fact, and refusing to record a fact would be the register
+    // tidying up its own history.
+    let sanitised =
+        Remediation::sanitised(20_423_633, &[Applet::Piv], "bench reset", "felipe", "").unwrap();
+    store.insert_remediation(&sanitised).unwrap();
+    store
+        .set_key_status(20_423_633, KeyStatus::Bootstrapped)
+        .expect("a sanitised key may be prepared again");
+}
+
+#[test]
+fn a_key_nothing_was_ever_written_to_needs_no_sanitisation() {
+    let store = Store::open_in_memory().unwrap();
+    store.upsert_key(&key(7)).unwrap();
+    assert!(store.sanitisation_for(7).unwrap().is_clear());
+    // In stock → bootstrapped is the bootstrap itself, and is never gated: the run
+    // that writes the credentials is what moves the key.
+    store.set_key_status(7, KeyStatus::Bootstrapped).unwrap();
+    store.set_key_status(7, KeyStatus::Distributed).unwrap();
+    store.set_key_status(7, KeyStatus::Returned).unwrap();
+    store
+        .set_key_status(7, KeyStatus::InStock)
+        .expect("nothing was applied, so there is nothing to be clean of");
+}
+
+#[test]
+fn an_incident_is_refused_for_a_key_the_lifecycle_will_not_move() {
+    use yk_dist_manager::domain::{IncidentKind, KeyIncident};
+
+    let store = Store::open_in_memory().unwrap();
+    store.upsert_key(&key(7)).unwrap();
+    store.set_key_status(7, KeyStatus::Retired).unwrap();
+
+    let incident = KeyIncident::new(
+        7,
+        IncidentKind::Lost,
+        chrono::Utc::now(),
+        "Ana",
+        "Ana",
+        "",
+        "felipe",
+    )
+    .unwrap();
+    match store.report_incident(&incident) {
+        Err(StoreError::Transition { from, to }) => {
+            assert_eq!(from, "Retired");
+            assert_eq!(to, "Lost / stolen");
+        }
+        other => panic!("expected Transition, got {other:?}"),
+    }
+    assert!(
+        store.incidents_for(7).unwrap().is_empty(),
+        "the report is not written when the status change is refused — the two are one operation"
+    );
+
+    // And an unknown serial is a refusal rather than an orphan report.
+    let orphan = KeyIncident::new(
+        999,
+        IncidentKind::Lost,
+        chrono::Utc::now(),
+        "Ana",
+        "",
+        "",
+        "felipe",
+    )
+    .unwrap();
+    assert!(matches!(
+        store.report_incident(&orphan),
+        Err(StoreError::NotFound(_))
+    ));
+}
+
+#[test]
+fn an_incident_closes_once_and_only_once() {
+    use yk_dist_manager::domain::{IncidentKind, KeyIncident};
+
+    let store = Store::open_in_memory().unwrap();
+    store.upsert_key(&key(7)).unwrap();
+    let incident = KeyIncident::new(
+        7,
+        IncidentKind::Stolen,
+        chrono::Utc::now(),
+        "Ana",
+        "Ana",
+        "taken",
+        "felipe",
+    )
+    .unwrap();
+    store.report_incident(&incident).unwrap();
+    assert_eq!(store.open_incidents().unwrap().len(), 1);
+
+    let closed = store
+        .close_incident(incident.id, "nothing was on it")
+        .unwrap();
+    assert!(closed.closed_at.is_some());
+    assert_eq!(closed.closing_note, "nothing was on it");
+    assert!(store.open_incidents().unwrap().is_empty());
+    assert!(
+        matches!(
+            store.close_incident(incident.id, "again"),
+            Err(StoreError::NotFound(_))
+        ),
+        "a closed incident is not closed a second time, which would rewrite when it closed"
+    );
+}
+
+#[test]
+fn an_rma_replacement_has_to_be_a_key_the_register_knows() {
+    use yk_dist_manager::domain::RmaCase;
+
+    let store = Store::open_in_memory().unwrap();
+    store.upsert_key(&key(7)).unwrap();
+    let case = RmaCase::open(7, "RMA-1", "dead", chrono::Utc::now(), "felipe").unwrap();
+    store.insert_rma(&case).unwrap();
+
+    // A serial nobody recorded would be a reference to nothing — the same broken
+    // link `delete_key` refuses to create.
+    assert!(matches!(
+        store.link_rma_replacement(case.id, 8),
+        Err(StoreError::NotFound(_))
+    ));
+    // And a key cannot replace itself.
+    assert!(matches!(
+        store.link_rma_replacement(case.id, 7),
+        Err(StoreError::NotFound(_))
+    ));
+
+    store.upsert_key(&key(8)).unwrap();
+    let linked = store.link_rma_replacement(case.id, 8).unwrap();
+    assert_eq!(linked.replacement_serial, Some(8));
+    assert!(linked.replaced_at.is_some());
+
+    // Once a replacement is linked the case is answered: neither a second
+    // replacement nor a "closed, nothing came back" may overwrite it.
+    assert!(store.link_rma_replacement(case.id, 8).is_err());
+    assert!(store.close_rma(case.id, "no replacement").is_err());
+}
+
+#[test]
+fn a_case_for_a_key_that_is_not_in_the_register_is_refused() {
+    use yk_dist_manager::domain::RmaCase;
+
+    let store = Store::open_in_memory().unwrap();
+    let case = RmaCase::open(999, "RMA-1", "dead", chrono::Utc::now(), "felipe").unwrap();
+    assert!(matches!(
+        store.insert_rma(&case),
+        Err(StoreError::NotFound(_))
+    ));
 }

@@ -47,6 +47,7 @@
 | `template` | Templates, variable rendering, the editable draft, and turning a template into a plan | Execute anything, hold a secret value |
 | `versioning` | One answer to "what number does the next edit get?", shared by templates and terms | Know what is being versioned |
 | `pdf` | Setting a monospaced document on A4 pages and writing the PDF: encoding, wrapping, pagination, the cross-reference table | Decide what a document *says* — it is handed lines, and it reads no clock |
+| `incident` | The note that goes to the ESI when a key is lost or stolen: what happened, what the key was carrying, what has been dealt with, what is still owed | Store anything, send anything, or read the clock — it is handed the records and the instant |
 | `store` | The SQLite file: schema, migrations, pragmas, CRUD, audit insertion | Contain business rules that belong in `domain` |
 | `store::cloud` | Making a database in a sync folder (OneDrive, Dropbox, …) strictly sequential: the settle wait, the `<database>.lock` single-writer lock, conflict-copy detection | Pretend to be a distributed lock, or hold anything secret |
 | `store::smb` | Reaching an SMB share: parsing a location, the identity to present, connecting and releasing (`WNetAddConnection2W`, `NetFSMountURLSync`), and reporting a local path | Open a database — it hands back a path and a `StoreConfig`, and `Store` never learns what SMB is. Keep a password anywhere but a zeroed-on-drop `Secret`, or put one in an argument vector |
@@ -202,10 +203,11 @@ single-user desktop app over one file; none of them would pay for themselves.
 
 ## Where the boundaries will be tested next
 
-- **The executor** (Wave 1) needs write traits per applet, so it can be tested against
-  mocks. It belongs in a new `bootstrap` module, not in `app` — `app` should call it, not
-  contain it.
-- **Per-step run rows** (schema v2) will move `BootstrapRun.steps` out of a JSON blob, so
-  reports can query step outcomes.
+- **The executor** needs write traits per applet, so it can be tested against mocks. It
+  belongs in a new `bootstrap` module, not in `app` — `app` should call it, not contain it.
+  *(Built in Wave 1: `bootstrap::execute`, `device::write`.)*
+- **Per-step run rows** will move `BootstrapRun.steps` out of a JSON blob, so reports can
+  query step outcomes. *(Done as schema v5 — the note said "v2", which was the version it
+  was expected to land in and not the one it did.)*
 - **Operator authentication** turns `app.operator` from a string into an identity, and the
   enforcement points belong in `store`, not `ui`, so a UI bug cannot bypass a role check.

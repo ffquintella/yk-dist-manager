@@ -29,9 +29,9 @@ deployment.
 
 | State | Count |
 |---|---|
-| Done | 33 |
-| In progress | 2 |
-| Todo | 8 |
+| Done | 35 |
+| In progress | 1 |
+| Todo | 7 |
 | **Total tracked items** | **43** (across 38 specs — some specs carry more than one item) |
 
 > Counted from the tables below rather than adjusted by hand, because they had drifted
@@ -47,7 +47,30 @@ deployment.
 > its own wave-0 phases finished. See
 > [Wave 0 is closed](#wave-0-is-closed).
 
-Released: **v0.11.0**. **Wave 1 is closed** (2026-08-14). Current wave: **Wave 2 — operations at scale.**
+Released: **v0.14.0**. **Wave 1 is closed** (2026-08-14). Current wave: **Wave 2 — operations at scale.**
+
+> Two rows moved on 2026-08-14, and one of them changed count twice: **key lifecycle &
+> revocation** finished (`[/]` → `[x]`), and **CI & coverage gate** was `[ ]` for a workflow
+> file that has been enforcing the gate since it was written — the same work testing strategy
+> already recorded as done. That is the third time this file has held a status somebody would
+> have had to read the code to disbelieve, which is why every count here is derived by the
+> command above rather than adjusted by hand.
+
+**Out of turn, unreleased**: the rest of **packaging & release** —
+[`features/packaging-and-release.md`](features/packaging-and-release.md) phases 0b, 2, 5, 6,
+7 and 8 — which is **Wave 3**, taken while Wave 2 is the current wave. The reason, since
+AGENTS.md §1 asks for it here and in the same commit: the operator who will run the tool
+asked for the work in progress to be finished, and packaging was one of the two rows carrying
+`[/]`. It is also the row whose *absence* is felt by somebody who is not a developer — every
+install of this tool so far has been `make run` from a source checkout, which the norm does
+not permit for an installed build. So a tag now produces a verified artefact per platform, a
+build says which commit it came from, and the release notes carry the schema warning that
+makes `SchemaTooNew` a usable refusal rather than a surprise on a share. What it does **not**
+do is sign for distribution: a Developer ID and an Authenticode certificate are procurement
+with a long lead time, and the workflow has the signing step waiting behind a secret. The
+`block` 0.1.6 blocker went with it, since it gates every artefact — resolved by a four-line
+patched copy in [`vendor/block`](vendor/block/README.md), with the three alternatives and the
+way back written down beside it.
 
 **Out of turn, unreleased**: a **way out of a live single-writer lock**, and the refusal
 card an operator meets at **startup** — [`features/cloud-sync-hosting.md`](features/cloud-sync-hosting.md)
@@ -75,11 +98,14 @@ a key with a message naming the reset. That refusal named a way forward the appl
 did not have — the operator was sent to a command line for the one action the tool insists
 on. So Wave 1's refusal now has its exit, and it is one action rather than a wave: per
 applet, previewed with what it destroys *and* what this key was read to hold, confirmed by
-typing the serial back, and recorded per applet in the audit chain. What it deliberately
-does **not** do is the rest of Wave 2 — a reset does not revoke the certificate that was
-on the key (phase 3), does not remove the credential at the relying party (phase 4) and
-does not gate reassignment (phase 6). No schema change. Reset *authority* — one operator
-or two — remains an ESI question, listed in the spec.
+typing the serial back, and recorded per applet in the audit chain. No schema change. Reset
+*authority* — one operator or two — remains an ESI question, listed in the spec.
+
+> What this note said it deliberately left undone — the revocation (phase 3), the credential
+> removal (phase 4) and the reissue gate (phase 6) — **is done as of 2026-08-14**, with the
+> rest of that spec. A reset still revokes nothing: what it does now is leave the certificate
+> it destroyed on the list of things outstanding until somebody revokes it at the CA, and
+> clear the reissue gate for the applets it actually answered for.
 
 **Out of turn, unreleased**: the **power cycle in front of a FIDO2 reset** — the same
 spec's phase 5a, added at the request of the operator who will run the tool, after the
@@ -172,9 +198,9 @@ of the job: choosing or creating the database file, recording serials from a bar
 generating the consignment term in the holder's language, and filing the signed copy
 against the hand-over — and, from the Terms screen, editing that term's wording per
 language. The Templates screen now does the same for the bootstrap procedure itself.
-**890 tests** pass with the default features and **895** with `--all-features` (plus 7
-ignored: the read-only hardware tests and the `openssl` interop ones), with **85.04%**
-(region 85.76%) line coverage of the headless core — enforced by CI against a floor of
+**913 tests** pass with the default features and **918** with `--all-features` (plus 7
+ignored: the read-only hardware tests and the `openssl` interop ones), with **86.11%**
+(region 85.23%) line coverage of the headless core — enforced by CI against a floor of
 80% rather than reported. The register can also
 be opened from the unit's **SMB share**, connected by the application itself, and its
 password can be set, changed or removed from Settings.
@@ -429,7 +455,7 @@ Everything needed before a single byte is written to a key.
 | `[x]` | Native device transport | [spec](features/native-device-transport.md) — `yubikey` over PC/SC reads serial + firmware from a real key today (verified against 5 NFC / fw 5.4.3, agrees with `ykman`). FIDO2 and OTP transports are Wave 1, and so is the selection that makes any of them reachable — see the Wave 1 row. |
 | `[x]` | `ykman` fallback + parsers | [spec](features/ykman-fallback.md) — argv-only subprocess, typed errors, parsers unit-tested against recorded output of ykman 5.9.2. |
 | `[x]` | Device detection | [spec](features/device-detection.md) — read-on-demand, plus a **background watch** that notices a key being plugged in or pulled out (identifying only when the set of serials changes; 1.5s natively, 4s when every poll is a subprocess, and only while a screen that needs it is open) and a **picker** for when several are attached. Nothing is ever chosen for the operator, and the watch is stopped — thread joined — before a run writes to a key. Per-applet reads, the "already bootstrapped" warning and attestation are Wave 1. |
-| `[x]` | Single-file SQLite storage | [spec](features/storage-sqlite-single-file.md) — schema **v5** (per-step run rows), `user_version` migrations (v1→v5 tested), WAL locally / rollback journal on a share, `VACUUM INTO` backup **on a schedule with rotation**, `integrity_check`, **CSV import** of the spreadsheet this replaces, and the SMB share connected by the application itself. Every wave-0 phase done. Concurrency is Wave 2; archival and retention (phase 7, gating no wave) has its decision — one year, configurable — and needs the archive-then-remove path that may break and rebuild the audit trigger. |
+| `[x]` | Single-file SQLite storage | [spec](features/storage-sqlite-single-file.md) — schema **v6** (the lifecycle's three tables, on top of v5's per-step run rows), `user_version` migrations (v1→v6 tested), WAL locally / rollback journal on a share, `VACUUM INTO` backup **on a schedule with rotation**, `integrity_check`, **CSV import** of the spreadsheet this replaces, and the SMB share connected by the application itself. Every wave-0 phase done. Concurrency is Wave 2; archival and retention (phase 7, gating no wave) has its decision — one year, configurable — and needs the archive-then-remove path that may break and rebuild the audit trigger. |
 | `[x]` | SMB share hosting | [spec](features/smb-share-hosting.md) — the application connects the share itself: the signed-in user (the default, and the whole mechanism on Windows), guest, or a named account whose password is typed and never stored. `WNetAddConnection2W` / `NetFSMountURLSync`, never a command line. An already-mounted share is used and left alone; one this session made is released on close and on quit. A share that **drops mid-session** is noticed within five seconds, the register is abandoned rather than closed, an identity that needs no password is retried at once, and the way back is one button — `db.share.reconnected` records the round trip. Kerberos on macOS gates no wave. |
 | `[x]` | Cloud-sync hosting (OneDrive) | [spec](features/cloud-sync-hosting.md) — `Location::CloudSync`: waits for the sync client, takes `<database>.lock`, refuses a second workstation by name, releases after the upload, reports sync conflict copies, **snapshots the register at open** before this session can write, and offers a **read-only** open so a second operator can look without taking the lock. A refusal is a card wherever it is met, including at startup, and a **live** lock can be taken over behind a deliberate tick — audited as live. Every phase done. Whether the location is *acceptable* is an ESI decision, not this feature's. |
 | `[x]` | Choosing / creating the database file | [spec](features/database-selection.md) — strict `open_existing` vs `create_new` (a typo can no longer create an empty database), recent-database list, native dialogs, switch from Settings. |
@@ -445,7 +471,7 @@ Everything needed before a single byte is written to a key.
 | `[x]` | GUI shell | [spec](features/gui-shell.md) — eight screens, unlock screen, status bar, egui 0.36 `App::ui`, themed with `egui-elegance` (four palettes, the choice persisted) and laid out fluidly (one gutter, full-width cards, columns that split the page, tables that contain their own overflow). Search, sortable columns, window-state persistence, keyboard flow, hardware-write confirmation, the log panel and the accessibility pass are all done — every wave-0 phase. Localisation (phase 9) is closed as not needed: the interface is English (2026-08-12). |
 | `[x]` | Bootstrap wizard | [spec](features/gui-bootstrap-wizard.md) — selection (the newest version of each template in use), per-step opt-out, plan review, dry run, and a link to the Templates screen — the whole of wave 0. The live run view, the secret panels and the pre-flight checks landed with the executor in 0.7.1; resume and the post-run summary are Wave 1, batch mode Wave 2. |
 | `[x]` | Application icon | [spec](features/application-icon.md) — one SVG (a box truck carrying a YubiKey), `make icons` rendering the PNGs, the macOS `.icns` and the RGBA blob the binary embeds; window, dock and bundle icons done, plus **three placements in the application** (top bar, database chooser, About box) and an **About box** on the version badge carrying the copyable `--diagnose` report. A Windows `.ico` resource and a Linux `hicolor` install are **Wave 3**, with the packaging they attach to. |
-| `[x]` | Testing strategy | [spec](features/testing-strategy.md) — **890 tests** (895 with `--all-features`) across unit + behaviour suites, a mock device backend and a mock share connector, recorded fixtures, and tests ignored by default for what needs hardware or `openssl`; **85.04%** core line coverage. **CI enforces the gate** on every push, with a macOS/Windows/Linux build matrix. **Property tests** for the audit chain and the RFC 4514 escaper, each verified by breaking the code it covers. Mock write transports and the secret-leak sweep are done. |
+| `[x]` | Testing strategy | [spec](features/testing-strategy.md) — **913 tests** (918 with `--all-features`) across unit + behaviour suites, a mock device backend and a mock share connector, recorded fixtures, and tests ignored by default for what needs hardware or `openssl`; **86.11%** core line coverage. **CI enforces the gate** on every push, with a macOS/Windows/Linux build matrix. **Property tests** for the audit chain and the RFC 4514 escaper, each verified by breaking the code it covers. Mock write transports and the secret-leak sweep are done. |
 
 ### Paperwork
 
@@ -476,7 +502,7 @@ The point of the tool: apply the template to a key, safely, with evidence.
 
 | Status | Feature | Notes |
 |---|---|---|
-| `[/]` | Key lifecycle & revocation | [spec](features/key-lifecycle-and-revocation.md) — lost/stolen handling, certificate revocation, applet reset, re-issue to a new holder. **Phases 5 and 5a, the factory reset, are done and landed out of turn** (see below): any plugged key can be returned to factory default per applet from *Attached now*, previewed, confirmed by typing the serial, and recorded per applet — and a FIDO2 reset is now walked through the power cycle CTAP requires, the tool watching the port and firing the run as the key comes back. The rest of the wave is untouched — a reset does not yet revoke the certificate that was on the key. |
+| `[x]` | Key lifecycle & revocation | [spec](features/key-lifecycle-and-revocation.md) — **every phase is done.** The loss report (2) records who said so and when, moves the key to `Lost` in the same operation, and produces the **dependency list** — the certificate serial, the credential ids and their relying parties, the OTP access code, the custody — *derived from the run's step details*, so a register written under schema v1 answers in full. The revocation (3) and the credential removal (4) are **recorded rather than performed**, by the same decision that made the operator the issuer on 2026-08-13: both happen in somebody else's system, and what the register holds is the reason, the reference and the refusal to close an incident over a gap silently. The **reissue gate** (6) refuses to put a key back into stock while it still carries what a bootstrap wrote — per applet, by time, cleared by a reset's own *outcomes* — and the **incident note** (7) is what goes to the ESI, naming its own blind spot rather than reading as exhaustive. **RMA tracking** (8) links a replacement that must already be in the inventory. Phases 5 and 5a, the factory reset and its power cycle, landed out of turn earlier (see below). Schema **v6**: three tables, nothing altered. What a reset still does not do is revoke — nothing here can, and that is the gap named in `docs/security-and-compliance.md` §8. |
 | `[ ]` | Reports & export | [spec](features/reports-and-export.md) — inventory and distribution reports, CSV/JSON export, audit export for the ESI. |
 | `[ ]` | Bulk enrolment | [spec](features/bulk-enrollment.md) — queue of keys for one template, batch progress, per-key evidence. |
 | `[ ]` | Operator authentication & roles | [spec](features/operator-auth-and-roles.md) — operator identity is currently `$USER`, which is not authentication. Roles (admin / distributor / auditor), AD integration, MFA with a YubiKey on sensitive operations. |
@@ -488,9 +514,9 @@ The point of the tool: apply the template to a key, safely, with evidence.
 |---|---|---|
 | `[ ]` | OpenPGP signing subkey | [spec](features/step-openpgp-signing-subkey.md) — **not the chosen mechanism** (PIV 9c is, decided 2026-08-10). Kept specified for a unit that signs Git commits or `gpg` mail; unscheduled. |
 | `[ ]` | SSH authentication via PIV | [spec](features/ssh-authentication.md) — slot 9a plus PKCS#11 for SSH, for units that want it. |
-| `[/]` | Packaging & release | [spec](features/packaging-and-release.md) — the **macOS bundle is done** (`make bundle` / `verify-bundle` / `dmg`), which is what makes camera scanning work there. Developer ID signing + notarisation, Windows, Linux and CI remain, as does the `block` 0.1.6 resolution. |
+| `[/]` | Packaging & release | [spec](features/packaging-and-release.md) — **every phase except two code-signing certificates is done.** A tag builds macOS, Linux and Windows from a fresh checkout, each artefact is verified by asking the binary about itself (`--diagnose`), and the results land on a **draft** release whose notes carry the schema upgrade warning when `SCHEMA_VERSION` moved. A build now says **which commit it came from**, and a build that cannot — or that came from a dirty tree — fails the verifiers. Linux ships a tarball and a `.deb` with the udev rule, the `.desktop` entry and install notes. The **`block` 0.1.6 blocker is resolved**, by a four-line patched copy in [`vendor/block`](vendor/block/README.md). What is left is **procurement**: a Developer ID (phase 3b) and an Authenticode certificate (phase 4). The signing step is already in the workflow, guarded by whether the secret exists. |
 | `[ ]` | Compliance artefacts | [spec](features/compliance.md) — classification proposal, system registration, data documentation, change/homologation records. |
-| `[ ]` | CI & coverage gate | [spec](features/testing-strategy.md) — fmt + clippy + tests + `cargo llvm-cov` with an 80% floor, enforced on every push. |
+| `[x]` | CI & coverage gate | [spec](features/testing-strategy.md) — fmt + clippy + tests + `cargo llvm-cov` with an 80% floor, **enforced on every push** by [`ci.yml`](.github/workflows/ci.yml), with a macOS/Windows/Linux build matrix beside it. This row was `[ ]` while the same work was recorded as done under testing strategy (phases 5 and 10) — the drift is corrected here rather than left as a second opinion about one workflow file. It does not run the hardware tests: a hosted runner has no reader and no USB key. |
 
 ---
 
@@ -757,6 +783,9 @@ with the date and the reason.
 
 | Date | Decision | Rationale |
 |---|---|---|
+| 2026-08-14 | After an incident the register **records** the revocation and the credential removal; it does not perform them | Same shape as the CA decision of 2026-08-13, and forced by the same fact: the certificate is revoked at whichever CA issued it and the credential is removed at a relying party somebody else runs, so the mode that always works is the one to build. What that makes load-bearing is the *list*: nobody remembers a certificate serial or a credential id the morning after a key goes missing, and both are already in the run record. So the tool derives what was on the key, says what is outstanding, holds the reason and the reference that make each claim checkable, and refuses to close an incident over a gap without a note saying why. Automating either is an automation of this path (`ca-integration` phases 3–5) rather than the missing half of it |
+| 2026-08-14 | A key may not be **reissued** until every applet a run wrote to has a factory reset on record — per applet, and by time | The decision of 2026-08-13 says a configured key is only ever returned to factory default, and until now nothing enforced the *other* end of that: a returned key could go back into stock carrying the previous holder's certificate in slot 9c and their resident credentials, and the next procedure would prepare it for somebody else. Per applet because a key is often returned for one of them, and by time because counting resets would let one from last year clear a key bootstrapped last week. What clears it is the reset's own **outcomes**, not what the operator ticked: an applet that refused is not clean, and pretending otherwise would put the register's word behind a claim the transport did not make. A bench reset can be recorded by hand, and the trail says whose word it is (`source=operator`) |
+| 2026-08-14 | `block` 0.1.6 is fixed by a **patched copy in this repository**, not by dropping the camera | Four routes, three unavailable: no upstream fix (no release since 2020, and `block2` is not API-compatible with what `nokhwa` calls), a native AVFoundation capture path is weeks of platform code to replace a dependency that works, and making `camera` opt-in again reverses a decision made on 2026-08-10 for a reason that still holds — an operator should not need a special build to point a webcam at a box label. The fourth is what cargo's own warning recommends for a dependency whose maintainer cannot be waited on, and the change is four lines: an `extern` static of an uninhabited type becomes one of a zero-sized inhabited type. Kept honest by being kept small and documented — `vendor/block/README.md` carries the diff, the reasoning and the two-step revert, and nothing in this project's own code refers to `block` |
 | 2026-08-13 | **A completed bootstrap run is what makes a key `Bootstrapped`** — not the operator remembering a button | The lifecycle's first arrow had nobody to perform it, so the register could say *In stock* about a key that had just had a PIN, a policy and a certificate written to it. The register saying something the hardware contradicts is the failure this tool exists to prevent, and the alternative — asking the operator to mark it — is a step whose omission is invisible until a hand-over is refused hours later. `Completed` is the threshold because the engine already draws that line: a run with a required step unmet is `Failed` and audited `bootstrap.incomplete`, "the key is not ready to hand over". A run never overrules `lost`, `retired` or `distributed`; *mark bootstrapped* stays for a key configured outside the tool |
 | 2026-08-13 | The PIV management key is handled by **this tool's own AES exchange**, not by the crate and not by `ykman` | The recommendation on the table was the `ykman` fallback for this one step, and it was overtaken by measurement: `yubikey` 0.8 cannot authenticate to a 5.7 management slot at all, because its `MgmKey` is a 3DES type and 5.7 removed 3DES. The exchange is two APDUs and it is now written, read the slot's real algorithm, and mutually authenticated — so the alternative cost of a PIN on a command line and a Python dependency buys nothing. The scope stays one exchange plus the two writes that need it (`GENERATE`, `PUT DATA`): PIN, PUK, signing and attestation were measured working through the crate and stay there |
 | 2026-08-13 | The tool **asks the operator for the certificate**; there is no CA integration | The issuer differs per deployment and is somebody else's system, so the mode that always works is the one to build first: the run produces a request, whoever runs the deployment has it signed however they do that, and the certificate comes back through the wizard. This closes the question that had the import step skipping on every run. It also makes the checks on that certificate load-bearing, because it arrives by hand: it must parse, its public key must be the key in the slot, and it must carry the holder's address — all before the write. An internal pilot CA, BastionVault or an enterprise CA are automations of this path and stay open as later phases |

@@ -127,6 +127,13 @@ pub fn declares_camera_usage() -> bool {
 #[derive(Debug, Clone)]
 pub struct Report {
     pub version: &'static str,
+    /// The commit this build came from, or `unknown`
+    /// (`features/packaging-and-release.md` phase 2).
+    ///
+    /// The field a support request most needs and least often has: two operators
+    /// running "0.13.0" may be running different code, and the answer to "is this
+    /// the build we released?" is this line rather than the version above it.
+    pub commit: &'static str,
     pub executable: String,
     pub bundled: bool,
     pub plist: Option<String>,
@@ -174,6 +181,7 @@ impl Report {
 
         Self {
             version: crate::VERSION,
+            commit: crate::COMMIT,
             executable: std::env::current_exe()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|_| "(unknown)".into()),
@@ -230,6 +238,7 @@ impl Report {
         let mut out = String::new();
         let _ = writeln!(out, "yk-dist-manager {}", self.version);
         let _ = writeln!(out);
+        let _ = writeln!(out, "commit:            {}", self.commit);
         let _ = writeln!(out, "executable:        {}", self.executable);
         let _ = writeln!(out, "features:          {}", self.features.join(", "));
         let _ = writeln!(out);
@@ -383,6 +392,7 @@ mod tests {
     fn report() -> Report {
         Report {
             version: "0.0.0-test",
+            commit: "0123456789ab",
             executable: "/Applications/Test.app/Contents/MacOS/test".into(),
             bundled: true,
             plist: Some("/Applications/Test.app/Contents/Info.plist".into()),
@@ -585,6 +595,24 @@ mod tests {
         // And a real gather decides something rather than leaving it blank — this is
         // the field an operator is asked to paste.
         assert!(!Report::gather().transport.trim().is_empty());
+    }
+
+    #[test]
+    fn the_report_names_the_commit_this_build_came_from() {
+        let rendered = report().render();
+        assert!(
+            rendered.contains("commit:            0123456789ab"),
+            "a support report has to identify the build, not just the version: {rendered}"
+        );
+
+        // And a real build answers it: either a commit or the word `unknown`, never
+        // an empty field somebody has to interpret.
+        let gathered = Report::gather();
+        assert!(!gathered.commit.trim().is_empty());
+        assert!(
+            crate::build_id().starts_with(crate::VERSION),
+            "the build id opens with the version, so it reads as one thing"
+        );
     }
 
     #[test]

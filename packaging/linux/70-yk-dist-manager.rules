@@ -1,0 +1,36 @@
+# udev rules for yk-dist-manager (features/packaging-and-release.md phase 5).
+#
+# Two device paths need permission, and they are not the same path:
+#
+#   * PC/SC (PIV) reaches the key through `pcscd`, which runs as root and needs
+#     no rule of its own — what it needs is to be *running*. The tool talks to
+#     the daemon, not to the device.
+#   * USB HID (FIDO2 and the OTP slots) is opened directly by this process, so
+#     the device node has to be readable and writable by the operator's session.
+#     Without that, `ctap-hid-fido2` and `hidapi` report "no device" on a key
+#     that is plugged in — a permission problem that looks exactly like a broken
+#     cable.
+#
+# The mechanism is `uaccess`, which hands the device to whoever is logged in at
+# the seat, rather than a group everybody has to be added to. That is the modern
+# way and it is also the safer one: no permanent group membership, and no access
+# for a service account nobody is sitting at.
+#
+# Install as /usr/lib/udev/rules.d/70-yk-dist-manager.rules (a distribution
+# package) or /etc/udev/rules.d/ (by hand), then:
+#
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#
+# If the system already has Yubico's own rules (`libu2f-udev`, or
+# `70-u2f.rules` from a recent systemd), this file is redundant and harmless:
+# udev applies every matching rule.
+
+ACTION!="add|change", GOTO="ykdm_end"
+
+# Every YubiKey model Yubico ships, by vendor id. Named rather than wildcarded so
+# it is reviewable, and matched on the HID interfaces only — the CCID interface
+# belongs to pcscd.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1050", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1050", TAG+="uaccess"
+
+LABEL="ykdm_end"

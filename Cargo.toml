@@ -1,6 +1,6 @@
 [package]
 name = "yk-dist-manager"
-version = "0.13.0"
+version = "0.14.0"
 edition = "2024"
 description = "YubiKey distribution and bootstrap manager (egui desktop app)"
 license = "MIT"
@@ -181,3 +181,23 @@ tempfile = "3"
 # escaper (`features/testing-strategy.md` phase 9). A dev-dependency, so it is in
 # no shipped binary.
 proptest = { version = "1", default-features = false, features = ["std"] }
+
+# ---------------------------------------------------------------------------
+# The `block` 0.1.6 chain (features/packaging-and-release.md phase 0b).
+#
+# `camera` is a default feature, so every artefact this project ships pulls
+# `nokhwa` → `nokhwa-bindings-macos` → **`block` 0.1.6**, which cargo reports as
+# containing code a future rustc will reject: it declares an `extern` static of an
+# uninhabited type (rust-lang/rust#74840). NRM §5.4.3 makes that a blocker for a
+# *distributed* build rather than a warning to live with — an artefact on somebody's
+# workstation that a toolchain update stops being able to rebuild is a supply
+# problem, not a lint.
+#
+# `block` has had no release since 2020, so the fix is a patched copy: four lines,
+# marked `PATCHED` in `vendor/block/src/lib.rs`, replacing the uninhabited type
+# with a zero-sized inhabited one. `vendor/block/README.md` records what changed,
+# why the three other ways out were not taken, how to verify the claim, and how to
+# revert. This is cargo's own advice for a dependency whose maintainer cannot be
+# waited on.
+[patch.crates-io]
+block = { path = "vendor/block" }

@@ -54,6 +54,25 @@ IDENTIFIER="$(plist_value CFBundleIdentifier)"
 [[ -n "$IDENTIFIER" ]] || fail "CFBundleIdentifier is missing"
 pass "bundle identifier: $IDENTIFIER"
 
+# The copyright line is the one plist string that can quietly acquire an
+# institution's name: the build carries none (roadmap decision, 2026-08-11), so
+# unless a unit states its own with YKDM_COPYRIGHT the bundle must say what
+# LICENSE says and nothing else. A warning locally, where the bundle may have
+# been built in a shell that had YKDM_COPYRIGHT set, and a failure for a release,
+# where the build and this check share one environment.
+COPYRIGHT="$(plist_value NSHumanReadableCopyright)"
+LICENSE_COPYRIGHT="$(sed -n 's/^\(Copyright (c) .*\)$/\1/p' LICENSE 2>/dev/null | head -1)"
+EXPECTED_COPYRIGHT="${YKDM_COPYRIGHT:-${LICENSE_COPYRIGHT:-MIT licensed — see LICENSE}}"
+[[ -n "$COPYRIGHT" ]] || fail "NSHumanReadableCopyright is missing"
+if [[ "$COPYRIGHT" != "$EXPECTED_COPYRIGHT" ]]; then
+	if [[ "${YKDM_VERIFY_RELEASE:-0}" == "1" ]]; then
+		fail "copyright drift: the plist says '$COPYRIGHT', this tree says '$EXPECTED_COPYRIGHT'"
+	fi
+	echo "  warn  copyright: plist says '$COPYRIGHT', this tree says '$EXPECTED_COPYRIGHT'"
+else
+	pass "copyright: $COPYRIGHT"
+fi
+
 EXECUTABLE="$(plist_value CFBundleExecutable)"
 [[ -x "$APP/Contents/MacOS/$EXECUTABLE" ]] || fail "CFBundleExecutable '$EXECUTABLE' is not there"
 pass "executable matches the plist"
@@ -83,6 +102,25 @@ pass "the binary sees itself as bundled"
 grep -q "^camera usage key:  yes" <<<"$REPORT" ||
 	fail "the binary cannot find NSCameraUsageDescription in its own bundle"
 pass "the binary can read its usage description"
+
+# Which commit this bundle was built from (features/packaging-and-release.md
+# phase 2). A warning locally — a developer's build is legitimately dirty — and a
+# failure when YKDM_VERIFY_RELEASE=1, which is what the release workflow sets:
+# the norm requires every installed build to come from a tag, and a bundle that
+# cannot name its commit cannot show that it does.
+COMMIT="$(grep '^commit:' <<<"$REPORT" | sed 's/^commit: *//')"
+[[ -n "$COMMIT" ]] || fail "the binary reports no commit"
+case "$COMMIT" in
+unknown | *-dirty)
+	if [[ "${YKDM_VERIFY_RELEASE:-0}" == "1" ]]; then
+		fail "this bundle reports commit '$COMMIT', so it cannot be traced to a tag"
+	fi
+	echo "  warn  commit $COMMIT — fine for a local build, never for one that is installed"
+	;;
+*)
+	pass "built from commit $COMMIT"
+	;;
+esac
 
 VERDICT="$(grep '^camera scanning:' <<<"$REPORT" | sed 's/^camera scanning: *//')"
 case "$VERDICT" in

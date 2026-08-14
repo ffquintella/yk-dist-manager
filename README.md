@@ -145,13 +145,14 @@ cargo run --features native-device,encrypted-db
 | `file-dialog` | **on** | Native open/save dialogs (`rfd`) |
 | `camera` | **on** | Live camera capture (`nokhwa`), implies `barcode` |
 | `barcode` | on (via `camera`) | Decoding a barcode from an image (`rxing`) |
-| `native-piv` / `native-fido` / `native-otp` / `native-device` | off | Talking to the key from Rust |
+| `native-piv` / `native-fido` / `native-otp` / `native-device` | **on** | Talking to the key from Rust (default since 0.12.0; `device::select` demotes to `ykman` when no reader answers) |
 | `encrypted-db` | off | SQLCipher password on the database (vendors OpenSSL) |
 
-Camera scanning is on by default, which carries two obligations before a build is
-*distributed*: a macOS bundle must declare `NSCameraUsageDescription`, and
-`nokhwa`'s macOS bindings currently pull `block` 0.1.6, which cargo reports as
-future-incompatible. Both are tracked in
+Camera scanning is on by default, which carried two obligations before a build could be
+*distributed*, and both are now met: a macOS bundle declares `NSCameraUsageDescription`
+(and `make verify-bundle` fails without it), and `block` 0.1.6 — which `nokhwa`'s macOS
+bindings pull, and which cargo reports as future-incompatible — is fixed by a four-line
+patched copy in [`vendor/block`](vendor/block/README.md). See
 [`features/serial-scanning.md`](features/serial-scanning.md) and
 [`features/packaging-and-release.md`](features/packaging-and-release.md). For a build
 without any camera code:

@@ -21,6 +21,7 @@
 //! | [`secret`] | The secrets a bootstrap sets: generated, shown once, wiped |
 //! | [`term`] | Consignment terms: multilingual templates and rendering |
 //! | [`pdf`] | The PDF a term is printed and signed on, written without a dependency |
+//! | [`incident`] | The note that goes to the ESI when a key is lost or stolen |
 //! | [`versioning`] | "What number does the next edit get?", shared by both |
 //! | [`diagnostics`] | `--diagnose`: what this build is and what it can reach |
 //! | [`audit`] | Append-only, hash-chained audit trail |
@@ -41,6 +42,7 @@ pub mod device;
 pub mod diagnostics;
 pub mod domain;
 pub mod envelope;
+pub mod incident;
 pub mod logbuf;
 pub mod logging;
 pub mod password;
@@ -62,3 +64,25 @@ pub use app::YkDistApp;
 
 /// Crate version, surfaced in the GUI status bar and in audit entries.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The commit this binary was built from — `<short id>`, `<short id>-dirty`, or
+/// `unknown` (`features/packaging-and-release.md` phase 2).
+///
+/// Set by [`build.rs`](../../../build.rs). The version alone cannot identify a
+/// build: the norm requires every installed build to come from a tag, and
+/// `0.13.0` says the same thing whether it was built from the tag, from a branch,
+/// or from a tree with uncommitted changes. This is what tells those apart in a
+/// support report and in the About box.
+pub const COMMIT: &str = env!("YKDM_COMMIT");
+
+/// `0.13.0 (a1b2c3d4e5f6)` — the version as a build is identified.
+pub fn build_id() -> String {
+    if COMMIT == "unknown" {
+        // Honest rather than tidy: a build nobody can trace to a commit is a build
+        // that should not be installed anywhere, and hiding the fact would make it
+        // look like every other one.
+        format!("{VERSION} (commit unknown)")
+    } else {
+        format!("{VERSION} ({COMMIT})")
+    }
+}

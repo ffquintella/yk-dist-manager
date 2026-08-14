@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::audit::AuditEntry;
 use crate::device::{DeviceInfo, YubiKeyBackend};
+use crate::domain::lifecycle::Dependency;
 use crate::domain::{
     BootstrapRun, DeliveryMethod, DistributionRecord, Holder, KeyStatus, StepOutcome, StepStatus,
     YubiKeyRecord,
@@ -447,6 +448,90 @@ pub struct InventoryPanel {
     pub error: Option<String>,
 }
 
+/// What has happened to one key since it was handed over, and the forms that
+/// record the next thing (`features/key-lifecycle-and-revocation.md` phases 2, 3,
+/// 4, 6, 7 and 8).
+///
+/// Read once when the panel is opened and after every write, rather than every
+/// frame: an incident is answered over hours, the panel is open while somebody
+/// works through a list, and re-reading five tables sixty times a second to paint
+/// the same sentences would make an operator's screen the busiest reader of a
+/// register that may be on a share.
+pub struct LifecyclePanel {
+    /// Serial the panel is about. `None` while it is closed.
+    pub serial: Option<u32>,
+
+    /// The loss report being drafted, and the fields it needs.
+    pub report_open: bool,
+    pub report_kind: crate::domain::IncidentKind,
+    /// `YYYY-MM-DD`, empty meaning today
+    /// ([`crate::domain::lifecycle::parse_report_date`]).
+    pub report_date: String,
+    pub reported_by: String,
+    pub circumstances: String,
+
+    /// The dependency whose remediation is being recorded — the subject, because
+    /// that is what identifies it in the list and in the record.
+    pub settling: Option<Dependency>,
+    pub revocation_reason: crate::domain::RevocationReason,
+    pub reference: String,
+    pub detail: String,
+
+    /// The applets an operator is claiming were reset outside this tool.
+    pub sanitised_applets: Vec<crate::device::reset::Applet>,
+    pub sanitised_open: bool,
+
+    /// The RMA forms: one to send, one to link what came back.
+    pub rma_open: bool,
+    pub rma_reference: String,
+    pub rma_fault: String,
+    pub rma_replacement: String,
+
+    /// The incident note, once produced, and which incident it is about.
+    pub note: Option<(uuid::Uuid, String)>,
+
+    /// What the register says right now, reloaded after each write.
+    pub incidents: Vec<crate::domain::KeyIncident>,
+    pub remediations: Vec<crate::domain::Remediation>,
+    pub dependencies: Vec<Dependency>,
+    pub rma: Vec<crate::domain::RmaCase>,
+    pub sanitisation: crate::domain::Sanitisation,
+
+    pub error: Option<String>,
+    pub notice: Option<String>,
+}
+
+impl Default for LifecyclePanel {
+    fn default() -> Self {
+        Self {
+            serial: None,
+            report_open: false,
+            report_kind: crate::domain::IncidentKind::Lost,
+            report_date: String::new(),
+            reported_by: String::new(),
+            circumstances: String::new(),
+            settling: None,
+            revocation_reason: crate::domain::RevocationReason::KeyCompromise,
+            reference: String::new(),
+            detail: String::new(),
+            sanitised_applets: Vec::new(),
+            sanitised_open: false,
+            rma_open: false,
+            rma_reference: String::new(),
+            rma_fault: String::new(),
+            rma_replacement: String::new(),
+            note: None,
+            incidents: Vec::new(),
+            remediations: Vec::new(),
+            dependencies: Vec::new(),
+            rma: Vec::new(),
+            sanitisation: crate::domain::Sanitisation::default(),
+            error: None,
+            notice: None,
+        }
+    }
+}
+
 /// The factory reset waiting for the operator to confirm it, and what it found
 /// (`features/key-lifecycle-and-revocation.md` phase 5).
 ///
@@ -842,6 +927,8 @@ pub struct YkDistApp {
     pub inventory: InventoryPanel,
     /// The factory reset waiting to be confirmed, and what it did.
     pub reset: ResetPanel,
+    /// What has happened to one key since the hand-over, and what is still owed.
+    pub lifecycle: LifecyclePanel,
     pub wizard: Wizard,
     pub template_editor: TemplateEditor,
     pub term_panel: TermPanel,
@@ -961,6 +1048,7 @@ impl YkDistApp {
             dist_form: DistForm::default(),
             inventory: InventoryPanel::default(),
             reset: ResetPanel::default(),
+            lifecycle: LifecyclePanel::default(),
             wizard: Wizard::default(),
             template_editor: TemplateEditor::default(),
             term_panel: TermPanel::default(),
@@ -2561,6 +2649,12 @@ impl YkDistApp {
                 };
                 tracing::warn!(event = "key.reset", serial, done, failed);
                 self.reset.outcomes = outcomes;
+                // What the reset achieved is also what clears the reissue gate
+                // (`features/key-lifecycle-and-revocation.md` phase 6): the
+                // applets it returned to factory default carry nothing of the
+                // previous holder's, and until that is on record the store will
+                // refuse to put this key back into stock.
+                self.record_reset_sanitisation(serial);
                 // Re-read, so the panel shows the key as it is now rather than as
                 // it was when the operator opened the panel. A reset that claims
                 // to have worked and a key that still holds a certificate is
@@ -2595,6 +2689,657 @@ impl YkDistApp {
             .filter(|run| run.key_serial == serial)
             .count();
         (distributions, runs)
+    }
+
+    // ------------------------------------------------------------- lifecycle
+    //
+    // What happens to a key after the hand-over
+    // (`features/key-lifecycle-and-revocation.md`). Every method here follows the
+    // same three rules the rest of this file does: the store refuses before
+    // anything is written, the refusal is shown rather than swallowed, and a write
+    // that succeeded is audited before the panel says so.
+
+    /// Open the lifecycle panel for one key, reading what the register holds.
+    pub fn open_key_lifecycle(&mut self, serial: u32) {
+        // One panel at a time on this screen: the other two are a destructive
+        // reset and a row deletion, and none of the three should be answerable
+        // while another is open.
+        self.inventory.note_serial = None;
+        self.inventory.pending_removal = None;
+        self.reset.serial = None;
+
+        let holder = self.holder_display_for(serial);
+        self.lifecycle = LifecyclePanel {
+            serial: Some(serial),
+            reported_by: holder,
+            ..LifecyclePanel::default()
+        };
+        self.reload_lifecycle();
+    }
+
+    pub fn close_key_lifecycle(&mut self) {
+        self.lifecycle = LifecyclePanel::default();
+    }
+
+    /// Re-read the five things the panel shows. Called on open and after a write.
+    fn reload_lifecycle(&mut self) {
+        let Some(serial) = self.lifecycle.serial else {
+            return;
+        };
+        let Some(store) = &self.store else {
+            self.lifecycle.error = Some("no database is open".into());
+            return;
+        };
+        let read = (|| {
+            Ok::<_, crate::store::StoreError>((
+                store.incidents_for(serial)?,
+                store.remediations_for(serial)?,
+                store.dependencies_for(serial)?,
+                store.rma_cases_for(serial)?,
+                store.sanitisation_for(serial)?,
+            ))
+        })();
+        match read {
+            Ok((incidents, remediations, dependencies, rma, sanitisation)) => {
+                self.lifecycle.incidents = incidents;
+                self.lifecycle.remediations = remediations;
+                self.lifecycle.dependencies = dependencies;
+                self.lifecycle.rma = rma;
+                self.lifecycle.sanitisation = sanitisation;
+            }
+            Err(e) => {
+                tracing::error!(event = "key.lifecycle.read.failed", serial, reason = %e);
+                self.lifecycle.error = Some(e.to_string());
+            }
+        }
+    }
+
+    /// The holder this key was last handed to, as the register named them.
+    ///
+    /// The hand-over is the source rather than the holder table, because the
+    /// question is *who had this key*, and a key handed over twice has had two
+    /// holders. Empty when it has never been handed over — a key lost from the
+    /// drawer is a real case, and inventing a holder for it would be worse than
+    /// saying nothing.
+    pub fn holder_display_for(&self, serial: u32) -> String {
+        self.distributions
+            .iter()
+            .filter(|record| record.key_serial == serial)
+            .max_by_key(|record| record.distributed_at)
+            .map(|record| record.holder_display.clone())
+            .unwrap_or_default()
+    }
+
+    /// The open incident for this key, if there is one.
+    pub fn open_incident(&self) -> Option<&crate::domain::KeyIncident> {
+        self.lifecycle.incidents.iter().find(|i| i.is_open())
+    }
+
+    /// Record a loss or theft, and move the key to `Lost`
+    /// (`features/key-lifecycle-and-revocation.md` phase 2).
+    ///
+    /// The report and the status change are one store operation, so a key can
+    /// never be `Lost` with nothing saying why, or carry a report while the
+    /// register still says it is in somebody's hands.
+    pub fn report_key_incident(&mut self) {
+        use crate::domain::KeyIncident;
+        use crate::domain::lifecycle::parse_report_date;
+
+        self.lifecycle.error = None;
+        self.lifecycle.notice = None;
+        let Some(serial) = self.lifecycle.serial else {
+            return;
+        };
+
+        let reported_at = match parse_report_date(&self.lifecycle.report_date, chrono::Utc::now()) {
+            Ok(at) => at,
+            Err(e) => {
+                self.lifecycle.error = Some(e);
+                return;
+            }
+        };
+        let holder = self.holder_display_for(serial);
+        let incident = match KeyIncident::new(
+            serial,
+            self.lifecycle.report_kind,
+            reported_at,
+            &self.lifecycle.reported_by,
+            &holder,
+            &self.lifecycle.circumstances,
+            &self.operator,
+        ) {
+            Ok(incident) => incident,
+            Err(e) => {
+                self.lifecycle.error = Some(e.to_string());
+                return;
+            }
+        };
+
+        let Some(store) = &self.store else {
+            self.lifecycle.error = Some("no database is open".into());
+            return;
+        };
+        if let Err(e) = store.report_incident(&incident) {
+            tracing::warn!(event = "key.incident.refused", serial, reason = %e);
+            self.lifecycle.error = Some(e.to_string());
+            return;
+        }
+
+        // One event for both kinds, with the kind in the detail: the trail is
+        // filtered by event name, and "show me the keys that went missing" is one
+        // question rather than two.
+        self.record(
+            "key.reported_lost",
+            &format!("serial:{serial}"),
+            &incident.audit_detail(),
+        );
+        // The certificate this key carried is the reason the reason field exists:
+        // a key nobody can produce is a compromised key until somebody says
+        // otherwise.
+        self.lifecycle.revocation_reason =
+            crate::domain::RevocationReason::for_incident(incident.kind);
+        self.status = format!(
+            "serial {serial} recorded as {} — {} still to deal with",
+            incident.kind.label().to_lowercase(),
+            crate::incident::summarise(&self.lifecycle.dependencies, &self.lifecycle.remediations)
+        );
+        self.lifecycle.report_open = false;
+        self.lifecycle.circumstances.clear();
+        self.lifecycle.report_date.clear();
+        self.reload_lifecycle();
+        self.refresh();
+    }
+
+    /// Start recording that one dependency has been dealt with.
+    pub fn settle_dependency(&mut self, dependency: &Dependency) {
+        self.lifecycle.error = None;
+        self.lifecycle.notice = None;
+        self.lifecycle.reference.clear();
+        self.lifecycle.detail.clear();
+        self.lifecycle.settling = Some(dependency.clone());
+    }
+
+    pub fn cancel_settling(&mut self) {
+        self.lifecycle.settling = None;
+        self.lifecycle.error = None;
+    }
+
+    /// Record the revocation or the removal the operator has just performed
+    /// elsewhere (phases 3 and 4).
+    ///
+    /// "Elsewhere" is the whole shape of this: the CA that issued the certificate
+    /// and the relying party that holds the credential are somebody else's
+    /// systems, so what this tool can do is know *what* has to be dealt with, and
+    /// hold the reference that proves it was. See
+    /// [`crate::domain::lifecycle`] for why that is the honest design rather than
+    /// a missing feature.
+    pub fn record_remediation(&mut self) {
+        use crate::domain::lifecycle::{DependencyKind, Remediation};
+
+        self.lifecycle.error = None;
+        let Some(serial) = self.lifecycle.serial else {
+            return;
+        };
+        let Some(dependency) = self.lifecycle.settling.clone() else {
+            return;
+        };
+        let incident = self.open_incident().map(|incident| incident.id);
+
+        let built = match dependency.kind {
+            DependencyKind::Certificate => Remediation::certificate_revoked(
+                serial,
+                incident,
+                &dependency.subject,
+                self.lifecycle.revocation_reason,
+                &self.lifecycle.reference,
+                &self.operator,
+                &self.lifecycle.detail,
+            ),
+            DependencyKind::Credential => Remediation::credential_removed(
+                serial,
+                incident,
+                &dependency.subject,
+                dependency
+                    .detail
+                    .trim_start_matches("relying party ")
+                    .trim(),
+                &self.lifecycle.reference,
+                &self.operator,
+            ),
+            // Neither is anybody's ticket, and the panel offers no button for
+            // them; reached only if one is ever added without this arm.
+            DependencyKind::OtpAccessCode | DependencyKind::Custody => {
+                self.lifecycle.error = Some(
+                    "this entry is recorded for information — there is nothing to close".into(),
+                );
+                return;
+            }
+        };
+        let remediation = match built {
+            Ok(remediation) => remediation,
+            Err(e) => {
+                self.lifecycle.error = Some(e.to_string());
+                return;
+            }
+        };
+
+        let Some(store) = &self.store else {
+            self.lifecycle.error = Some("no database is open".into());
+            return;
+        };
+        if let Err(e) = store.insert_remediation(&remediation) {
+            tracing::warn!(event = "key.remediation.refused", serial, reason = %e);
+            self.lifecycle.error = Some(e.to_string());
+            return;
+        }
+        self.record(
+            remediation.kind.audit_event(),
+            &format!("serial:{serial}"),
+            &remediation.audit_detail(),
+        );
+        self.status = format!("serial {serial}: {} recorded", remediation.kind.label());
+        self.lifecycle.settling = None;
+        self.lifecycle.reference.clear();
+        self.lifecycle.detail.clear();
+        self.reload_lifecycle();
+    }
+
+    /// Record that applets were returned to factory default **outside** this tool
+    /// (phase 6).
+    ///
+    /// The counterpart of *mark bootstrapped* on the same screen, and it exists
+    /// for the same reason: the register has to be able to say what is true about
+    /// a key somebody handled with `ykman` on a bench. The reference field is
+    /// where they say how they know — because this one claim, unlike a reset this
+    /// tool performed, rests entirely on the operator's word.
+    pub fn record_manual_sanitisation(&mut self) {
+        use crate::domain::lifecycle::Remediation;
+
+        self.lifecycle.error = None;
+        let Some(serial) = self.lifecycle.serial else {
+            return;
+        };
+        if self.lifecycle.sanitised_applets.is_empty() {
+            self.lifecycle.error =
+                Some("choose the applets that were reset — nothing was recorded".into());
+            return;
+        }
+
+        let applets = self.lifecycle.sanitised_applets.clone();
+        let remediation = match Remediation::sanitised(
+            serial,
+            &applets,
+            &self.lifecycle.reference,
+            &self.operator,
+            "recorded by the operator; this tool did not perform the reset",
+        ) {
+            Ok(remediation) => remediation,
+            Err(e) => {
+                self.lifecycle.error = Some(e.to_string());
+                return;
+            }
+        };
+
+        let Some(store) = &self.store else {
+            self.lifecycle.error = Some("no database is open".into());
+            return;
+        };
+        if let Err(e) = store.insert_remediation(&remediation) {
+            self.lifecycle.error = Some(e.to_string());
+            return;
+        }
+        self.record(
+            remediation.kind.audit_event(),
+            &format!("serial:{serial}"),
+            &format!("{} source=operator", remediation.audit_detail()),
+        );
+        self.status = format!(
+            "serial {serial}: {} recorded as sanitised",
+            crate::device::reset::describe(&applets)
+        );
+        self.lifecycle.sanitised_open = false;
+        self.lifecycle.sanitised_applets.clear();
+        self.lifecycle.reference.clear();
+        self.reload_lifecycle();
+    }
+
+    /// Record the sanitisation a reset this tool performed has just achieved.
+    ///
+    /// Called from [`Self::run_confirmed_reset`] rather than by the operator,
+    /// because the reset is the evidence: an applet the transport reported as
+    /// reset — or as already at factory default — is an applet nothing of the
+    /// previous holder's is on. A failed applet is not recorded, which is why this
+    /// reads the outcomes rather than the request.
+    ///
+    /// Public so a behaviour test can drive it from a set of outcomes: the reset
+    /// that produces them needs a plugged-in key, and the rule this enforces — a
+    /// reset is what clears the gate — is one no test should have to take on trust.
+    pub fn record_reset_sanitisation(&mut self, serial: u32) {
+        use crate::domain::lifecycle::{Remediation, cleared_by};
+
+        let cleared = cleared_by(&self.reset.outcomes);
+        if cleared.is_empty() {
+            return;
+        }
+        let Ok(remediation) = Remediation::sanitised(
+            serial,
+            &cleared,
+            "factory reset by this tool",
+            &self.operator,
+            "recorded from the reset's own outcomes",
+        ) else {
+            return;
+        };
+
+        let Some(store) = &self.store else { return };
+        match store.insert_remediation(&remediation) {
+            Ok(()) => {
+                let detail = remediation.audit_detail();
+                self.record(
+                    remediation.kind.audit_event(),
+                    &format!("serial:{serial}"),
+                    &format!("{detail} source=reset"),
+                );
+            }
+            Err(e) => {
+                // Loud, not silent: the key is clean and the register cannot say
+                // so, which is the state the reissue gate will refuse in.
+                tracing::error!(event = "key.sanitised.record.failed", serial, reason = %e);
+                self.reset.error = Some(format!(
+                    "the reset ran, and the register could not record the sanitisation: {e}. \
+                     Record it by hand from *Lifecycle…* before this key is reissued"
+                ));
+            }
+        }
+        if self.lifecycle.serial == Some(serial) {
+            self.reload_lifecycle();
+        }
+    }
+
+    /// Close an incident once nothing is outstanding — or say why it is being
+    /// closed anyway.
+    pub fn close_key_incident(&mut self, id: uuid::Uuid) {
+        self.lifecycle.error = None;
+        let Some(serial) = self.lifecycle.serial else {
+            return;
+        };
+        let settled =
+            crate::incident::is_settled(&self.lifecycle.dependencies, &self.lifecycle.remediations);
+        let note = self.lifecycle.detail.trim().to_owned();
+        if !settled && note.is_empty() {
+            self.lifecycle.error = Some(
+                "something on this key has not been dealt with. Record what was done — or write \
+                 in the note why it is being closed without it, so the gap is visible rather \
+                 than quiet"
+                    .into(),
+            );
+            return;
+        }
+
+        let Some(store) = &self.store else {
+            self.lifecycle.error = Some("no database is open".into());
+            return;
+        };
+        match store.close_incident(id, &note) {
+            Ok(incident) => {
+                self.record(
+                    "key.incident_closed",
+                    &format!("serial:{serial}"),
+                    &format!(
+                        "kind={} outstanding={} note_chars={}",
+                        incident.kind.audit_name(),
+                        crate::domain::lifecycle::outstanding(
+                            &self.lifecycle.dependencies,
+                            &self.lifecycle.remediations
+                        )
+                        .len(),
+                        note.chars().count()
+                    ),
+                );
+                self.status = format!("serial {serial}: incident closed");
+                self.lifecycle.detail.clear();
+                self.reload_lifecycle();
+            }
+            Err(e) => self.lifecycle.error = Some(e.to_string()),
+        }
+    }
+
+    /// Produce the incident note for the ESI (phase 7).
+    ///
+    /// Held in the panel so the operator can read it before it goes anywhere, and
+    /// audited as an export the moment it is produced: the note carries the
+    /// holder's name and what was on their key, so a copy leaving the tool is an
+    /// event the register should hold.
+    pub fn generate_incident_note(&mut self, id: uuid::Uuid) {
+        let Some(serial) = self.lifecycle.serial else {
+            return;
+        };
+        let Some(incident) = self
+            .lifecycle
+            .incidents
+            .iter()
+            .find(|incident| incident.id == id)
+            .cloned()
+        else {
+            return;
+        };
+
+        let key = self.keys.iter().find(|key| key.serial == serial).cloned();
+        let holder = self
+            .distributions
+            .iter()
+            .filter(|record| record.key_serial == serial)
+            .max_by_key(|record| record.distributed_at)
+            .and_then(|record| {
+                self.holders
+                    .iter()
+                    .find(|holder| holder.id == record.holder_id)
+            })
+            .cloned();
+
+        let request = crate::incident::NoteRequest {
+            incident: &incident,
+            key: key.as_ref(),
+            holder: holder.as_ref(),
+            dependencies: &self.lifecycle.dependencies,
+            remediations: &self.lifecycle.remediations,
+            organisation: &self.org,
+            prepared_by: &self.operator,
+            report_to: &self.settings.report_incidents_to,
+            prepared_at: chrono::Utc::now(),
+        };
+        let text = crate::incident::text(&request);
+        self.record(
+            "key.incident_note",
+            &format!("serial:{serial}"),
+            &format!(
+                "kind={} outstanding={} format=text",
+                incident.kind.audit_name(),
+                crate::domain::lifecycle::outstanding(
+                    &self.lifecycle.dependencies,
+                    &self.lifecycle.remediations
+                )
+                .len()
+            ),
+        );
+        self.lifecycle.note = Some((id, text));
+        self.status = format!("serial {serial}: incident note prepared");
+    }
+
+    /// Write the note the panel is showing to a file, as text or as a PDF.
+    pub fn save_incident_note(&mut self, as_pdf: bool) {
+        let Some(serial) = self.lifecycle.serial else {
+            return;
+        };
+        let Some((id, text)) = self.lifecycle.note.clone() else {
+            self.lifecycle.error = Some("prepare the note first".into());
+            return;
+        };
+        let Some(incident) = self
+            .lifecycle
+            .incidents
+            .iter()
+            .find(|incident| incident.id == id)
+            .cloned()
+        else {
+            return;
+        };
+
+        let (bytes, extension) = if as_pdf {
+            let key = self.keys.iter().find(|key| key.serial == serial).cloned();
+            let request = crate::incident::NoteRequest {
+                incident: &incident,
+                key: key.as_ref(),
+                holder: None,
+                dependencies: &self.lifecycle.dependencies,
+                remediations: &self.lifecycle.remediations,
+                organisation: &self.org,
+                prepared_by: &self.operator,
+                report_to: &self.settings.report_incidents_to,
+                prepared_at: chrono::Utc::now(),
+            };
+            (
+                crate::pdf::render(&crate::incident::document(&request)),
+                "pdf",
+            )
+        } else {
+            (text.into_bytes(), "txt")
+        };
+
+        let suggested = format!("{}.{extension}", crate::incident::filename(&incident));
+        if let Some(path) = self.save_bytes(&suggested, &bytes) {
+            self.record(
+                "key.incident_note",
+                &format!("serial:{serial}"),
+                &format!("format={extension} bytes={}", bytes.len()),
+            );
+            self.status = format!("incident note written to {}", path.display());
+            self.lifecycle.notice = Some(format!(
+                "written to {} — it names the holder and what was on their key, so treat it as \
+                 the record it is",
+                path.display()
+            ));
+        }
+    }
+
+    /// Send a key to the supplier, opening an RMA case (phase 8).
+    pub fn send_key_for_rma(&mut self) {
+        use crate::domain::RmaCase;
+
+        self.lifecycle.error = None;
+        let Some(serial) = self.lifecycle.serial else {
+            return;
+        };
+        let case = match RmaCase::open(
+            serial,
+            &self.lifecycle.rma_reference,
+            &self.lifecycle.rma_fault,
+            chrono::Utc::now(),
+            &self.operator,
+        ) {
+            Ok(case) => case,
+            Err(e) => {
+                self.lifecycle.error = Some(e.to_string());
+                return;
+            }
+        };
+
+        let Some(store) = &self.store else {
+            self.lifecycle.error = Some("no database is open".into());
+            return;
+        };
+        if let Err(e) = store.insert_rma(&case) {
+            self.lifecycle.error = Some(e.to_string());
+            return;
+        }
+        self.record(
+            "key.rma.sent",
+            &format!("serial:{serial}"),
+            &case.audit_detail(),
+        );
+        self.status = format!("serial {serial}: RMA {} opened", case.reference);
+        self.lifecycle.rma_open = false;
+        self.lifecycle.rma_reference.clear();
+        self.lifecycle.rma_fault.clear();
+        self.reload_lifecycle();
+    }
+
+    /// Link the replacement the supplier sent back.
+    pub fn record_rma_replacement(&mut self, id: uuid::Uuid) {
+        self.lifecycle.error = None;
+        let Some(serial) = self.lifecycle.serial else {
+            return;
+        };
+        let typed = self.lifecycle.rma_replacement.trim().to_owned();
+        let Ok(replacement) = typed.parse::<u32>() else {
+            self.lifecycle.error = Some(format!(
+                "`{typed}` is not a serial — type the replacement's number"
+            ));
+            return;
+        };
+
+        let Some(store) = &self.store else {
+            self.lifecycle.error = Some("no database is open".into());
+            return;
+        };
+        match store.link_rma_replacement(id, replacement) {
+            Ok(case) => {
+                self.record(
+                    "key.rma.replaced",
+                    &format!("serial:{serial}"),
+                    &case.audit_detail(),
+                );
+                self.status = format!(
+                    "serial {serial}: replaced by serial {replacement} under RMA {}",
+                    case.reference
+                );
+                self.lifecycle.rma_replacement.clear();
+                self.reload_lifecycle();
+            }
+            Err(e) => self.lifecycle.error = Some(e.to_string()),
+        }
+    }
+
+    /// Close an RMA that is not producing a replacement.
+    pub fn close_rma_case(&mut self, id: uuid::Uuid) {
+        self.lifecycle.error = None;
+        let Some(serial) = self.lifecycle.serial else {
+            return;
+        };
+        let note = self.lifecycle.rma_fault.trim().to_owned();
+        let Some(store) = &self.store else {
+            self.lifecycle.error = Some("no database is open".into());
+            return;
+        };
+        match store.close_rma(id, &note) {
+            Ok(case) => {
+                self.record(
+                    "key.rma.closed",
+                    &format!("serial:{serial}"),
+                    &format!(
+                        "{} note_chars={}",
+                        case.audit_detail(),
+                        note.chars().count()
+                    ),
+                );
+                self.status = format!("serial {serial}: RMA {} closed", case.reference);
+                self.lifecycle.rma_fault.clear();
+                self.reload_lifecycle();
+            }
+            Err(e) => self.lifecycle.error = Some(e.to_string()),
+        }
+    }
+
+    /// Tick or untick one applet on the manual sanitisation form.
+    pub fn toggle_sanitised_applet(&mut self, applet: crate::device::reset::Applet, wanted: bool) {
+        self.lifecycle.sanitised_applets.retain(|a| *a != applet);
+        if wanted {
+            self.lifecycle.sanitised_applets.push(applet);
+        }
+        self.lifecycle.sanitised_applets = crate::device::reset::Applet::ALL
+            .into_iter()
+            .filter(|a| self.lifecycle.sanitised_applets.contains(a))
+            .collect();
     }
 
     #[cfg(feature = "camera")]
@@ -5622,7 +6367,7 @@ impl YkDistApp {
 
         elegance::Modal::new("about", &mut open)
             .heading("YubiKey Distribution Manager")
-            .subtitle(format!("version {}", crate::VERSION))
+            .subtitle(format!("version {}", crate::build_id()))
             .max_width(620.0)
             .show(ui.ctx(), |ui| {
                 ui.vertical_centered(|ui| {
@@ -5706,7 +6451,10 @@ impl YkDistApp {
                             elegance::Badge::new(crate::VERSION, elegance::BadgeTone::Neutral)
                                 .preserve_case(),
                         )
-                        .on_hover_text("what this build is, and what it can reach — click")
+                        .on_hover_text(format!(
+                            "build {} — what this build is, and what it can reach. Click",
+                            crate::build_id()
+                        ))
                         .interact(egui::Sense::click())
                         .clicked()
                     {

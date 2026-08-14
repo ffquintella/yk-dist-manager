@@ -15,9 +15,87 @@ Maintenance instructions (see AGENTS.md §5):
 * A database schema change also bumps store::SCHEMA_VERSION and ships a migration.
 -->
 
-## [Unreleased]
+## [0.14.0] - 2026-08-14
 
 ### Added
+
+- **What happens to a key after the hand-over** — the whole of
+  `features/key-lifecycle-and-revocation.md` phases 2, 3, 4, 6, 7 and 8, reached from
+  *Lifecycle…* on any Inventory row. One panel, because during an incident these are one
+  job:
+
+  - **A loss is reported, not just marked.** Lost or stolen, when it happened, who said so
+    (required — a register does not assert a loss on its own authority) and what they said.
+    The report and the move to *Lost* are one store operation with the lifecycle asked
+    first, so a key can never be `Lost` with nothing saying why, or carry a report while the
+    register still says it is in somebody's hands. `key.reported_lost` records the kind, the
+    date and the reporter, and **counts** the circumstances rather than quoting them: an
+    audit entry cannot be corrected, and free text sometimes has to be.
+  - **What the key was carrying is worked out, not remembered** — the certificate serial in
+    slot 9c, each resident credential with its relying party, the OTP access code, and where
+    custody of the secrets went. Read back out of the bootstrap run's step details, which is
+    where every other piece of run evidence lives: a stored list would be a second truth
+    about what a run did, and would be empty for every register written before this release.
+    Derived, a register created under schema v1 answers in full.
+  - **Revocation and credential removal are recorded** with the RFC 5280 reason and the
+    reference that makes the claim checkable. They are not *performed*, and that is the same
+    decision that made the operator the issuer on 2026-08-13: the CA that signed the
+    certificate and the relying party that holds the credential are somebody else's systems.
+    A certificate serial matches however the CA's console spelled it — case, `0x`, colons.
+  - **A key cannot be reissued while it still carries the last holder's credentials.**
+    `Store::set_key_status` refuses it by name, per applet and by time: an applet is clear
+    when a reset covering it was recorded *after* the last run that wrote to it. A factory
+    reset records its own sanitisation from its **outcomes**, so an applet that refused is
+    not recorded as clean; a bench reset is recorded by hand and audited as the operator's
+    word (`source=operator`) rather than the tool's observation. `In stock → Bootstrapped`
+    is deliberately not gated — that move *is* the bootstrap.
+  - **The incident note for the ESI** ([`crate::incident`](src/incident.rs)) — text or PDF
+    from one rendering, so the copy on screen cannot disagree with the copy that is sent. It
+    **names its own blind spot** (a service the holder registered directly, a disk the key
+    unlocked, an SSH authorised key) instead of reading as exhaustive, is audited when it is
+    produced, and is deliberately not filed: the facts are already rows, and nothing signs
+    a note. Where it goes is a new setting; unset, the note says so rather than printing a
+    placeholder nobody can act on.
+  - **RMA tracking**: the supplier's case reference, the fault, and a replacement that must
+    already be in the inventory — a case pointing at a serial nobody recorded is the broken
+    reference `delete_key` exists to prevent. The replacement is a link, so the new key keeps
+    its own row and its own history.
+
+  Schema **v6** ships with the migration: `key_incidents`, `key_remediations`, `key_rma`.
+  Three tables, nothing altered, no backfill.
+
+- **A build says which commit it came from** (`features/packaging-and-release.md` phase 2):
+  [`build.rs`](build.rs) embeds it, and `--version`, `--diagnose`, the About box and the
+  Settings footer report `0.13.0 (a1b2c3d4e5f6)`. A version number cannot show that a build
+  came from a tag, which is what the norm requires — `0.13.0` says the same thing built from
+  the tag, from a branch, or from a tree with uncommitted changes. A dirty tree says
+  `-dirty`, no `git` says `unknown`, and both **fail** the artefact verifiers when
+  `YKDM_VERIFY_RELEASE=1`.
+
+- **Linux packages** (phase 5): [`packaging/linux/package.sh`](packaging/linux/package.sh)
+  builds a tarball (always) and a `.deb` (where `dpkg-deb` exists), carrying the binary, the
+  `hicolor` icons, a `.desktop` entry, the **udev rule** that makes FIDO2 and the OTP slots
+  reachable, and install notes that name `pcscd` — the copy that is there when somebody is
+  installing it. [`verify-package.sh`](packaging/linux/verify-package.sh) checks the layout,
+  the rule, the desktop entry and the declared dependencies, then runs the packaged binary
+  with `--diagnose`: the same interrogation the macOS verifier makes.
+
+- **A tagged release workflow** (phase 6):
+  [`release.yml`](.github/workflows/release.yml) re-runs the gate against the tag, builds
+  macOS, Linux and Windows from a fresh checkout, verifies each artefact and attaches them to
+  a **draft** release. Draft on purpose — a release of a tool that holds a token register
+  should not happen automatically at 03:00.
+
+- **The upgrade note writes itself** (phase 8):
+  [`scripts/release-notes.sh`](scripts/release-notes.sh) compares `store::SCHEMA_VERSION`
+  against the previous tag and appends the *upgrade every workstation together* warning when
+  it moved. `StoreError::SchemaTooNew` is only useful if the release notes said so, and that
+  sentence is exactly the one that gets left out. It also refuses to produce notes at all
+  when the changelog has no section for the version.
+
+- **Install and upgrade documentation per platform** (phase 7) in
+  [`docs/operations.md`](docs/operations.md), including what Gatekeeper and SmartScreen do to
+  an unsigned build and why upgrading a shared register is done on every workstation at once.
 
 - **The management applet is read natively** — form factor, **which applications are
   enabled**, and the FIPS state ([`device::mgmt`](src/device/mgmt.rs),
@@ -109,6 +187,38 @@ Maintenance instructions (see AGENTS.md §5):
   authenticator's own error (phase 2's remainder).
 
 ### Changed
+
+- **The coverage gate excludes `vendor/`.** `make coverage-core` measures the headless core
+  of *this* project, and cargo instruments a patched path dependency the way it does not
+  instrument a registry one — so `vendor/block` was being counted. It changed nothing
+  (86.11% either way), which is when to fix it rather than once it starts flattering the
+  total.
+
+- **The Inventory row's *mark lost* is now *Lifecycle…***. It set a status and recorded
+  nothing — no reporter, no date, and no list of the credentials that were still live — which
+  is the theatre `features/key-lifecycle-and-revocation.md` opens by warning about. The
+  status change now happens as part of a report that says who told you and when.
+
+- **The macOS bundle no longer carries an institution's name.**
+  `packaging/macos/bundle.sh` defaulted `NSHumanReadableCopyright` to one, which contradicts
+  the decision of 2026-08-11 — the application carries no organisation's name, because the
+  organisation is the operator's setting and it reaches a certificate subject. The default is
+  now the copyright line read out of `LICENSE`, the same single-source-of-truth discipline the
+  version gets from `Cargo.toml`, and `YKDM_COPYRIGHT` is still how a unit states its own.
+  `verify-bundle.sh` checks the plist against this tree: a warning locally, a failure for a
+  release, where the build and the check share one environment.
+
+- **`block` 0.1.6 no longer blocks a released artefact** (`features/packaging-and-release.md`
+  phase 0b). `camera` is a default feature, so every artefact carried a crate that cargo
+  reports as future-incompatible: it declares an `extern` static of an uninhabited type, and
+  NRM §5.4.3 makes that a blocker for a distributed build rather than a warning to live with.
+  There is no upstream fix — no release since 2020, and `block2` is not API-compatible with
+  what `nokhwa` calls — so the fix is the one cargo's own warning recommends: a patched copy
+  in [`vendor/block`](vendor/block/README.md), **four lines**, replacing the uninhabited type
+  with a zero-sized inhabited one. The directory records what changed, why the other three
+  routes (upstream, a native AVFoundation path, `camera` back to opt-in) were not taken, how
+  to verify the claim, and how to revert it. The two alternatives that remain open are the
+  owner's, not an implementer's.
 
 - **`PivState`'s three "still the factory default" answers are `Option<bool>`.**
   `GET METADATA` may say default, say changed, or not answer at all, and the two
@@ -216,6 +326,25 @@ Maintenance instructions (see AGENTS.md §5):
   continuations, so the source's indentation was part of the message. Same wording, now
   in one paragraph. (Nine other messages elsewhere in the tool have the same defect and
   are untouched here.)
+
+- **Every macOS bundle built without `YKDM_COPYRIGHT` carried an institution's name.**
+  `packaging/macos/bundle.sh` defaulted `NSHumanReadableCopyright` to one institution, so
+  the `Info.plist` of every `.app` assembled without that variable — including the one the
+  release workflow builds and attaches to a release — put back what v0.5.0 removed from the
+  rest of the build. Packaging is where that decision is easiest to lose: the name is a
+  build variable rather than a string in the source, so no test and no `grep` over `src/`
+  would ever have seen it.
+
+  The default is now the copyright line read out of `LICENSE` — true of this source, and
+  nobody's institution — obtained the way the version is obtained from `Cargo.toml`, so it
+  follows the licence rather than being restated beside it. `YKDM_COPYRIGHT` is unchanged
+  and is still how a unit states its own line. `verify-bundle.sh` now checks the bundled
+  line against what the tree says it should be: a warning locally, where a bundle may have
+  been built in a shell that had the variable set, and a **failure** under
+  `YKDM_VERIFY_RELEASE=1`, so a released artefact cannot carry a name nobody chose. The
+  Linux artefacts were checked at the same time and needed nothing — the `.deb` is
+  maintained by "yk-dist-manager maintainers", and the `.desktop` entry and the udev rule
+  name no vendor.
 
 ## [0.13.0] - 2026-08-13
 
@@ -1870,7 +1999,9 @@ become rows.
 - Uploaded filenames are treated as data: any directory component is stripped, so a
   name like `../../etc/passwd.pdf` cannot escape.
 
-[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.13.0...v0.14.0
+[0.13.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.9.0...v0.10.0

@@ -267,6 +267,16 @@ pub struct AppSettings {
     /// and in the audit trail (`template.unsigned_used`), and turning it on is a
     /// one-click decision once a unit has a key.
     pub templates_must_be_signed: bool,
+    /// Where a lost or stolen key is reported — the address the incident note
+    /// names (`features/key-lifecycle-and-revocation.md` phase 7).
+    ///
+    /// Empty by default and never guessed: the norm requires a possible credential
+    /// compromise to reach the ESI, and *which* address that is belongs to the
+    /// deployment. A note produced without one says so instead of printing a
+    /// placeholder nobody can act on — and the same value is what the
+    /// sealed-envelope slip prints for the holder, so the unit states it once.
+    #[serde(default)]
+    pub report_incidents_to: String,
     /// Chosen palette, one of [`THEMES`]. Cosmetic only — nothing about the
     /// record depends on it.
     pub theme: String,
@@ -323,6 +333,7 @@ impl AppSettings {
             signatures: crate::receipt::SignaturePolicy::default(),
             template_keys: Vec::new(),
             templates_must_be_signed: false,
+            report_incidents_to: String::new(),
             theme: DEFAULT_THEME.to_owned(),
         }
     }
