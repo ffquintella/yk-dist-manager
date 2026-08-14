@@ -17,7 +17,42 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
-## [0.13.0] - 2026-08-13
+### Fixed
+
+- **A copyright with an `&` or a `|` in it no longer corrupts the macOS
+  `Info.plist`**
+  ([`features/packaging-and-release.md`](features/packaging-and-release.md)
+  phase 3).
+
+  `YKDM_COPYRIGHT` is free text an operator supplies, and it was going into the
+  plist through a `sed` replacement, where it was neither text nor safe. An `&`
+  in a sed replacement is the whole match, so `YKDM_COPYRIGHT="Foo & Bar"` wrote
+  `Foo @COPYRIGHT@ Bar` — a wrong value, quietly, in the field that names who the
+  software belongs to. A `|` was the delimiter the script had chosen precisely
+  because a copyright may contain a slash, so a copyright containing one ended
+  the `s///` expression and the build failed with a message about a sed script.
+  And `&`, `<` and `>` reached the XML raw; `plutil -lint` caught the invalid
+  plist that resulted, which at least failed loudly, but several steps from the
+  cause.
+
+  The copyright is no longer substituted at all. The plist is written from the
+  template, then `plutil -replace` sets `NSHumanReadableCopyright` with the value
+  as an *argument* — plutil takes it as data and escapes it for XML itself, so
+  there is no layer left for the text to mean something in. (`PlistBuddy -c
+  "Set …"` looked like the same answer and is not: it re-parses its command
+  string, silently swallowing double quotes and failing outright on an
+  apostrophe — which a copyright line can easily carry.)
+
+  `@VERSION@` and `@IDENTIFIER@` stay with `sed`, on the assumption that a
+  semantic version and a reverse-DNS identifier cannot carry such a character.
+  That assumption is now enforced rather than hoped for: a value outside
+  `A-Za-z0-9._+-` is refused with a message that says so, instead of corrupting
+  the plist the way the copyright did.
+
+  The substitution moved into `packaging/macos/write-plist.sh` so that
+  `make verify-bundle` can run the real writer against a copyright full of `&`,
+  `|`, `<`, `>`, quotes and an apostrophe and require it back byte for byte —
+  a build made with an ordinary copyright cannot tell you this works.
 
 ### Added
 

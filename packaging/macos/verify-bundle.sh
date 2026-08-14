@@ -54,6 +54,42 @@ IDENTIFIER="$(plist_value CFBundleIdentifier)"
 [[ -n "$IDENTIFIER" ]] || fail "CFBundleIdentifier is missing"
 pass "bundle identifier: $IDENTIFIER"
 
+COPYRIGHT="$(plist_value NSHumanReadableCopyright)"
+[[ -n "$COPYRIGHT" ]] || fail "NSHumanReadableCopyright is missing"
+[[ "$COPYRIGHT" != *@COPYRIGHT@* ]] ||
+	fail "the copyright placeholder survived into the bundle: '$COPYRIGHT'"
+pass "copyright: $COPYRIGHT"
+
+# The copyright is the only plist value that is free text from the environment
+# (YKDM_COPYRIGHT), which makes it the only one that can be mangled on the way
+# in — and it was: through `sed`, an `&` expanded to the whole match and left
+# "Foo @COPYRIGHT@ Bar" in the plist, a `|` (the delimiter) failed the build, and
+# `&`, `<` and `>` reached the XML raw. That is invisible to the checks above
+# unless whoever built this happened to use such a value, so the writer is run
+# here against one on purpose. It must come back byte for byte.
+HOSTILE='Fundação & Cia | <Tech> "Q" O'"'"'Brien 1/2 \ x'
+SCRATCH="$(mktemp -d)"
+trap 'rm -rf "$SCRATCH"' EXIT
+packaging/macos/write-plist.sh packaging/macos/Info.plist.in "$SCRATCH/Info.plist" \
+	0.0.0 org.example.verify-bundle "$HOSTILE" >/dev/null ||
+	fail "the plist writer failed on a copyright containing sed or XML metacharacters"
+plutil -lint "$SCRATCH/Info.plist" >/dev/null ||
+	fail "a copyright containing & < > produced an invalid Info.plist"
+ROUND_TRIP="$(/usr/libexec/PlistBuddy -c "Print :NSHumanReadableCopyright" "$SCRATCH/Info.plist")"
+[[ "$ROUND_TRIP" == "$HOSTILE" ]] ||
+	fail "the copyright was altered on its way into the plist: wanted [$HOSTILE], got [$ROUND_TRIP]"
+pass "a copyright full of sed and XML metacharacters survives substitution"
+
+# The other two values are not escaped, on the assumption that a version and a
+# reverse-DNS identifier cannot carry such a character. The writer enforces that
+# assumption; this checks that it still does, because an unenforced assumption is
+# the same bug one variable over.
+if packaging/macos/write-plist.sh packaging/macos/Info.plist.in "$SCRATCH/rejected.plist" \
+	'0.0.0 & evil' org.example.verify-bundle "x" >/dev/null 2>&1; then
+	fail "the plist writer accepted a version containing an unescaped metacharacter"
+fi
+pass "a version or identifier with a metacharacter is refused"
+
 EXECUTABLE="$(plist_value CFBundleExecutable)"
 [[ -x "$APP/Contents/MacOS/$EXECUTABLE" ]] || fail "CFBundleExecutable '$EXECUTABLE' is not there"
 pass "executable matches the plist"

@@ -83,12 +83,13 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp "target/$PROFILE/$BINARY" "$APP/Contents/MacOS/$BINARY"
 
-# Info.plist from the template. `|` as the sed delimiter, since the copyright may
-# contain a slash.
-sed -e "s|@VERSION@|$VERSION|g" \
-	-e "s|@IDENTIFIER@|$IDENTIFIER|g" \
-	-e "s|@COPYRIGHT@|$COPYRIGHT|g" \
-	packaging/macos/Info.plist.in >"$APP/Contents/Info.plist"
+# Info.plist from the template. The writer is a script of its own because
+# YKDM_COPYRIGHT is free text an operator supplies, which a template
+# substitution mangles unless the value goes in as data — see the reasoning in
+# write-plist.sh, and the check `make verify-bundle` makes of it.
+packaging/macos/write-plist.sh \
+	packaging/macos/Info.plist.in "$APP/Contents/Info.plist" \
+	"$VERSION" "$IDENTIFIER" "$COPYRIGHT"
 
 # `APPL????` — the classic package-type marker. Harmless, and some tools still
 # look for it.

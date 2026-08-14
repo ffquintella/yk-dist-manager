@@ -22,11 +22,14 @@ version control and carries a tag. No hand-built binaries.
 - `packaging/macos/Info.plist.in` — the plist template, with
   `NSCameraUsageDescription` as its reason for existing.
 - `packaging/macos/bundle.sh` — assembles
-  `target/bundle/YubiKey Distribution Manager.app`: builds the binary, substitutes the
-  version from `Cargo.toml` (single source of truth), copies an optional
+  `target/bundle/YubiKey Distribution Manager.app`: builds the binary, writes the plist
+  with the version from `Cargo.toml` (single source of truth), copies an optional
   `packaging/macos/icon.icns`, lints the plist, and code-signs. Ad-hoc by default;
   `--sign 'Developer ID Application: …'` for a real identity. `--dmg` wraps it with
   `hdiutil`.
+- `packaging/macos/write-plist.sh` — the plist writer, separate so it can be
+  exercised (below). `@VERSION@` and `@IDENTIFIER@` go in with `sed`; the
+  copyright does not (see *Free text does not go through a substitution*).
 - `packaging/macos/verify-bundle.sh` — checks the layout, the plist, the version
   against `Cargo.toml`, the signature, and then asks **the bundled binary itself**
   (`--diagnose`) whether macOS sees it as bundled and whether camera scanning is still
@@ -96,6 +99,37 @@ changelog — because an operator on a share may run an older build against a ne
 which the store refuses (`StoreError::SchemaTooNew`). That refusal is only useful if the
 release notes tell people to upgrade together.
 
+### Free text does not go through a substitution
+
+Three values are written into `Info.plist`: the version, the bundle identifier and
+the copyright. Only one of them is free text — `YKDM_COPYRIGHT`, whatever the
+operator running the build types — and it was the one going in through a `sed`
+replacement, which is two escaping layers it was never escaped for:
+
+| Character | Through `sed` | Result |
+|---|---|---|
+| `&` | the whole match, in a replacement | `"Foo & Bar"` became `Foo @COPYRIGHT@ Bar` — wrong, and silent |
+| `\|` | the delimiter (chosen because a copyright may contain a slash) | the `s///` ends early; the build fails talking about a sed script |
+| `&` `<` `>` | passed through to the XML | invalid plist, caught by `plutil -lint` several steps from the cause |
+
+So the copyright is **not substituted**. The plist is written from the template
+first, and then `plutil -replace NSHumanReadableCopyright -string "$COPYRIGHT"`
+sets the key with the value as an argument: plutil takes it as data and escapes it
+for XML itself. `PlistBuddy -c "Set …"` is *not* an alternative, though it is the
+idiom used two lines away for `CFBundleIconFile` — PlistBuddy re-parses its command
+string, so it eats double quotes without a word and fails on an apostrophe, which a
+copyright line can easily carry.
+
+The version and the identifier stay with `sed`, because a semantic version and a
+reverse-DNS name have no such character. `write-plist.sh` **enforces** that rather
+than assuming it: anything outside `A-Za-z0-9._+-` is refused, with a message that
+names the value. An unenforced assumption is the same bug one variable over.
+
+That is also why the writer is a script of its own: a bundle built with an ordinary
+copyright proves nothing about a hostile one, so `verify-bundle.sh` runs the real
+writer against `Fundação & Cia | <Tech> "Q" O'Brien 1/2 \ x` and requires it back
+byte for byte.
+
 ### Signing is not only about Gatekeeper
 
 macOS remembers a camera grant against the **code signature**. An ad-hoc signature
@@ -118,7 +152,7 @@ identifies the exact build.
 | 0b | Resolve the `block` 0.1.6 chain | **Todo — still gates every artefact** | upstream fix, `[patch.crates-io]`, a native AVFoundation path, or `camera` back to opt-in |
 | 1 | CI build matrix (macOS / Windows / Linux) with `native-device` | Todo | proves the transports compile everywhere; the default build now needs a V4L2-capable Linux image |
 | 2 | Version + commit hash embedded and shown in Settings | Partial | the version is in the plist and in `--diagnose`; the commit hash is not |
-| 3 | macOS `.app` + `.dmg` | **Done** | `bundle.sh [--release] [--dmg]` |
+| 3 | macOS `.app` + `.dmg` | **Done** | `bundle.sh [--release] [--dmg]`; the plist writer is `write-plist.sh`, and free text no longer goes through a substitution |
 | 3b | Developer ID signing + notarisation | Todo | ad-hoc signing works locally but re-prompts for the camera after every rebuild, and Gatekeeper blocks distribution |
 | 4 | Windows MSI + Authenticode | Todo | SmartScreen otherwise |
 | 5 | Linux packages + udev rule + `pcscd` dependency documented | Todo | |
@@ -138,6 +172,12 @@ change-document requirement is satisfied by the changelog plus the change record
 - A smoke test per platform: launch headless-ish (open the store, run migrations, exit) so
   a broken bundle fails in CI rather than at a desk.
 - Verify the artefact's version string matches the tag.
+- `make verify-bundle` (`packaging/macos/verify-bundle.sh`) is where the plist's
+  regression checks live, since there is no Rust to test here. Beyond the checks
+  on the built bundle it exercises the writer directly: a copyright carrying
+  `&`, `|`, `<`, `>`, a double quote, an apostrophe and a backslash must come back
+  unchanged and leave a plist that lints, and a version or identifier carrying a
+  metacharacter must be refused rather than substituted.
 
 ## Open questions and gates
 

@@ -1,9 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Template. `packaging/macos/bundle.sh` substitutes @VERSION@, @IDENTIFIER@ and
-  @COPYRIGHT@ and writes the result into the bundle. Do not edit the generated
-  copy: it is rebuilt every time.
+  Template. `packaging/macos/write-plist.sh` substitutes @VERSION@ and
+  @IDENTIFIER@ and writes the result into the bundle, then sets
+  NSHumanReadableCopyright over @COPYRIGHT@ with `plutil -replace` — free text
+  goes in as data, not as part of a substitution. Do not edit the generated copy:
+  it is rebuilt every time, without these comments and with the keys sorted,
+  because both plutil and PlistBuddy re-serialise the file.
 
   NSCameraUsageDescription is the load-bearing key. Without it macOS has nothing to
   show the operator and no identity to attribute the grant to, and AVFoundation
