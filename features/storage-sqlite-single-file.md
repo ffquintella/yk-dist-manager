@@ -146,15 +146,36 @@ re-reading a key or re-registering a person updates rather than duplicates.
 
 ### Concurrency (Phase 4)
 
-Two operators on the same share will collide eventually. Planned policy:
+Two operators on the same share collide eventually. The policy, as built:
 
 - Writes are short single-statement transactions; no transaction is held open
   across a UI interaction.
-- `SQLITE_BUSY` is retried with backoff up to the busy timeout, then reported to
-  the operator with a clear "another operator is writing" message.
-- Records carry `updated_at`; an update that finds a newer `updated_at` than the
-  one it read reports a conflict instead of overwriting.
+- **`SQLITE_BUSY` becomes [`StoreError::Busy`]**, whose message says *another
+  operator is writing to this register* rather than *database is locked* — two
+  different actions for the reader: wait a moment, versus report a fault. The
+  retrying itself is SQLite's own busy handler, which has already spent the whole
+  timeout (5s locally, 20s on a share) by the time the error arrives. A retry loop
+  on top would sleep through a lock that had already been released; what was
+  missing was never the retry, it was the sentence at the end of it. The mapping
+  lives in `From<rusqlite::Error>` for the same reason the read-only one does: a
+  guard per method is a guard the next mutation forgets.
+- **Records carry `updated_at`, and the observation is saved against the copy the
+  operator read.** `set_key_notes` takes that timestamp and puts it in the `WHERE`
+  clause, so the check is one statement and cannot interleave with another
+  connection's. A save over somebody else's newer edit is
+  [`StoreError::Conflict`], naming when the record moved; the screen is reloaded
+  so the operator can see what they would have overwritten, and `db.conflict` is
+  audited — a refused write is a thing that happened to the register, and it is
+  how anybody later learns that two people were working on the same key.
+- The observation is the field that gets this treatment because it is the one two
+  operators genuinely both edit. A **status** change is deliberately not guarded
+  the same way: it is a *transition*, and its legality is already checked against
+  the row as it stands inside the same update — guarding it on `updated_at` would
+  refuse a run that had just written to the hardware and must record it.
 - The audit table is insert-only, so it never conflicts.
+- **Who else is here** is a separate answer, not part of this one: see
+  [`src/store/presence.rs`](../src/store/presence.rs) and
+  [`database-selection.md`](database-selection.md) phase 6.
 
 ## Phases
 
@@ -168,7 +189,7 @@ Two operators on the same share will collide eventually. Planned policy:
 | 2c | Cloud-sync hosting: `Location::CloudSync` + single-writer lock | 0 | Done | [spec](cloud-sync-hosting.md) — the installation that prompted 2b needed the folder to *work*, not just to be warned about |
 | 2d | Connect the SMB share from the application: anonymous, named account, or the signed-in user | 0 | **Done** | [spec](smb-share-hosting.md) — mechanism, all three platform backends, and the chooser card with its remembered shares (that spec's phase 7, which is what this row was waiting for). What is left there is reconnecting a share that *drops* mid-session, which is its phase 9 and not this row |
 | 3 | Backup (`VACUUM INTO`) + `integrity_check` | 0 | Done | Settings screen |
-| 4 | Multi-operator concurrency policy | 2 | Todo | busy retry + optimistic `updated_at` — **Wave 2**, tracked in the roadmap under that wave |
+| 4 | Multi-operator concurrency policy | 2 | **Done** | `StoreError::Busy` and `StoreError::Conflict`, both mapped where they cannot be forgotten: busy in `From<rusqlite::Error>`, the optimistic check in the `WHERE` clause. The **retry** is SQLite's own busy handler, which is better placed than a loop here — it is woken by the lock being released instead of waiting out a sleep. See below |
 | 5 | Per-step run rows instead of a JSON blob | 0 | **Done** | schema **v5**: `bootstrap_run_steps`, backfilled in Rust, blob column dropped |
 | 6 | Scheduled/automatic backup with rotation | 0 | **Done** | [`store::backup`](../src/store/backup.rs) — daily by default, keep 7, pruning only names it can parse |
 | 7 | Archival and retention | — | Todo | **blocked on the ESI retention decision** (open question 3) |

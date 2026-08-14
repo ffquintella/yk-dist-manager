@@ -73,9 +73,9 @@ says plainly when a build lacks either.
 | 3 | Chooser screen: recents, typed path, password, open/create | 0 | Done | |
 | 4 | Native file dialogs behind `file-dialog` | 0 | Done | `rfd`; XDG portal on Linux, no GTK |
 | 5 | Switch database from Settings | 0 | Done | closes the current one first, audited |
-| 6 | Warn when two operators have the same share database open | 2 | Todo | needs the concurrency work |
+| 6 | Warn when two operators have the same share database open | 2 | **Done** | `open_sessions` (schema **v7**) and [`store::presence`](../src/store/presence.rs): a banner under the tabs naming who else is in the register and when they were last heard from. A **warning, not a lock** — on a share SQLite serialises the writes; what nobody could otherwise see is that somebody else is working out of the same box of keys. A session silent for 15 minutes is not shown and is pruned by the next open, so a closed laptop does not haunt the banner |
 | 7 | "Copy this database to…" (clone a share database locally) | — | Todo | `VACUUM INTO` already does the work |
-| 8 | Remember a per-database operator identity | 2 | Todo | today the identity is per workstation |
+| 8 | Remember a per-database operator identity | 2 | **Done** | `AppSettings::operators`, keyed by the path as opened — which is right *because* settings are per workstation, so two machines mounting a share at different points never have to agree. Editing the name with a register open records it for that register; with none open it sets the workstation's default, which is what an unnamed register falls back to. The Settings screen says which of the two is being edited |
 
 ## Audit events
 

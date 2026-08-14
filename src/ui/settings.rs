@@ -53,6 +53,27 @@ fn identity(app: &mut YkDistApp, ui: &mut egui::Ui) {
             {
                 identity_changed = true;
             }
+            // Which register the name belongs to, said where it is typed. With a
+            // register open the name is that register's; the workstation default
+            // is what an unnamed one falls back to, and an operator who does not
+            // know which they are editing will eventually sign somebody else's
+            // work (`features/database-selection.md` phase 8).
+            if app.store.is_some() {
+                super::hint(
+                    left,
+                    &format!(
+                        "Recorded for this register only — {}. Another register on this \
+                         workstation keeps its own name.",
+                        app.config.path.display()
+                    ),
+                );
+            } else {
+                super::hint(
+                    left,
+                    "This workstation's default, used by any register that has no name of its \
+                     own.",
+                );
+            }
             if super::capped_input(right, &mut app.org, MAX_TEXT, |input| {
                 input
                     .label("Organisation")

@@ -976,6 +976,12 @@ pub struct YkDistApp {
     pub term_editor: TermEditor,
     /// The Reports screen: which report, the one generated, and where it goes.
     pub reports: ReportPanel,
+    /// Who else has this register open right now
+    /// (`features/database-selection.md` phase 6).
+    ///
+    /// Refreshed with the other views and on the lease tick, so the banner ages
+    /// out on its own rather than needing somebody to press Refresh.
+    pub presence: crate::store::presence::Presence,
     /// Term templates, refreshed with everything else.
     pub term_templates: Vec<crate::term::TermTemplate>,
     /// How many documents each distribution has.
@@ -1097,6 +1103,7 @@ impl YkDistApp {
             term_panel: TermPanel::default(),
             term_editor: TermEditor::default(),
             reports: ReportPanel::default(),
+            presence: crate::store::presence::Presence::default(),
             term_templates: Vec::new(),
             document_counts: std::collections::BTreeMap::new(),
             filed_documents: std::collections::BTreeMap::new(),
@@ -1791,7 +1798,11 @@ impl YkDistApp {
             Err(e) => tracing::error!(event = "term.seed.failed", reason = %e),
         }
         self.settings.remember(&config.path);
-        self.settings.operator = self.operator.clone();
+        // This register's own operator, when it has one, so the actor on every
+        // audit entry from here on is whoever works in *this* register rather
+        // than whoever last typed a name on this workstation
+        // (`features/database-selection.md` phase 8).
+        self.operator = self.settings.operator_for(&config.path);
         self.settings.org = self.org.clone();
         self.settings.save_quietly();
 
@@ -2058,9 +2069,24 @@ impl YkDistApp {
     }
 
     pub fn tick_lease(&mut self) {
+        let operator = self.operator.clone();
         let Some(store) = self.store.as_mut() else {
             return;
         };
+        // Same tick, different obligation: the lease is what *stops* a second
+        // workstation, and this is only what lets one be named. A failure to say
+        // "I am here" is logged and otherwise ignored — it costs a banner on
+        // somebody else's screen, not the session.
+        if let Err(e) = store.renew_presence(&operator) {
+            tracing::warn!(event = "db.presence.renew_failed", reason = %e);
+        }
+        // Read back on the same tick: a session that goes quiet has to *leave*
+        // the banner without anybody pressing Refresh, or the warning outlives
+        // the thing it warns about.
+        match store.presence() {
+            Ok(presence) => self.presence = presence,
+            Err(e) => tracing::warn!(event = "db.presence.read_failed", reason = %e),
+        }
         match store.renew_lease() {
             Ok(crate::store::Renewal::NotDue | crate::store::Renewal::Renewed) => {}
             // Another workstation has taken the register. Continuing to write
@@ -2085,7 +2111,17 @@ impl YkDistApp {
 
     /// Persist the operator identity and organisation.
     pub fn persist_settings(&mut self) {
-        self.settings.operator = self.operator.clone();
+        // With a register open, the name belongs to *that* register
+        // (`features/database-selection.md` phase 8): the workstation's default is
+        // what a register nobody has named an operator for uses, and overwriting
+        // it here is how one name leaked onto every other register on the machine.
+        if self.store.is_some() {
+            let path = self.config.path.clone();
+            let operator = self.operator.clone();
+            self.settings.remember_operator(&path, &operator);
+        } else {
+            self.settings.operator = self.operator.clone();
+        }
         self.settings.org = self.org.clone();
         self.settings.save_quietly();
     }
@@ -2254,17 +2290,33 @@ impl YkDistApp {
                 return;
             }
         };
-        let before = self
-            .keys
-            .iter()
-            .find(|key| key.serial == serial)
-            .map(|key| key.notes.clone())
-            .unwrap_or_default();
+        // The record as it was painted, which is what the optimistic check is
+        // against: `seen` has to be the copy the operator typed over, not a fresh
+        // read, or the check would always pass and never protect anything.
+        let Some(seen) = self.keys.iter().find(|key| key.serial == serial).cloned() else {
+            self.inventory.error = Some(format!("serial {serial} is no longer on the register"));
+            return;
+        };
+        let before = seen.notes.clone();
 
         let Some(store) = &self.store else { return };
-        if let Err(e) = store.set_key_notes(serial, &note) {
+        if let Err(e) = store.set_key_notes(serial, &note, seen.updated_at) {
+            let conflict = matches!(e, crate::store::StoreError::Conflict { .. });
             self.inventory.error = Some(e.to_string());
             tracing::warn!(event = "key.note.save.failed", serial, reason = %e);
+            if conflict {
+                // Audited, because a refused write is a thing that happened to the
+                // register: it is how anybody later finds out that two operators
+                // were working on the same key at the same time.
+                self.record(
+                    "db.conflict",
+                    &format!("serial:{serial}"),
+                    "field=notes outcome=refused",
+                );
+                // And the screen is brought up to date, so the operator can see
+                // what they would have overwritten before typing it again.
+                self.refresh();
+            }
             return;
         }
         self.record(
@@ -3525,6 +3577,12 @@ impl YkDistApp {
                 self.status = "could not read the database — see the log".into();
                 tracing::error!(event = "db.read.failed");
             }
+        }
+        match store.presence() {
+            Ok(presence) => self.presence = presence,
+            // Not fatal and not shown: the banner is a coordination aid, and a
+            // register that cannot say who else is in it is still a register.
+            Err(e) => tracing::warn!(event = "db.presence.read_failed", reason = %e),
         }
         match store.template_catalogue() {
             Ok(catalogue) => self.template_catalogue = catalogue,
@@ -6357,8 +6415,10 @@ impl YkDistApp {
         // Each report is built once even when it leaves in two formats: the
         // compliance report and the extract go out as both a spreadsheet and a
         // document, and building each twice would let the two disagree.
-        let mut built: std::collections::BTreeMap<crate::report::ReportKind, crate::report::Report> =
-            std::collections::BTreeMap::new();
+        let mut built: std::collections::BTreeMap<
+            crate::report::ReportKind,
+            crate::report::Report,
+        > = std::collections::BTreeMap::new();
         let mut written: Vec<(String, crate::report::Report)> = Vec::new();
 
         for (kind, format) in bundle::CONTENTS {
@@ -6416,11 +6476,7 @@ impl YkDistApp {
         self.record(
             "export.bundle",
             "report:bundle",
-            &format!(
-                "files={} path={}",
-                written.len(),
-                directory.display()
-            ),
+            &format!("files={} path={}", written.len(), directory.display()),
         );
         self.status = format!(
             "{} report file(s) written to {}",
@@ -6501,7 +6557,11 @@ impl YkDistApp {
             &format!("report:{}", report.kind.slug()),
             &report.audit_detail(format, path),
         );
-        self.status = format!("exported {} row(s) to {}", report.rows.len(), path.display());
+        self.status = format!(
+            "exported {} row(s) to {}",
+            report.rows.len(),
+            path.display()
+        );
         true
     }
 
@@ -6828,6 +6888,14 @@ impl YkDistApp {
                     Tab::ALL.map(|tab| tab.label()),
                 ));
                 self.tab = Tab::from_index(index);
+
+                // Who else is in the register, under the tabs rather than on one
+                // screen: the operator who needs to know is the one about to
+                // start a hand-over, and they may be on any of them.
+                if let Some(line) = self.presence.describe(chrono::Utc::now()) {
+                    ui.add_space(6.0);
+                    crate::ui::notice(ui, elegance::CalloutTone::Warning, &line);
+                }
 
                 // A shortcut nobody knows about is not a shortcut. The log
                 // toggle carries an error count so a failure is visible without

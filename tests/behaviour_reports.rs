@@ -76,7 +76,9 @@ fn register(path: &std::path::Path) {
 
     let holder = Holder::new("Ana Silva", "ana.silva@example.org", "ESI", "1").unwrap();
     store.insert_holder(&holder).unwrap();
-    store.insert_distribution(&handover(&held, &holder, 10)).unwrap();
+    store
+        .insert_distribution(&handover(&held, &holder, 10))
+        .unwrap();
     // The lifecycle is asked first, exactly as the Distribution screen asks it.
     store
         .set_key_status(held.serial, KeyStatus::Bootstrapped)
@@ -120,7 +122,11 @@ fn scenario_the_custody_report_is_exported_and_the_export_is_audited() {
     assert_eq!(report.rows[0][0], "20423633");
     assert_eq!(report.rows[0][1], "Ana Silva");
     assert_eq!(report.rows[0][5], "10", "days held");
-    assert!(report.provenance().contains("Custody"), "{}", report.provenance());
+    assert!(
+        report.provenance().contains("Custody"),
+        "{}",
+        report.provenance()
+    );
 
     // When it is exported as CSV
     let target = home.join("custody.csv");
@@ -172,7 +178,13 @@ fn scenario_no_export_contains_a_secret() {
             // string — which is the right check anyway: what matters is that the
             // sequence is not in the file, whatever encoded it.
             let lowered = String::from_utf8_lossy(&rendered).to_lowercase();
-            for forbidden in ["pin=", "puk=", "management_key=", "access_code=", "password"] {
+            for forbidden in [
+                "pin=",
+                "puk=",
+                "management_key=",
+                "access_code=",
+                "password",
+            ] {
                 assert!(
                     !lowered.contains(forbidden),
                     "{kind:?}/{format:?} export contains `{forbidden}`"
@@ -195,7 +207,10 @@ fn scenario_the_audit_extract_carries_a_verification_statement() {
     app.generate_report();
 
     let report = app.reports.current.clone().expect("an extract");
-    assert!(!report.rows.is_empty(), "the register audits opening itself");
+    assert!(
+        !report.rows.is_empty(),
+        "the register audits opening itself"
+    );
     let statement = report.notes.first().expect("a statement");
     assert!(statement.contains("verified at export time"), "{statement}");
     assert!(statement.contains("chain head"), "{statement}");
@@ -238,10 +253,9 @@ fn scenario_the_bundle_writes_every_report_from_one_moment_and_audits_each_file(
         ));
         assert!(expected.exists(), "{} is missing", expected.display());
     }
-    let manifest = std::fs::read_to_string(
-        directory.join(yk_dist_manager::report::bundle::MANIFEST),
-    )
-    .expect("a manifest");
+    let manifest =
+        std::fs::read_to_string(directory.join(yk_dist_manager::report::bundle::MANIFEST))
+            .expect("a manifest");
     assert!(manifest.contains("custody-"), "{manifest}");
     assert!(manifest.contains("export.taken"), "{manifest}");
 

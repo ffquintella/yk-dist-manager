@@ -34,6 +34,7 @@
 pub mod backup;
 pub mod cloud;
 pub mod import;
+pub mod presence;
 pub mod smb;
 
 use std::path::{Path, PathBuf};
@@ -58,7 +59,7 @@ use crate::template::{BootstrapTemplate, StoredTemplate};
 use crate::term::TermTemplate;
 
 /// Current schema version, tracked in `PRAGMA user_version`.
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -74,6 +75,30 @@ pub enum StoreError {
          needs write access, so it cannot be opened read-only"
     )]
     MigrationNeedsWriteAccess { found: i64, supported: i64 },
+    /// SQLite refused the write because another connection holds the lock for
+    /// longer than the busy timeout (`features/storage-sqlite-single-file.md`
+    /// phase 4).
+    ///
+    /// Its own message rather than the raw `database is locked`, because the two
+    /// readings are different actions: SQLite's says the file is locked, and this
+    /// one says *another operator is writing to the register right now* — which
+    /// is a thing to wait a moment for, not a fault to report.
+    #[error(
+        "another operator is writing to this register — nothing was recorded. Wait a moment and \
+         try again; if it keeps happening, find out who else has it open"
+    )]
+    Busy,
+    /// Somebody else changed this record after the copy on screen was read.
+    ///
+    /// The optimistic half of the concurrency policy: two operators on a share
+    /// can both open the same key, and the loser's edit would otherwise vanish
+    /// without either of them knowing.
+    #[error(
+        "{what} was changed by another operator at {theirs}, after the copy on this screen was \
+         read. Nothing was saved — reload it and make the change again, or you would overwrite \
+         theirs"
+    )]
+    Conflict { what: String, theirs: String },
     #[error("database is encrypted or corrupt — a password is required")]
     PasswordRequired,
     #[error(
@@ -168,6 +193,20 @@ impl From<rusqlite::Error> for StoreError {
                     || e.code == rusqlite::ErrorCode::CannotOpen =>
             {
                 StoreError::ReadOnly
+            }
+            // The same reasoning one variant up, applied to the other failure a
+            // shared register produces. `busy_timeout` has already done the
+            // retrying by the time this arrives — SQLite's own busy handler
+            // sleeps and retries for the whole timeout (5s locally, 20s on a
+            // share), which is the backoff the policy asks for and is better
+            // placed than a loop here, because it can be woken by the lock being
+            // released instead of waiting out a sleep. What was missing is the
+            // sentence at the end of it.
+            rusqlite::Error::SqliteFailure(e, _)
+                if e.code == rusqlite::ErrorCode::DatabaseBusy
+                    || e.code == rusqlite::ErrorCode::DatabaseLocked =>
+            {
+                StoreError::Busy
             }
             _ => StoreError::Sqlite(error),
         }
@@ -395,6 +434,16 @@ pub struct Store {
     mirror: Option<std::cell::RefCell<crate::audit::AuditLog>>,
     /// Whether the chain verified when this register was opened.
     chain_status: ChainStatus,
+    /// This run's row in `open_sessions`, so the others can be told apart from it
+    /// (`features/database-selection.md` phase 6).
+    ///
+    /// A per-run id rather than a host and a pid, for the reason the cloud lease
+    /// records: pids are reused, and one workstation may legitimately have two
+    /// windows open.
+    session: Uuid,
+    /// When this session last rewrote its row, or `None` when it has none — a
+    /// read-only look, or a register whose presence table could not be written.
+    presence_renewed_at: Option<DateTime<Utc>>,
 }
 
 /// The result of verifying the audit chain when the register was opened.
@@ -640,6 +689,12 @@ impl Store {
             // another workstation is appending to.
             mirror: None,
             chain_status: ChainStatus::NotChecked,
+            session: Uuid::new_v4(),
+            // A reader announces nothing. Registering would be a write, which is
+            // the one thing this session promised not to do — and a name on
+            // somebody else's screen claiming an operator is "in the register"
+            // when they are only looking at it would be worse than silence.
+            presence_renewed_at: None,
         })
     }
 
@@ -683,11 +738,14 @@ impl Store {
             read_only: false,
             mirror: open_mirror(config.audit_mirror.as_deref()),
             chain_status: ChainStatus::NotChecked,
+            session: Uuid::new_v4(),
+            presence_renewed_at: None,
         };
         store.apply_pragmas()?;
         store.migrate()?;
         store.backup_on_open();
         store.chain_status = store.verify_chain_on_open();
+        store.announce_presence(&config.operator);
 
         if store.on_cloud_sync() {
             tracing::warn!(
@@ -833,6 +891,11 @@ impl Store {
     /// Infallible on purpose: a failure to close the connection is logged loudly,
     /// because the one thing that must still happen is releasing the lock.
     pub fn close(self) -> Option<Settled> {
+        // Before the connection goes: the row that says this session is here has
+        // to be removed while there is still a database to remove it from — the
+        // same ordering the SMB disconnect follows, and for the same reason.
+        self.release_presence();
+
         let Self {
             conn,
             path,
@@ -887,6 +950,9 @@ impl Store {
         }
         if version < 6 {
             self.conn.execute_batch(MIGRATE_V6)?;
+        }
+        if version < 7 {
+            self.conn.execute_batch(MIGRATE_V7)?;
         }
 
         self.conn
@@ -1370,13 +1436,34 @@ impl Store {
     /// ([`crate::domain::optional_note`]); this is the write, and it refuses a
     /// serial that is not in the inventory rather than updating nothing and
     /// reporting success.
-    pub fn set_key_notes(&self, serial: u32, notes: &str) -> Result<()> {
+    /// Save the operator's observation, refusing to overwrite a newer one.
+    ///
+    /// `seen` is the `updated_at` of the record the operator was looking at when
+    /// they typed. It is **required**, not optional, and that is the point: the
+    /// observation is the one field on a key that two operators can both edit
+    /// from two screens painted minutes apart, and a save that did not say what
+    /// it had read would silently discard the other one
+    /// (`features/storage-sqlite-single-file.md` phase 4).
+    ///
+    /// The check is in the `WHERE` clause rather than in a read followed by a
+    /// write, so it is one statement and cannot interleave with another
+    /// connection's — the same reasoning that puts the lifecycle's transition
+    /// check inside the update.
+    pub fn set_key_notes(&self, serial: u32, notes: &str, seen: DateTime<Utc>) -> Result<()> {
         let changed = self.conn.execute(
-            "UPDATE keys SET notes = ?1, updated_at = ?2 WHERE serial = ?3",
-            params![notes, Utc::now().to_rfc3339(), serial],
+            "UPDATE keys SET notes = ?1, updated_at = ?2 WHERE serial = ?3 AND updated_at = ?4",
+            params![notes, Utc::now().to_rfc3339(), serial, seen.to_rfc3339()],
         )?;
         if changed == 0 {
-            return Err(StoreError::NotFound(format!("serial {serial}")));
+            // Two ways to match no row, and they need different sentences: the
+            // key is gone, or somebody else got there first.
+            return Err(match self.key_by_serial(serial)? {
+                Some(current) => StoreError::Conflict {
+                    what: format!("serial {serial}"),
+                    theirs: current.updated_at.format("%Y-%m-%d %H:%M:%SZ").to_string(),
+                },
+                None => StoreError::NotFound(format!("serial {serial}")),
+            });
         }
         Ok(())
     }
@@ -1836,6 +1923,147 @@ impl Store {
         rows.collect::<rusqlite::Result<Vec<_>>>()?
             .into_iter()
             .collect::<Result<Vec<_>>>()
+    }
+
+    // ------------------------------------------------------------- presence
+
+    /// Take this session's row in `open_sessions`, and prune the abandoned ones.
+    ///
+    /// Never fatal. A register that cannot record who has it open is still a
+    /// register: the failure is logged, this session simply stops appearing on
+    /// other people's screens, and nothing else changes. Refusing to open over it
+    /// would trade a coordination aid for the whole tool.
+    fn announce_presence(&mut self, operator: &str) {
+        if self.read_only {
+            return;
+        }
+        match self.write_presence(operator) {
+            Ok(()) => self.presence_renewed_at = Some(Utc::now()),
+            Err(e) => tracing::warn!(
+                event = "db.presence.failed",
+                reason = %e,
+                detail = "this session will not appear to the other operators"
+            ),
+        }
+    }
+
+    fn write_presence(&self, operator: &str) -> Result<()> {
+        let now = Utc::now();
+        // Pruned here rather than on read, because reading is the one thing a
+        // read-only session must be able to do without writing.
+        self.conn.execute(
+            "DELETE FROM open_sessions WHERE last_seen_at < ?1",
+            params![(now - presence::silent_after()).to_rfc3339()],
+        )?;
+        self.conn.execute(
+            "INSERT INTO open_sessions (id, host, operator, app_version, opened_at, last_seen_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+             ON CONFLICT(id) DO UPDATE SET last_seen_at = excluded.last_seen_at",
+            params![
+                self.session.to_string(),
+                cloud::local_host(),
+                operator.trim(),
+                crate::VERSION,
+                now.to_rfc3339(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Rewrite this session's row if it is due, so the others can tell a live
+    /// session from an abandoned one.
+    ///
+    /// Called on the same tick as the lease renewal. Silent when there is nothing
+    /// to renew — a read-only session, or one whose first write failed.
+    pub fn renew_presence(&mut self, operator: &str) -> Result<()> {
+        let Some(last) = self.presence_renewed_at else {
+            return Ok(());
+        };
+        if Utc::now() - last < presence::renew_every() {
+            return Ok(());
+        }
+        self.write_presence(operator)?;
+        self.presence_renewed_at = Some(Utc::now());
+        Ok(())
+    }
+
+    /// Who else has this register open, ignoring the sessions that have gone
+    /// quiet — and always ignoring this one.
+    pub fn presence(&self) -> Result<presence::Presence> {
+        let now = Utc::now();
+        let mut stmt = self.conn.prepare(
+            "SELECT id, host, operator, opened_at, last_seen_at
+             FROM open_sessions WHERE id != ?1 ORDER BY last_seen_at DESC",
+        )?;
+        let rows = stmt.query_map(params![self.session.to_string()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?;
+
+        let mut others = Vec::new();
+        for row in rows {
+            let (id, host, operator, opened_at, last_seen_at) = row?;
+            let session = presence::Session {
+                id: Uuid::parse_str(&id).unwrap_or_default(),
+                host,
+                operator,
+                opened_at: parse_time("open_sessions.opened_at", &opened_at)?,
+                last_seen_at: parse_time("open_sessions.last_seen_at", &last_seen_at)?,
+            };
+            if !session.is_stale(now) {
+                others.push(session);
+            }
+        }
+        Ok(presence::Presence { others })
+    }
+
+    /// Give up this session's row. Called on the way out, before the connection
+    /// closes.
+    fn release_presence(&self) {
+        if self.read_only || self.presence_renewed_at.is_none() {
+            return;
+        }
+        if let Err(e) = self.conn.execute(
+            "DELETE FROM open_sessions WHERE id = ?1",
+            params![self.session.to_string()],
+        ) {
+            // A row left behind is not a lock and blocks nobody: it ages out of
+            // the window on its own, which is exactly the case the window is for.
+            tracing::warn!(event = "db.presence.release_failed", reason = %e);
+        }
+    }
+
+    /// Push every session's last-seen time back by `by`, so a test can produce
+    /// the one state nothing polite creates: a session that stopped without
+    /// releasing its row.
+    ///
+    /// Deliberately public and deliberately named. The alternative was a test
+    /// reaching into `conn`, which would mean either making the connection public
+    /// — a hole in the one guarantee this module gives, that every statement here
+    /// is parameterised and reviewed — or leaving the crashed-session case
+    /// untested, which is the case the staleness window exists for.
+    #[doc(hidden)]
+    pub fn age_sessions_for_tests(&self, by: chrono::Duration) -> Result<()> {
+        let aged = (Utc::now() - by).to_rfc3339();
+        self.conn.execute(
+            "UPDATE open_sessions SET last_seen_at = ?1, opened_at = ?1",
+            params![aged],
+        )?;
+        Ok(())
+    }
+
+    /// How many session rows exist, stale ones included. See above.
+    #[doc(hidden)]
+    pub fn session_count_for_tests(&self) -> Result<usize> {
+        let count: i64 = self
+            .conn
+            .query_row("SELECT count(*) FROM open_sessions", [], |row| row.get(0))?;
+        Ok(count as usize)
     }
 
     /// Every remediation on record, newest first.
@@ -3635,4 +3863,24 @@ CREATE TABLE IF NOT EXISTS key_rma (
 );
 
 CREATE INDEX IF NOT EXISTS idx_rma_serial ON key_rma(key_serial);
+"#;
+
+/// Schema v7: who has the register open right now
+/// (`features/database-selection.md` phase 6).
+///
+/// Deliberately **not** a lock. A row says "this session said it was here at this
+/// time", which is a claim about the past, not a permission — see
+/// [`presence`] for why the answer on a share is a name on the screen rather than
+/// a refusal.
+const MIGRATE_V7: &str = r#"
+CREATE TABLE IF NOT EXISTS open_sessions (
+    id            TEXT PRIMARY KEY,
+    host          TEXT NOT NULL,
+    operator      TEXT NOT NULL DEFAULT '',
+    app_version   TEXT NOT NULL DEFAULT '',
+    opened_at     TEXT NOT NULL,
+    last_seen_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_seen ON open_sessions(last_seen_at);
 "#;

@@ -622,20 +622,72 @@ fn an_observation_is_stored_against_the_serial() {
     let store = Store::open_in_memory().unwrap();
     store.upsert_key(&key(20_423_633)).unwrap();
 
+    let seen = store.key_by_serial(20_423_633).unwrap().unwrap();
     store
-        .set_key_notes(20_423_633, "arrived in shipment NF-8891, box 2")
+        .set_key_notes(
+            20_423_633,
+            "arrived in shipment NF-8891, box 2",
+            seen.updated_at,
+        )
         .unwrap();
 
     let stored = store.key_by_serial(20_423_633).unwrap().unwrap();
     assert_eq!(stored.notes, "arrived in shipment NF-8891, box 2");
+
+    // And again, from the record as it now stands. This is what says the
+    // optimistic guard round-trips: `updated_at` is compared as the text the
+    // store wrote, so a save that could only ever happen once would mean the
+    // parse and the format disagree.
+    store
+        .set_key_notes(20_423_633, "box 2, second shelf", stored.updated_at)
+        .unwrap();
+    assert_eq!(
+        store.key_by_serial(20_423_633).unwrap().unwrap().notes,
+        "box 2, second shelf"
+    );
+}
+
+#[test]
+fn an_observation_over_somebody_elses_edit_is_refused_rather_than_overwriting_it() {
+    // Two operators on a share, both with the key on screen. The second save has
+    // to fail: the alternative is that the first operator's observation vanishes
+    // and neither of them ever finds out.
+    let store = Store::open_in_memory().unwrap();
+    store.upsert_key(&key(20_423_633)).unwrap();
+
+    let ana_sees = store.key_by_serial(20_423_633).unwrap().unwrap();
+    let bruno_sees = ana_sees.clone();
+
+    store
+        .set_key_notes(
+            20_423_633,
+            "connector bent — do not hand out",
+            ana_sees.updated_at,
+        )
+        .unwrap();
+
+    match store.set_key_notes(20_423_633, "spare", bruno_sees.updated_at) {
+        Err(StoreError::Conflict { what, theirs }) => {
+            assert!(what.contains("20423633"), "{what}");
+            assert!(!theirs.is_empty());
+        }
+        other => panic!("expected a conflict, got {other:?}"),
+    }
+
+    // And Ana's observation is the one on the register.
+    assert_eq!(
+        store.key_by_serial(20_423_633).unwrap().unwrap().notes,
+        "connector bent — do not hand out"
+    );
 }
 
 #[test]
 fn an_observation_on_an_unknown_serial_is_not_found() {
     // Updating nothing must not report success: the operator would believe the
-    // observation was filed.
+    // observation was filed. Distinguished from a conflict by the row being gone
+    // rather than newer — two different sentences for two different situations.
     let store = Store::open_in_memory().unwrap();
-    match store.set_key_notes(999, "note") {
+    match store.set_key_notes(999, "note", chrono::Utc::now()) {
         Err(StoreError::NotFound(what)) => assert!(what.contains("999")),
         other => panic!("expected NotFound, got {other:?}"),
     }
@@ -645,8 +697,9 @@ fn an_observation_on_an_unknown_serial_is_not_found() {
 fn removing_a_key_deletes_the_row_and_returns_what_was_removed() {
     let store = Store::open_in_memory().unwrap();
     store.upsert_key(&key(20_423_633)).unwrap();
+    let seen = store.key_by_serial(20_423_633).unwrap().unwrap();
     store
-        .set_key_notes(20_423_633, "typed the wrong serial")
+        .set_key_notes(20_423_633, "typed the wrong serial", seen.updated_at)
         .unwrap();
 
     let removed = store.delete_key(20_423_633).unwrap();

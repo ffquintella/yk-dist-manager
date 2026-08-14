@@ -280,9 +280,14 @@ fn scenario_an_observation_survives_reading_the_key_again() {
     let world = World::new();
     let scanned = YubiKeyRecord::from_serial(20_423_633, SerialSource::ScannedLabel);
     world.store.upsert_key(&scanned).unwrap();
+    let seen = world.store.key_by_serial(20_423_633).unwrap().unwrap();
     world
         .store
-        .set_key_notes(20_423_633, "connector bent — do not hand out")
+        .set_key_notes(
+            20_423_633,
+            "connector bent — do not hand out",
+            seen.updated_at,
+        )
         .unwrap();
 
     // When the key is plugged in and read, the way the Inventory screen does it

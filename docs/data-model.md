@@ -1,6 +1,6 @@
 # Data model
 
-Schema **v6**, tracked in `PRAGMA user_version`. One SQLite file holds everything.
+Schema **v7**, tracked in `PRAGMA user_version`. One SQLite file holds everything.
 Source of truth: `SCHEMA_V1` in [`src/store/mod.rs`](../src/store/mod.rs).
 
 Conventions:
@@ -297,6 +297,29 @@ other piece of run evidence lives (`bootstrap::credential_evidence`,
 list would be a second truth about what a run did, and it would be empty for every register
 written before v6 — derived, a register created under v1 answers in full.
 
+## `open_sessions` — who has the register open right now (v7)
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | TEXT PK | The **run**, not the workstation: a pid is reused, and one host may have two windows open |
+| `host` | TEXT | The workstation name, so a banner can say *which* computer |
+| `operator` | TEXT | The identity the audit trail records, so it can say *who* |
+| `app_version` | TEXT | Useful when two builds are in use on one share |
+| `opened_at` | TEXT | |
+| `last_seen_at` | TEXT | Rewritten every 60s while the session lives |
+
+**Not a lock.** A row is a claim that a session was here at a moment, and nothing more:
+one silent for 15 minutes is not shown, and is pruned by the next session that opens the
+register. Two operators writing at once is safe — SQLite serialises them, and the busy
+timeout waits — so the danger this answers is neither corruption nor a race, but two
+people working out of the same box of keys without knowing it. See
+[`src/store/presence.rs`](../src/store/presence.rs); the cloud-sync lock is the other
+case and still *refuses* the second workstation, because there the two are not sharing a
+lock manager at all.
+
+Pruning happens on the **write** path, deliberately: a read-only session must be able to
+read who else is here without writing anything.
+
 ## `audit` — the trail
 
 | Column | Type | Notes |
@@ -345,6 +368,7 @@ Shipped so far:
 | v4 | `templates.retired_at` — a procedure can be withdrawn without being deleted |
 | v5 | `bootstrap_run_steps` — per-step rows; drops `bootstrap_runs.steps` |
 | v6 | `key_incidents`, `key_remediations`, `key_rma` — what happens to a key after the hand-over |
+| v7 | `open_sessions` — who has the register open right now |
 
 A test builds a v1 database by hand — including a run whose steps are a JSON blob
 in serde's old spelling — and opens it with the current build, asserting the chain
@@ -362,7 +386,12 @@ register — covered by `a_run_with_an_unreadable_step_blob_keeps_its_record`.
 v6 adds three tables and alters nothing, which is why it is a single `execute_batch` with
 no backfill: the facts it holds are ones nobody was recording before.
 
-Planned: **v7** — a `batches` table for bulk enrolment.
+v7 adds one table and needs no backfill for a stronger reason: every row in it is about
+*now*. A register migrated from v6 starts with an empty `open_sessions`, which is the
+correct answer — nobody had it open a moment ago, and the first session to open it says so
+itself.
+
+Planned: **v8** — a `batches` table for bulk enrolment.
 
 ## Personal data summary
 

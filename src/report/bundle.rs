@@ -70,9 +70,16 @@ pub fn manifest(entries: &[(String, &Report)], generated_by: &str, now: DateTime
     for (name, report) in entries {
         out.push_str(&format!("{name}\n"));
         out.push_str(&format!("    {}\n", report.kind.question()));
-        out.push_str(&format!("    {} row(s) — {}\n", report.rows.len(), report.scope));
+        out.push_str(&format!(
+            "    {} row(s) — {}\n",
+            report.rows.len(),
+            report.scope
+        ));
         for note in &report.notes {
-            out.push_str(&format!("    {}\n", note.split_whitespace().collect::<Vec<_>>().join(" ")));
+            out.push_str(&format!(
+                "    {}\n",
+                note.split_whitespace().collect::<Vec<_>>().join(" ")
+            ));
         }
         out.push('\n');
     }

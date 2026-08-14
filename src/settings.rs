@@ -209,7 +209,25 @@ pub struct AppSettings {
     /// The share is what is stable.
     pub recent_shares: Vec<ShareEntry>,
     /// Operator name recorded on hand-overs and audit entries.
+    ///
+    /// The default for a register that has no name of its own; see
+    /// [`AppSettings::operators`].
     pub operator: String,
+    /// The operator identity used for a *particular* register
+    /// (`features/database-selection.md` phase 8).
+    ///
+    /// One identity per workstation was wrong in the case this tool is actually
+    /// used in: a unit's share holds the register that Ana works in, and the same
+    /// laptop opens a second register — a pilot, a test file, another unit's —
+    /// under a different name. With one field, whichever was typed last became
+    /// the actor on every audit entry afterwards, and nothing on screen said so.
+    ///
+    /// Keyed by the path as it was opened, and that is right *because* settings
+    /// are per workstation: two workstations mounting the share at different
+    /// points have their own settings files, so the mount point never has to
+    /// agree between them. An entry is written when the operator edits the field
+    /// with a register open, never inferred.
+    pub operators: std::collections::BTreeMap<PathBuf, String>,
     /// Organisation, used in certificate subjects.
     pub org: String,
     /// How long audit entries and logs are kept.
@@ -325,6 +343,7 @@ impl AppSettings {
             recent_databases: Vec::new(),
             recent_shares: Vec::new(),
             operator: default_operator(),
+            operators: std::collections::BTreeMap::new(),
             org: String::new(),
             retention: RetentionPolicy::default(),
             window: WindowState::default(),
@@ -380,10 +399,39 @@ impl AppSettings {
         self.last_database = Some(database);
     }
 
+    /// The identity to record while this register is open.
+    ///
+    /// Falls back to the workstation's own default, which is what a register
+    /// nobody has named an operator for should use — and what every register did
+    /// before this existed.
+    pub fn operator_for(&self, database: &Path) -> String {
+        self.operators
+            .get(database)
+            .map(|name| name.trim().to_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| self.operator.clone())
+    }
+
+    /// Remember who works in this register.
+    ///
+    /// An empty name **removes** the entry rather than storing a blank: clearing
+    /// the field means "use the workstation's default again", and a stored empty
+    /// string would be a third state nobody asked for.
+    pub fn remember_operator(&mut self, database: &Path, operator: &str) {
+        let operator = operator.trim();
+        if operator.is_empty() {
+            self.operators.remove(database);
+        } else {
+            self.operators
+                .insert(database.to_path_buf(), operator.to_owned());
+        }
+    }
+
     /// Drop a database from the recent list (e.g. the operator no longer wants a
     /// share they cannot reach listed).
     pub fn forget(&mut self, database: &Path) {
         self.recent_databases.retain(|known| known != database);
+        self.operators.remove(database);
         if self.last_database.as_deref() == Some(database) {
             self.last_database = None;
         }

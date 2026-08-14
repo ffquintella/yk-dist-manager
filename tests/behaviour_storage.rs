@@ -639,8 +639,9 @@ fn scenario_a_second_operator_can_look_at_a_locked_register_without_taking_it() 
         bruno.append_audit("bruno", "key.added", "serial:2", ""),
         Err(StoreError::ReadOnly)
     ));
+    let seen = bruno.key_by_serial(20_423_633).unwrap().unwrap();
     assert!(matches!(
-        bruno.set_key_notes(20_423_633, "spare"),
+        bruno.set_key_notes(20_423_633, "spare", seen.updated_at),
         Err(StoreError::ReadOnly)
     ));
 
