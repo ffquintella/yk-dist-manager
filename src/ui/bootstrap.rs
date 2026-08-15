@@ -75,11 +75,190 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
 
     match app.wizard.stage {
         WizardStage::Selecting => {
+            batch_panel(app, ui);
             unfinished_runs(app, ui);
             plan_table(app, ui);
         }
         WizardStage::Confirming => confirmation(app, ui),
-        WizardStage::Running => run_view(app, ui),
+        WizardStage::Running => {
+            batch_panel(app, ui);
+            run_view(app, ui);
+        }
+    }
+}
+
+/// Bulk enrolment (`features/bulk-enrollment.md`, `gui-bootstrap-wizard` phase 8).
+///
+/// On this screen rather than one of its own, and that is the design rather than
+/// a saving: a batch **drives the wizard**. The plan, the pre-flight, the
+/// confirmation and the run view are the same ones a single key gets, and a batch
+/// mode with its own quieter run path would be a second way of writing to a key —
+/// the second way always being the one that skips a check.
+fn batch_panel(app: &mut YkDistApp, ui: &mut egui::Ui) {
+    use crate::batch::Shape;
+
+    let running = app.batch.current.is_some();
+    super::titled_card(ui, "Batch", |ui| {
+        if !running {
+            super::form_columns(ui, |left, right, width| {
+                left.add(
+                    Select::new("batch-shape", &mut app.batch.shape)
+                        .label("Batch")
+                        .options(Shape::ALL.map(|shape| (shape, shape.label())))
+                        .width(width),
+                );
+                super::hint(left, app.batch.shape.describe());
+
+                if app.batch.shape == Shape::StockPreparation {
+                    right.label("Keys in the box");
+                    right.add(egui::DragValue::new(&mut app.batch.planned).range(1..=500));
+                    super::hint(
+                        right,
+                        "A target, not a limit: one more key in the box than you counted is not \
+                         an error worth stopping for.",
+                    );
+                } else {
+                    right.label("Pairing list (CSV: serial, email — serial optional)");
+                    super::capped_area(right, &mut app.batch.pairing_text, 64 * 1024, |area| {
+                        area.rows(4).id_salt("batch-pairs")
+                    });
+                    if right
+                        .add(elegance::Button::new("Check the list").outline())
+                        .clicked()
+                    {
+                        app.load_pairing_list();
+                    }
+                }
+            });
+
+            ui.add_space(10.0);
+            ui.horizontal_wrapped(|ui| {
+                let ready =
+                    app.batch.shape == Shape::StockPreparation || !app.batch.pairs.is_empty();
+                if ui
+                    .add(elegance::Button::new("Start batch").enabled(ready))
+                    .on_hover_text("the procedure selected above is the one the whole box will get")
+                    .clicked()
+                {
+                    app.start_batch();
+                }
+                if !app.batch.resumable.is_empty() {
+                    ui.add_space(8.0);
+                    super::faint(ui, &format!("{} unfinished", app.batch.resumable.len()));
+                }
+            });
+
+            // Unfinished batches, so an interrupted box is picked up rather than
+            // started again.
+            let resumable: Vec<(uuid::Uuid, String)> = app
+                .batch
+                .resumable
+                .iter()
+                .map(|batch| {
+                    (
+                        batch.id,
+                        format!(
+                            "{} · {} v{} · started {} · {}",
+                            batch.shape.label(),
+                            batch.template_id,
+                            batch.template_version,
+                            batch.started_at.format("%Y-%m-%d %H:%M"),
+                            batch.tally().describe(),
+                        ),
+                    )
+                })
+                .collect();
+            for (id, label) in resumable {
+                ui.add_space(6.0);
+                ui.horizontal_wrapped(|ui| {
+                    if super::row_button(ui, "Resume").clicked() {
+                        app.resume_batch(id);
+                    }
+                    super::faint(ui, &label);
+                });
+            }
+        } else {
+            batch_progress(app, ui);
+        }
+
+        if let Some(notice) = app.batch.notice.clone() {
+            ui.add_space(10.0);
+            super::notice(ui, CalloutTone::Info, &notice);
+        }
+        if let Some(error) = app.batch.error.clone() {
+            ui.add_space(10.0);
+            super::error_label(ui, &error);
+        }
+    });
+    ui.add_space(18.0);
+}
+
+fn batch_progress(app: &mut YkDistApp, ui: &mut egui::Ui) {
+    let Some(batch) = app.batch.current.clone() else {
+        return;
+    };
+    let tally = batch.tally();
+
+    ui.horizontal_wrapped(|ui| {
+        ui.add(Badge::new(batch.shape.label(), BadgeTone::Info));
+        ui.add_space(8.0);
+        super::faint(
+            ui,
+            &format!(
+                "{} v{} · started {}",
+                batch.template_id,
+                batch.template_version,
+                batch.started_at.format("%Y-%m-%d %H:%M")
+            ),
+        );
+    });
+    ui.add_space(6.0);
+    ui.add(
+        elegance::ProgressBar::new(if tally.total() == 0 {
+            0.0
+        } else {
+            tally.settled() as f32 / tally.total() as f32
+        })
+        .text(tally.describe()),
+    );
+
+    ui.add_space(10.0);
+    ui.horizontal_wrapped(|ui| {
+        // The key in the reader is offered to the batch, which is where the
+        // duplicate check lives. Nothing is written until the operator confirms
+        // the run, exactly as for one key.
+        let attached: Vec<u32> = app.attached.serials();
+        for serial in attached {
+            if ui
+                .add(elegance::Button::new(format!("Use serial {serial}")))
+                .clicked()
+            {
+                app.present_batch_key(serial);
+            }
+        }
+        if app.batch.position.is_some() && super::row_button(ui, "Skip this key").clicked() {
+            app.skip_batch_key("not in the box");
+        }
+        if super::row_button(ui, "Put the batch down").clicked() {
+            app.close_batch();
+        }
+    });
+    super::hint(
+        ui,
+        "The batch keeps the counting; the run is the same one a single key gets — same plan, \
+         same pre-flight, same confirmation.",
+    );
+
+    let attention = batch.needs_attention();
+    if !attention.is_empty() {
+        ui.add_space(12.0);
+        super::table(ui, "batch-attention", &["Key", "What happened"], |ui| {
+            for entry in attention {
+                super::mono(ui, &entry.describe());
+                super::faint(ui, &entry.detail);
+                ui.end_row();
+            }
+        });
     }
 }
 

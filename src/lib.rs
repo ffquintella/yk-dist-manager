@@ -21,6 +21,7 @@
 //! | [`secret`] | The secrets a bootstrap sets: generated, shown once, wiped |
 //! | [`term`] | Consignment terms: multilingual templates and rendering |
 //! | [`report`] | What the register knows, answered as a table and exported |
+//! | [`batch`] | A box of keys bootstrapped in one sitting |
 //! | [`pdf`] | The PDF a term is printed and signed on, written without a dependency |
 //! | [`incident`] | The note that goes to the ESI when a key is lost or stolen |
 //! | [`versioning`] | "What number does the next edit get?", shared by both |
@@ -36,6 +37,7 @@
 
 pub mod app;
 pub mod audit;
+pub mod batch;
 pub mod bootstrap;
 pub mod branding;
 pub mod browse;

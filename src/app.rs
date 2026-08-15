@@ -618,6 +618,35 @@ impl Tab {
     }
 }
 
+/// Bulk-enrolment state (`features/bulk-enrollment.md`).
+///
+/// The batch drives the **wizard**, rather than reimplementing it: each key still
+/// gets its own plan, its own pre-flight, its own confirmation and its own audit
+/// entries. A batch mode that had its own quieter run path would be a second way
+/// of writing to a key, and the second way is always the one that skips a check.
+#[derive(Default)]
+pub struct BatchPanel {
+    /// Is the operator setting one up, or working through one?
+    pub open: bool,
+    pub shape: crate::batch::Shape,
+    /// How many keys the operator says are in the box.
+    pub planned: usize,
+    /// The pairing list as typed or loaded, before it is parsed.
+    pub pairing_text: String,
+    /// The parsed list, once it has been accepted whole.
+    pub pairs: Vec<crate::batch::pairing::Pair>,
+    /// The batch in progress.
+    pub current: Option<crate::batch::Batch>,
+    /// Which position the wizard is working on right now.
+    pub position: Option<usize>,
+    /// Batches somebody could pick up, read when the screen opens.
+    pub resumable: Vec<crate::batch::Batch>,
+    pub error: Option<String>,
+    /// The last thing that happened, kept beside the batch rather than in the
+    /// status bar — during a batch the status bar is the *run's*.
+    pub notice: Option<String>,
+}
+
 /// Reports screen state (`features/reports-and-export.md`).
 ///
 /// The generated report is held here rather than rebuilt every frame, and that
@@ -976,6 +1005,8 @@ pub struct YkDistApp {
     pub term_editor: TermEditor,
     /// The Reports screen: which report, the one generated, and where it goes.
     pub reports: ReportPanel,
+    /// A box of keys being bootstrapped in one sitting.
+    pub batch: BatchPanel,
     /// Who else has this register open right now
     /// (`features/database-selection.md` phase 6).
     ///
@@ -1103,6 +1134,7 @@ impl YkDistApp {
             term_panel: TermPanel::default(),
             term_editor: TermEditor::default(),
             reports: ReportPanel::default(),
+            batch: BatchPanel::default(),
             presence: crate::store::presence::Presence::default(),
             term_templates: Vec::new(),
             document_counts: std::collections::BTreeMap::new(),
@@ -2083,6 +2115,12 @@ impl YkDistApp {
         // Read back on the same tick: a session that goes quiet has to *leave*
         // the banner without anybody pressing Refresh, or the warning outlives
         // the thing it warns about.
+        match store.unfinished_batches() {
+            Ok(batches) => self.batch.resumable = batches,
+            // Not fatal: a batch that cannot be listed is one nobody is offered
+            // to resume, which is a lesser failure than refusing to refresh.
+            Err(e) => tracing::warn!(event = "batch.read.failed", reason = %e),
+        }
         match store.presence() {
             Ok(presence) => self.presence = presence,
             Err(e) => tracing::warn!(event = "db.presence.read_failed", reason = %e),
@@ -3577,6 +3615,12 @@ impl YkDistApp {
                 self.status = "could not read the database — see the log".into();
                 tracing::error!(event = "db.read.failed");
             }
+        }
+        match store.unfinished_batches() {
+            Ok(batches) => self.batch.resumable = batches,
+            // Not fatal: a batch that cannot be listed is one nobody is offered
+            // to resume, which is a lesser failure than refusing to refresh.
+            Err(e) => tracing::warn!(event = "batch.read.failed", reason = %e),
         }
         match store.presence() {
             Ok(presence) => self.presence = presence,
@@ -5825,6 +5869,12 @@ impl YkDistApp {
                 self.status = format!("the run did not complete: {e}");
             }
         }
+        // A batch folds the outcome in here, on the same path a single run takes
+        // — including the failure branch above. A batch that only heard about its
+        // successes would report a clean sweep of a box where seven keys failed.
+        if self.batch.position.is_some() {
+            self.record_batch_outcome();
+        }
         self.refresh();
     }
 
@@ -6274,6 +6324,345 @@ impl YkDistApp {
                 "serial {serial} returned. Note: no signed term was ever filed for this                  hand-over, and that gap is now permanent"
             );
         }
+    }
+
+    // ---------------------------------------------------------------- batches
+
+    /// Parse the pairing list the operator pasted or loaded.
+    ///
+    /// All of it or none of it: [`crate::batch::pairing`] says why, and the
+    /// refusal carries every bad line so one pass at the spreadsheet fixes them.
+    pub fn load_pairing_list(&mut self) {
+        self.batch.error = None;
+        self.batch.pairs.clear();
+
+        let known: std::collections::BTreeMap<String, uuid::Uuid> = self
+            .holders
+            .iter()
+            .map(|holder| (holder.email.to_ascii_lowercase(), holder.id))
+            .collect();
+
+        match crate::batch::pairing::parse(&self.batch.pairing_text, &known) {
+            Ok(pairs) => {
+                self.batch.notice = Some(format!(
+                    "list accepted — {}",
+                    crate::batch::pairing::summarise(&pairs)
+                ));
+                self.batch.pairs = pairs;
+            }
+            Err(e) => self.batch.error = Some(e.to_string()),
+        }
+    }
+
+    /// Start a batch against the selected template.
+    pub fn start_batch(&mut self) {
+        use crate::batch::{Batch, Shape};
+
+        self.batch.error = None;
+        self.batch.notice = None;
+
+        let Some(template) = self.selected_template().cloned() else {
+            self.batch.error = Some("choose a procedure before starting a batch".into());
+            return;
+        };
+        if self.batch.shape.needs_pairing_list() && self.batch.pairs.is_empty() {
+            self.batch.error = Some(
+                "an assigned batch needs its pairing list first: every address is checked before \
+                 the first key is touched, not as each one comes up"
+                    .into(),
+            );
+            return;
+        }
+
+        let batch = match self.batch.shape {
+            Shape::StockPreparation => Batch::stock(
+                &template.id,
+                &template.version,
+                &self.operator,
+                self.batch.planned.max(1),
+            ),
+            Shape::AssignedEnrolment => Batch::assigned(
+                &template.id,
+                &template.version,
+                &self.operator,
+                &self.batch.pairs,
+            ),
+        };
+
+        let Some(store) = &self.store else {
+            self.batch.error = Some("no database is open".into());
+            return;
+        };
+        if let Err(e) = store.insert_batch(&batch) {
+            // Refused rather than started in memory: a batch that cannot be
+            // written cannot be resumed, and an unresumable batch of fifty keys
+            // is the failure this whole feature exists to prevent.
+            self.batch.error = Some(format!("the batch could not be started: {e}"));
+            return;
+        }
+
+        self.record(
+            "batch.started",
+            &format!("batch:{}", batch.id),
+            &batch.audit_detail(),
+        );
+        self.batch.notice = Some(format!(
+            "batch started — {}. Insert the first key.",
+            batch.tally().describe()
+        ));
+        self.batch.current = Some(batch);
+        self.batch.position = None;
+        self.batch.open = true;
+    }
+
+    /// Offer a key to the batch, and set the wizard up for it.
+    ///
+    /// Returns true when the run may proceed. A duplicate is refused *and*
+    /// audited: the same key inserted twice is a real mistake, and one nobody
+    /// would otherwise be able to reconstruct from the trail.
+    pub fn present_batch_key(&mut self, serial: u32) -> bool {
+        use crate::batch::Presented;
+
+        self.batch.error = None;
+        let Some(batch) = self.batch.current.as_mut() else {
+            self.batch.error = Some("no batch is in progress".into());
+            return false;
+        };
+
+        let presented = batch.present(serial);
+        let id = batch.id;
+        match presented {
+            Presented::Ready { position } => {
+                let entry = batch.entries[position].clone();
+                // Written before the run, so a crash mid-run leaves the register
+                // saying which key was in the reader.
+                if let Some(store) = &self.store
+                    && let Err(e) = store.record_batch_entry(id, &entry)
+                {
+                    tracing::error!(event = "batch.entry.save.failed", reason = %e);
+                    self.batch.error = Some(format!("the batch could not be updated: {e}"));
+                    return false;
+                }
+                self.batch.position = Some(position);
+                self.batch.notice = Some(presented.describe(serial));
+
+                // The wizard does the rest, exactly as it would for one key.
+                self.wizard.serial = serial.to_string();
+                if let Some(holder_id) = entry.holder_id
+                    && let Some(index) = self.holders.iter().position(|h| h.id == holder_id)
+                {
+                    self.wizard.holder_index = index;
+                }
+                true
+            }
+            Presented::Duplicate { .. } | Presented::Full => {
+                let detail = format!("batch={id} serial={serial}");
+                let refusal = presented.describe(serial);
+                if matches!(presented, Presented::Duplicate { .. }) {
+                    self.record("batch.key.duplicate", &format!("serial:{serial}"), &detail);
+                }
+                self.batch.error = Some(refusal);
+                false
+            }
+        }
+    }
+
+    /// Fold the run that just finished back into the batch.
+    ///
+    /// Called after the wizard settles, whichever way it went: a batch that only
+    /// recorded its successes would report a clean sweep of a box where seven
+    /// keys failed.
+    pub fn record_batch_outcome(&mut self) {
+        use crate::batch::Outcome;
+        use crate::domain::RunStatus;
+
+        let Some(position) = self.batch.position else {
+            return;
+        };
+        let run = self.wizard.run.clone();
+        let error = self.wizard.error.clone();
+
+        let outcome = match (&run, &error) {
+            (Some(run), _) if run.status == RunStatus::Completed => Outcome::Done { run: run.id },
+            (Some(run), _) => Outcome::Failed {
+                run: Some(run.id),
+                reason: format!(
+                    "run {:?}: {}",
+                    run.status,
+                    error.clone().unwrap_or_else(|| run.summary())
+                ),
+            },
+            (None, Some(reason)) => Outcome::Failed {
+                run: None,
+                reason: reason.clone(),
+            },
+            // Nothing to fold in: the wizard has not run yet.
+            (None, None) => return,
+        };
+
+        let (id, entry, complete, tally) = {
+            let Some(batch) = self.batch.current.as_mut() else {
+                return;
+            };
+            batch.record(position, outcome);
+            (
+                batch.id,
+                batch.entries[position].clone(),
+                batch.is_complete(),
+                batch.tally(),
+            )
+        };
+
+        let event = match entry.state {
+            crate::batch::EntryState::Done => "batch.key.done",
+            _ => "batch.key.failed",
+        };
+        let detail = self
+            .batch
+            .current
+            .as_ref()
+            .map(|batch| batch.key_audit_detail(position))
+            .unwrap_or_default();
+
+        if let Some(store) = &self.store
+            && let Err(e) = store.record_batch_entry(id, &entry)
+        {
+            // Loud: the key was written and the batch cannot say so, which is
+            // exactly the bookkeeping this feature took over from the operator.
+            tracing::error!(event = "batch.entry.save.failed", reason = %e);
+            self.batch.error = Some(format!("the batch could not be updated: {e}"));
+        }
+        let target = entry
+            .serial
+            .map(|serial| format!("serial:{serial}"))
+            .unwrap_or_else(|| format!("batch:{id}"));
+        self.record(event, &target, &detail);
+
+        self.batch.position = None;
+        self.batch.notice = Some(tally.describe());
+
+        if complete {
+            if let Some(store) = &self.store
+                && let Err(e) = store.finish_batch(id, chrono::Utc::now())
+            {
+                tracing::error!(event = "batch.finish.save.failed", reason = %e);
+            }
+            self.record(
+                "batch.finished",
+                &format!("batch:{id}"),
+                &tally.audit_detail(),
+            );
+            self.batch.notice = Some(format!("batch finished — {}", tally.describe()));
+        }
+    }
+
+    /// Pass over the position in hand — the key is not in the box, or the
+    /// operator is coming back to it.
+    pub fn skip_batch_key(&mut self, reason: &str) {
+        use crate::batch::Outcome;
+
+        let Some(position) = self.batch.position else {
+            return;
+        };
+        let reason = if reason.trim().is_empty() {
+            "skipped by the operator".to_owned()
+        } else {
+            reason.trim().to_owned()
+        };
+
+        let (id, entry, complete, tally) = {
+            let Some(batch) = self.batch.current.as_mut() else {
+                return;
+            };
+            batch.record(position, Outcome::Skipped { reason });
+            (
+                batch.id,
+                batch.entries[position].clone(),
+                batch.is_complete(),
+                batch.tally(),
+            )
+        };
+        let detail = self
+            .batch
+            .current
+            .as_ref()
+            .map(|batch| batch.key_audit_detail(position))
+            .unwrap_or_default();
+
+        if let Some(store) = &self.store {
+            let _ = store.record_batch_entry(id, &entry);
+            if complete {
+                let _ = store.finish_batch(id, chrono::Utc::now());
+            }
+        }
+        self.record("batch.key.skipped", &format!("batch:{id}"), &detail);
+        if complete {
+            self.record(
+                "batch.finished",
+                &format!("batch:{id}"),
+                &tally.audit_detail(),
+            );
+        }
+        self.batch.position = None;
+        self.batch.notice = Some(tally.describe());
+    }
+
+    /// Read the batches somebody could pick up.
+    pub fn reload_batches(&mut self) {
+        let Some(store) = &self.store else { return };
+        match store.unfinished_batches() {
+            Ok(batches) => self.batch.resumable = batches,
+            Err(e) => tracing::warn!(event = "batch.read.failed", reason = %e),
+        }
+    }
+
+    /// Pick a batch up where it was left.
+    pub fn resume_batch(&mut self, id: uuid::Uuid) {
+        self.batch.error = None;
+        let Some(batch) = self.batch.resumable.iter().find(|b| b.id == id).cloned() else {
+            self.batch.error = Some("that batch is no longer on the register".into());
+            return;
+        };
+
+        // The procedure comes from the batch, not from whatever is selected: a
+        // resumed batch must finish the box with the version it started.
+        if let Some(index) = self
+            .templates
+            .iter()
+            .position(|t| t.id == batch.template_id && t.version == batch.template_version)
+        {
+            self.wizard.template_index = index;
+        } else {
+            self.batch.error = Some(format!(
+                "this batch applied {} version {}, which is not among the procedures this build \
+                 offers — the rest of the box would get a different one",
+                batch.template_id, batch.template_version
+            ));
+            return;
+        }
+
+        self.record(
+            "batch.resumed",
+            &format!("batch:{id}"),
+            &batch.resume_audit_detail(),
+        );
+        self.batch.notice = Some(format!(
+            "resumed — {}. Insert the next key.",
+            batch.tally().describe()
+        ));
+        self.batch.shape = batch.shape;
+        self.batch.current = Some(batch);
+        self.batch.position = None;
+        self.batch.open = true;
+    }
+
+    /// Put the batch down without finishing it. It stays resumable.
+    pub fn close_batch(&mut self) {
+        self.batch.current = None;
+        self.batch.position = None;
+        self.batch.open = false;
+        self.batch.notice = None;
+        self.reload_batches();
     }
 
     // ---------------------------------------------------------------- reports

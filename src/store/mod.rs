@@ -59,7 +59,7 @@ use crate::template::{BootstrapTemplate, StoredTemplate};
 use crate::term::TermTemplate;
 
 /// Current schema version, tracked in `PRAGMA user_version`.
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -953,6 +953,9 @@ impl Store {
         }
         if version < 7 {
             self.conn.execute_batch(MIGRATE_V7)?;
+        }
+        if version < 8 {
+            self.conn.execute_batch(MIGRATE_V8)?;
         }
 
         self.conn
@@ -1920,6 +1923,95 @@ impl Store {
              FROM key_remediations WHERE key_serial = ?1 ORDER BY recorded_at DESC",
         )?;
         let rows = stmt.query_map(params![serial], row_to_remediation)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .collect::<Result<Vec<_>>>()
+    }
+
+    // ---------------------------------------------------------------- batches
+
+    /// Write a new batch and every position it starts with.
+    ///
+    /// One transaction, because a batch header with no positions is a batch that
+    /// resumes into nothing — and the operator would have no way to tell that
+    /// from a batch that finished.
+    pub fn insert_batch(&self, batch: &crate::batch::Batch) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO batches (id, shape, template_id, template_version, operator,
+                                  started_at, finished_at, notes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                batch.id.to_string(),
+                batch.shape.as_str(),
+                batch.template_id,
+                batch.template_version,
+                batch.operator,
+                batch.started_at.to_rfc3339(),
+                batch.finished_at.map(|at| at.to_rfc3339()),
+                batch.notes,
+            ],
+        )?;
+        for entry in &batch.entries {
+            write_batch_entry(&tx, batch.id, entry)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Write one position, as it happens.
+    ///
+    /// Per key rather than per batch: this is what "persisted as it goes, not at
+    /// the end" means, and it is why an unplugged key or a closed laptop costs
+    /// the key in hand rather than the afternoon.
+    pub fn record_batch_entry(&self, batch: uuid::Uuid, entry: &crate::batch::Entry) -> Result<()> {
+        write_batch_entry(&self.conn, batch, entry)
+    }
+
+    /// Close a batch off.
+    pub fn finish_batch(&self, batch: uuid::Uuid, at: DateTime<Utc>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE batches SET finished_at = ?1 WHERE id = ?2",
+            params![at.to_rfc3339(), batch.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Every batch, newest first.
+    pub fn batches(&self) -> Result<Vec<crate::batch::Batch>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, shape, template_id, template_version, operator, started_at, finished_at,
+                    notes
+             FROM batches ORDER BY started_at DESC",
+        )?;
+        let headers = stmt
+            .query_map([], row_to_batch)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let mut out = Vec::new();
+        for header in headers {
+            let mut batch = header?;
+            batch.entries = self.batch_entries(batch.id)?;
+            out.push(batch);
+        }
+        Ok(out)
+    }
+
+    /// The batches somebody could still pick up.
+    pub fn unfinished_batches(&self) -> Result<Vec<crate::batch::Batch>> {
+        Ok(self
+            .batches()?
+            .into_iter()
+            .filter(|batch| !batch.is_complete())
+            .collect())
+    }
+
+    fn batch_entries(&self, batch: uuid::Uuid) -> Result<Vec<crate::batch::Entry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT position, key_serial, holder_id, holder_display, run_id, state, detail
+             FROM batch_keys WHERE batch_id = ?1 ORDER BY position ASC",
+        )?;
+        let rows = stmt.query_map(params![batch.to_string()], row_to_batch_entry)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()?
             .into_iter()
             .collect::<Result<Vec<_>>>()
@@ -3377,6 +3469,94 @@ fn row_to_incident(row: &rusqlite::Row<'_>) -> RowResult<KeyIncident> {
     })())
 }
 
+/// Upsert one batch position.
+///
+/// Takes anything that can prepare a statement, so the same SQL serves the
+/// initial insert (inside a transaction) and the per-key update (outside one) —
+/// two spellings of this row is how a resumed batch comes back with a column
+/// nobody wrote.
+fn write_batch_entry(
+    conn: &Connection,
+    batch: uuid::Uuid,
+    entry: &crate::batch::Entry,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO batch_keys (batch_id, position, key_serial, holder_id, holder_display,
+                                 run_id, state, detail)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(batch_id, position) DO UPDATE SET
+             key_serial = excluded.key_serial,
+             holder_id = excluded.holder_id,
+             holder_display = excluded.holder_display,
+             run_id = excluded.run_id,
+             state = excluded.state,
+             detail = excluded.detail",
+        params![
+            batch.to_string(),
+            entry.position as i64,
+            entry.serial,
+            entry.holder_id.map(|id| id.to_string()),
+            entry.holder_display,
+            entry.run_id.map(|id| id.to_string()),
+            entry.state.as_str(),
+            entry.detail,
+        ],
+    )?;
+    Ok(())
+}
+
+fn row_to_batch(row: &rusqlite::Row<'_>) -> RowResult<crate::batch::Batch> {
+    let id: String = row.get(0)?;
+    let shape: String = row.get(1)?;
+    let started_at: String = row.get(5)?;
+    let finished_at: Option<String> = row.get(6)?;
+
+    Ok((|| {
+        Ok(crate::batch::Batch {
+            id: parse_uuid("batches.id", &id)?,
+            shape: crate::batch::Shape::parse(&shape).ok_or_else(|| StoreError::Decode {
+                column: "batches.shape",
+                value: shape.clone(),
+            })?,
+            template_id: row.get(2)?,
+            template_version: row.get(3)?,
+            operator: row.get(4)?,
+            started_at: parse_time("batches.started_at", &started_at)?,
+            finished_at: finished_at
+                .map(|at| parse_time("batches.finished_at", &at))
+                .transpose()?,
+            entries: Vec::new(),
+            notes: row.get(7)?,
+        })
+    })())
+}
+
+fn row_to_batch_entry(row: &rusqlite::Row<'_>) -> RowResult<crate::batch::Entry> {
+    let position: i64 = row.get(0)?;
+    let holder_id: Option<String> = row.get(2)?;
+    let run_id: Option<String> = row.get(4)?;
+    let state: String = row.get(5)?;
+
+    Ok((|| {
+        Ok(crate::batch::Entry {
+            position: position.max(0) as usize,
+            serial: row.get(1)?,
+            holder_id: holder_id
+                .map(|id| parse_uuid("batch_keys.holder_id", &id))
+                .transpose()?,
+            holder_display: row.get(3)?,
+            run_id: run_id
+                .map(|id| parse_uuid("batch_keys.run_id", &id))
+                .transpose()?,
+            state: crate::batch::EntryState::parse(&state).ok_or_else(|| StoreError::Decode {
+                column: "batch_keys.state",
+                value: state.clone(),
+            })?,
+            detail: row.get(6)?,
+        })
+    })())
+}
+
 fn row_to_remediation(row: &rusqlite::Row<'_>) -> RowResult<Remediation> {
     let id: String = row.get(0)?;
     let incident_id: Option<String> = row.get(2)?;
@@ -3883,4 +4063,42 @@ CREATE TABLE IF NOT EXISTS open_sessions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_seen ON open_sessions(last_seen_at);
+"#;
+
+/// Schema v8: a box of keys bootstrapped in one sitting
+/// (`features/bulk-enrollment.md` phase 8).
+///
+/// Two tables, because a batch is a header and a list, and the list is what has
+/// to be written **as it goes**: a batch persisted only at the end is a batch
+/// that loses everything when the laptop closes on key 31, which is precisely
+/// the case resumability exists for.
+///
+/// `batch_keys.run_id` is the link to the evidence, and it is deliberately not a
+/// foreign key: a run row is written by the executor's own recorder, and a batch
+/// that could not be saved must never be a reason for a run not to be.
+const MIGRATE_V8: &str = r#"
+CREATE TABLE IF NOT EXISTS batches (
+    id                TEXT PRIMARY KEY,
+    shape             TEXT NOT NULL,
+    template_id       TEXT NOT NULL,
+    template_version  TEXT NOT NULL,
+    operator          TEXT NOT NULL DEFAULT '',
+    started_at        TEXT NOT NULL,
+    finished_at       TEXT,
+    notes             TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS batch_keys (
+    batch_id        TEXT NOT NULL,
+    position        INTEGER NOT NULL,
+    key_serial      INTEGER,
+    holder_id       TEXT,
+    holder_display  TEXT NOT NULL DEFAULT '',
+    run_id          TEXT,
+    state           TEXT NOT NULL,
+    detail          TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (batch_id, position)
+);
+
+CREATE INDEX IF NOT EXISTS idx_batch_keys_serial ON batch_keys(key_serial);
 "#;

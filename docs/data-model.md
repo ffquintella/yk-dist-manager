@@ -1,6 +1,6 @@
 # Data model
 
-Schema **v7**, tracked in `PRAGMA user_version`. One SQLite file holds everything.
+Schema **v8**, tracked in `PRAGMA user_version`. One SQLite file holds everything.
 Source of truth: `SCHEMA_V1` in [`src/store/mod.rs`](../src/store/mod.rs).
 
 Conventions:
@@ -297,6 +297,30 @@ other piece of run evidence lives (`bootstrap::credential_evidence`,
 list would be a second truth about what a run did, and it would be empty for every register
 written before v6 — derived, a register created under v1 answers in full.
 
+## `batches` / `batch_keys` — a box done in one sitting (v8)
+
+| `batches` | Type | Notes |
+|---|---|---|
+| `id` | TEXT PK | |
+| `shape` | TEXT | `stock` or `assigned` — the distinction that decides everything else |
+| `template_id`, `template_version` | TEXT | The procedure the **whole box** gets; a resumed batch finishes with the version it started |
+| `operator` | TEXT | |
+| `started_at`, `finished_at` | TEXT | `finished_at` is set when nothing is left pending |
+| `notes` | TEXT | |
+
+| `batch_keys` | Type | Notes |
+|---|---|---|
+| `batch_id`, `position` | TEXT, INTEGER | Composite PK. Position is stable: it is how a resumed batch lines up with what was written |
+| `key_serial` | INTEGER | `NULL` until a key is presented for this position |
+| `holder_id`, `holder_display` | TEXT | Assigned enrolment only |
+| `run_id` | TEXT | The evidence. Not a foreign key — see the migration note |
+| `state` | TEXT | `pending` / `done` / `failed` / `skipped` |
+| `detail` | TEXT | Why it failed or was skipped. A transport error or an operator's reason, never a value |
+
+Written **per key, as it goes** rather than once at the end: a batch persisted at the end
+is a batch that loses everything when the laptop closes on key 31, which is the case
+resumability exists for.
+
 ## `open_sessions` — who has the register open right now (v7)
 
 | Column | Type | Notes |
@@ -369,6 +393,7 @@ Shipped so far:
 | v5 | `bootstrap_run_steps` — per-step rows; drops `bootstrap_runs.steps` |
 | v6 | `key_incidents`, `key_remediations`, `key_rma` — what happens to a key after the hand-over |
 | v7 | `open_sessions` — who has the register open right now |
+| v8 | `batches`, `batch_keys` — a box of keys bootstrapped in one sitting |
 
 A test builds a v1 database by hand — including a run whose steps are a JSON blob
 in serde's old spelling — and opens it with the current build, asserting the chain
@@ -391,7 +416,9 @@ v7 adds one table and needs no backfill for a stronger reason: every row in it i
 correct answer — nobody had it open a moment ago, and the first session to open it says so
 itself.
 
-Planned: **v8** — a `batches` table for bulk enrolment.
+v8 adds two tables and alters nothing. `batch_keys.run_id` is deliberately **not** a
+foreign key: a run row is written by the executor's own recorder, and a batch that could
+not be saved must never become a reason for a run not to be.
 
 ## Personal data summary
 

@@ -15,6 +15,37 @@ Maintenance instructions (see AGENTS.md §5):
 * A database schema change also bumps store::SCHEMA_VERSION and ships a migration.
 -->
 
+## [Unreleased]
+
+### Added
+
+- **A box of keys in one sitting** — `features/bulk-enrollment.md`, as a **Batch** card on
+  the Bootstrap screen. Schema **v8** adds `batches` and `batch_keys`.
+
+  A batch **drives the wizard** rather than replacing it: every key still gets its own
+  plan, its own pre-flight, its own confirmation and its own audit entries. A batch mode
+  with its own quieter run path would be a second way of writing to a key, and the second
+  way is always the one that skips a check. What the batch adds is the counting — which is
+  the failure mode of repetitive work that a tool can actually fix.
+
+  - **Two shapes, kept apart.** *Stock preparation* writes what a key needs before anybody
+    owns it, so it can move as fast as the keys can be swapped. *Assigned enrolment* binds
+    each key to a person, so the list exists before the first write and the pace is set by
+    the people. Conflating them gives a batch mode that is wrong for both.
+  - **Persisted per key, not at the end.** A session that ends on key 31 of 50 is picked up
+    where it stopped; the two already done are refused as duplicates rather than re-run.
+  - **The same key twice is refused**, including one that *failed* — re-running a
+    half-configured key blindly gives it a second, conflicting attempt. Audited
+    `batch.key.duplicate`.
+  - **A failure does not stop the box.** The key goes on a needs-attention list with the
+    reason, and the batch carries on. The outcome is folded in on the run's own path,
+    failure branch included: a batch that only heard about its successes would report a
+    clean sweep of a box where seven keys failed.
+  - **The pairing list is all-or-nothing.** One malformed address rejects the whole file,
+    and *every* bad row is reported with its line number. A half-import means eleven keys
+    written with certificates naming eleven people and then a stop — a file refused at the
+    desk costs a minute.
+
 ## [0.15.0] - 2026-08-14
 
 ### Added

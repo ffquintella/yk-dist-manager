@@ -233,7 +233,7 @@ fn column_of(headers: &[String], candidates: &[&str]) -> Option<usize> {
 /// writer is: the grammar is four rules, the input is one line, and a
 /// dependency here would be carried by every build for the sake of a function
 /// that fits on a screen.
-fn split_row(line: &str, separator: char) -> Vec<String> {
+pub(crate) fn split_row(line: &str, separator: char) -> Vec<String> {
     let mut cells = Vec::new();
     let mut cell = String::new();
     let mut quoted = false;
@@ -264,7 +264,7 @@ fn split_row(line: &str, separator: char) -> Vec<String> {
 /// A spreadsheet exported in a locale that uses a decimal comma writes
 /// semicolon-separated CSV, which is most of Europe and Brazil — so guessing
 /// "comma" would fail on exactly the files this deployment produces.
-fn detect_separator(header: &str) -> char {
+pub(crate) fn detect_separator(header: &str) -> char {
     let semicolons = header.matches(';').count();
     let commas = header.matches(',').count();
     let tabs = header.matches('\t').count();
