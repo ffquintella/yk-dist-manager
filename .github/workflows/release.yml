@@ -14,8 +14,17 @@
 #   * **Sign for distribution.** Developer ID notarisation (macOS) and
 #     Authenticode (Windows) need certificates this project does not have; those
 #     are phases 3b and 4, and both are blocked on procurement rather than on code.
-#     The macOS step is here, guarded by whether the secret exists, so the day the
-#     certificate arrives the change is a secret rather than a rewrite.
+#     Every signing step is here, guarded by whether its secret exists, so the day
+#     a certificate arrives the change is a secret rather than a rewrite. There are
+#     **three** such secrets, because macOS signs an application and an installer
+#     package with different certificates:
+#       MACOS_SIGN_IDENTITY            Developer ID Application — the .app
+#       MACOS_INSTALLER_SIGN_IDENTITY  Developer ID Installer   — the .pkg
+#       WINDOWS_SIGN_CERT_THUMBPRINT   Authenticode             — the .exe and .msi
+#     The Windows one names a certificate in the runner's own store, which a hosted
+#     runner has no way to hold; that is a decision for the day the certificate
+#     exists (a self-hosted runner, an import step, or Azure Trusted Signing),
+#     and until then the guard skips the step and says so.
 #   * **Run hardware tests.** A hosted runner has no reader and no USB key, which
 #     is the same limitation ci.yml records.
 #
@@ -132,10 +141,34 @@ jobs:
       - name: Verify the bundle
         run: packaging/macos/verify-bundle.sh
 
+      # The .pkg wraps the bundle that was just verified, so the installer cannot
+      # carry an app nothing checked. Its certificate is a *different* one from the
+      # bundle's — Developer ID Installer, not Developer ID Application — which is
+      # why this is a second secret rather than a reuse of the first.
+      - name: Build the installer package
+        env:
+          INSTALLER_IDENTITY: ${{ secrets.MACOS_INSTALLER_SIGN_IDENTITY }}
+        run: |
+          if [ -n "$INSTALLER_IDENTITY" ]; then
+            packaging/macos/pkg.sh --sign-installer "$INSTALLER_IDENTITY"
+          else
+            echo "::warning::no MACOS_INSTALLER_SIGN_IDENTITY secret — the .pkg is unsigned, so Gatekeeper refuses it on first open and a management tool may refuse it outright (features/packaging-and-release.md phase 3c)"
+            packaging/macos/pkg.sh
+          fi
+
+      - name: Verify the installer package
+        run: packaging/macos/verify-pkg.sh
+
+      # Both, deliberately: the .dmg is drag-to-install for an operator who
+      # administers their own machine, and the .pkg is what a management tool can
+      # push and what leaves a receipt naming the version. Neither does the other's
+      # job — docs/operations.md says which to take.
       - uses: actions/upload-artifact@v4
         with:
           name: macos
-          path: target/bundle/*.dmg
+          path: |
+            target/bundle/*.dmg
+            target/bundle/*.pkg
 
   linux:
     name: Linux packages
@@ -194,18 +227,24 @@ jobs:
         shell: pwsh
         run: cargo build --release --features $env:YKDM_FEATURES
 
-      # Authenticode is phase 4 and is blocked on a certificate. Unsigned,
-      # SmartScreen warns on first run — which is why this is a zip of the
-      # executable rather than an installer: an unsigned MSI is a worse experience
-      # than an unsigned executable, not a better one.
-      - name: Package
+      # The zip is the portable artefact: it needs no administrator rights, which is
+      # the case an operator who cannot install software on their own workstation is
+      # in. It is built from its own staging directory, so nothing the MSI step
+      # writes into target\windows can end up inside it.
+      #
+      # Both artefacts land in target\windows so that the two upload globs below
+      # share an ancestor: `upload-artifact` roots an artefact at the least common
+      # ancestor of everything it matched, so target\*.zip plus
+      # target\windows\*.msi would have put the MSI in a subdirectory and the
+      # release step's glob would have quietly missed it.
+      - name: Package the portable zip
         shell: pwsh
         run: |
           $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"').Matches[0].Groups[1].Value
-          New-Item -ItemType Directory -Force -Path target\windows | Out-Null
-          Copy-Item target\release\yk-dist-manager.exe target\windows\
-          Copy-Item LICENSE, CHANGELOG.md target\windows\
-          Compress-Archive -Path target\windows\* -DestinationPath "target\yk-dist-manager-$version-x86_64-windows.zip" -Force
+          New-Item -ItemType Directory -Force -Path target\windows\portable | Out-Null
+          Copy-Item target\release\yk-dist-manager.exe target\windows\portable\
+          Copy-Item LICENSE, CHANGELOG.md target\windows\portable\
+          Compress-Archive -Path target\windows\portable\* -DestinationPath "target\windows\yk-dist-manager-$version-x86_64-windows.zip" -Force
 
       # The same interrogation the other two platforms make: a binary that cannot
       # start says so here rather than at somebody's desk.
@@ -213,10 +252,39 @@ jobs:
         shell: pwsh
         run: target\release\yk-dist-manager.exe --diagnose
 
+      # Authenticode is phase 4 and is still blocked on a certificate, so the
+      # installer ships unsigned and SmartScreen warns on first run. That used to be
+      # the argument for shipping no installer at all; it is not, because the two
+      # artefacts answer to different people — a zip cannot be pushed to a fleet,
+      # cannot say in Programs and Features what version a machine has, and cannot
+      # upgrade in place.
+      - name: Build the installer
+        shell: pwsh
+        env:
+          SIGN_THUMBPRINT: ${{ secrets.WINDOWS_SIGN_CERT_THUMBPRINT }}
+        run: |
+          if ($env:SIGN_THUMBPRINT) {
+            & .\packaging\windows\msi.ps1 -SignCertThumbprint $env:SIGN_THUMBPRINT
+          } else {
+            Write-Host "::warning::no WINDOWS_SIGN_CERT_THUMBPRINT secret — the .exe and the .msi are unsigned and SmartScreen will warn on first run (features/packaging-and-release.md phase 4)"
+            & .\packaging\windows\msi.ps1
+          }
+
+      # This one really installs the package, interrogates what landed, and
+      # uninstalls: an MSI's components, key paths and shortcut are authored, so they
+      # can build cleanly and still be wrong on a machine. The runner is an
+      # administrator with UAC off, which is what makes it possible here and not on
+      # a developer's laptop.
+      - name: Verify the installer
+        shell: pwsh
+        run: .\packaging\windows\verify-msi.ps1
+
       - uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: target/*.zip
+          path: |
+            target/windows/*.zip
+            target/windows/*.msi
 
   draft:
     name: Draft the release

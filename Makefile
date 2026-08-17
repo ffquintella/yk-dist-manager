@@ -3,9 +3,10 @@
 
 .DEFAULT_GOAL := help
 .PHONY: help build run run-native diagnose bundle bundle-release run-bundled \
-        verify-bundle dmg icons check check-all fmt lint test test-all coverage \
-        coverage-core coverage-html hardware clean release-check linux-package \
-        linux-package-release verify-package release-notes
+        verify-bundle dmg pkg verify-pkg icons check check-all fmt lint test \
+        test-all coverage coverage-core coverage-html hardware clean \
+        release-check linux-package linux-package-release verify-package \
+        windows-msi verify-msi release-notes
 
 COVERAGE_FLOOR := 80
 
@@ -44,6 +45,18 @@ run-bundled: bundle ## macOS: launch the bundled app (camera scanning works here
 
 dmg: ## macOS: assemble a release .app and wrap it in a .dmg
 	packaging/macos/bundle.sh --release --dmg
+
+pkg: bundle-release ## macOS: wrap the release .app in an installer .pkg
+	packaging/macos/pkg.sh
+
+verify-pkg: ## macOS: check the .pkg by interrogating the binary inside it
+	packaging/macos/verify-pkg.sh
+
+windows-msi: ## Windows: build the MSI (needs cargo build --release first)
+	powershell -File packaging/windows/msi.ps1
+
+verify-msi: ## Windows: install the MSI, interrogate it, uninstall (needs admin)
+	powershell -File packaging/windows/verify-msi.ps1
 
 linux-package: ## Linux: tarball (+ .deb where dpkg-deb exists) from a debug build
 	packaging/linux/package.sh --deb

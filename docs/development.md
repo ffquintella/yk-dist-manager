@@ -62,6 +62,28 @@ make verify-bundle   # layout, plist, version, signature, and the binary's own -
 make run-bundled
 ```
 
+The installers ([packaging-and-release.md](../features/packaging-and-release.md) phases 3c
+and 4). Each wraps an artefact that has already been built and checked, rather than building
+one, so the app and the installer cannot disagree about what shipped:
+
+```bash
+make pkg             # macOS: bundle-release, then wrap it in a .pkg
+make verify-pkg      # extracts the payload and runs --diagnose from inside it
+```
+
+```bat
+rem Windows, from an existing release build:
+powershell -File packaging\windows\msi.ps1
+powershell -File packaging\windows\verify-msi.ps1
+```
+
+`verify-msi.ps1` installs the package for real, checks what landed (including the Start Menu
+shortcut's target), interrogates the installed binary and uninstalls — so it needs an
+elevated shell. Without one it runs the static checks and warns; under
+`YKDM_VERIFY_RELEASE=1` a skip is a failure, which is why CI is where this always runs in
+full. WiX 6 is installed on first use as a .NET global tool, pinned — set `YKDM_WIX_VERSION`
+to move the pin.
+
 Changing the icon ([application-icon.md](../features/application-icon.md)):
 
 ```bash

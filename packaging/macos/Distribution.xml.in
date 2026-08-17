@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The installer script for the .pkg — what Installer.app reads, as opposed to the
+  component package, which is only a payload and a receipt.
+
+  Written by hand rather than by `productbuild` in its synthesize mode, because
+  every decision in here is one a synthesized distribution gets wrong for this
+  product. (Note for whoever edits this file next: a double hyphen is illegal
+  inside an XML comment, so flags are named in prose below rather than spelled.)
+
+  * `customize="never"` — there is one thing to install and no options. A choice
+    list an operator can uncheck is a support call.
+  * `hostArchitectures` is substituted with the architecture the binary was
+    actually built for. The default lets the installer run anywhere, which for a
+    single-architecture build means it will happily install a binary the machine
+    cannot execute. Refusing at install time names the problem; a bundle that dies
+    on launch does not.
+  * `enable_anywhere="false"` and `enable_currentUserHome="false"` — the app goes
+    to /Applications and nowhere else. Installing to another volume or to a home
+    directory means a second copy for the same operator to keep up to date, and
+    the whole point of the install-location decision is that there is one.
+  * a license pane and a Read Me pane, from the files in the resources directory
+    (see pkg.sh). The Read Me is where the platform requirements live at the
+    moment somebody is installing it, which is the Linux artefact's README.install
+    lesson.
+
+  @VERSION@, @IDENTIFIER@ and @ARCH@ are substituted by pkg.sh, which refuses any
+  value outside `A-Za-z0-9._+-` first — the same rule, and for the same reason, as
+  write-plist.sh. No free text is substituted into this file: the title is a
+  constant here, and the copyright reaches the bundle's plist rather than the
+  installer.
+-->
+<installer-gui-script minSpecVersion="2">
+    <title>YubiKey Distribution Manager</title>
+    <license file="license.txt" />
+    <readme file="readme.txt" />
+
+    <options customize="never" require-scripts="false" hostArchitectures="@ARCH@" />
+    <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true" />
+
+    <choices-outline>
+        <line choice="default">
+            <line choice="@IDENTIFIER@" />
+        </line>
+    </choices-outline>
+    <choice id="default" />
+    <choice id="@IDENTIFIER@" visible="false">
+        <pkg-ref id="@IDENTIFIER@" />
+    </choice>
+    <pkg-ref id="@IDENTIFIER@" version="@VERSION@" onConclusion="none">component.pkg</pkg-ref>
+</installer-gui-script>

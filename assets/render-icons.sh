@@ -9,11 +9,14 @@
 # SVG and the output together.
 #
 # Outputs:
-#   assets/icons/icon-<n>.png      16 … 1024, for docs, Linux hicolor and Windows
+#   assets/icons/icon-<n>.png      16 … 1024, for docs and Linux hicolor
 #   assets/icons/icon-256.rgba     straight RGBA8, what src/branding.rs embeds
+#   packaging/windows/icon.ico     the MSI's Start Menu shortcut and its
+#                                  Programs-and-Features entry
 #   packaging/macos/icon.icns      picked up by packaging/macos/bundle.sh
 #
-# Requires rsvg-convert (librsvg) and ImageMagick. On macOS:
+# Requires rsvg-convert (librsvg) and ImageMagick, and — for the .icns —
+# `iconutil`, which is macOS only. On macOS:
 #   brew install librsvg imagemagick
 #
 set -euo pipefail
@@ -51,6 +54,25 @@ if [[ "$ACTUAL" != "$EXPECTED" ]]; then
 	exit 1
 fi
 echo "    $OUT/icon-$SIDE.rgba ($ACTUAL bytes)"
+
+# Windows. One .ico carrying every size the shell asks for: 16 for the tree view,
+# 32 for the taskbar, 48 for the Start Menu, 256 for the large-icon views. Missing a
+# size does not fail — the shell scales the nearest one, badly, which is what a
+# blurry Start Menu entry is.
+#
+# Rendered from the 1024 rather than from each PNG so the downsampling has the
+# detail to work with. The entries are stored uncompressed (ImageMagick writes BMP
+# inside an .ico), which is why the file is a few hundred KB — the same order as the
+# .icns beside it.
+#
+# This is only the *shortcut* icon, which the installer places. The icon inside the
+# executable is a Windows resource the binary would have to be built with, and that
+# is still Wave 3 (roadmap: "a Windows .ico resource").
+echo "==> building packaging/windows/icon.ico"
+mkdir -p packaging/windows
+magick "$OUT/icon-1024.png" -define icon:auto-resize=256,128,64,48,32,16 \
+	packaging/windows/icon.ico
+echo "    packaging/windows/icon.ico"
 
 # macOS wants the retina pairs under exactly these names or iconutil refuses.
 echo "==> building packaging/macos/icon.icns"

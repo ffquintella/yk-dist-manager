@@ -19,6 +19,45 @@ Maintenance instructions (see AGENTS.md §5):
 
 ### Added
 
+- **An installer on each desktop platform** — `features/packaging-and-release.md` phases 3c
+  and 4. A tagged release now attaches a macOS **`.pkg`** and a Windows **`.msi`** alongside
+  the artefacts it already had, and each is verified in CI before it is attached.
+
+  Both are *additions*, not replacements. The `.dmg` and the zip stay, because they answer
+  to a different person: an operator who administers their own workstation drags the app
+  across, and an operator who cannot install software at all unzips one and runs it. What
+  neither can do is what an installer is for — be pushed to a fleet with nobody at the
+  keyboard, say in Programs and Features which version a machine has, and upgrade in place.
+
+  - **macOS `.pkg`** (`packaging/macos/pkg.sh`) wraps the bundle that `make verify-bundle`
+    just checked, installs it to `/Applications` and nowhere else, and carries the licence
+    and a Read Me naming the platform requirements. It is **not relocatable** — the default
+    hunts for an existing copy anywhere on the disk and upgrades *that*, so an operator who
+    once unzipped a copy into `~/Downloads` would get every future version delivered there.
+    It also refuses to install on an architecture the binary was not built for, rather than
+    installing a program that dies on launch.
+  - **Windows `.msi`** (`packaging/windows/Package.wxs` + `msi.ps1`, WiX 6, pinned) installs
+    per machine to Program Files with a Start Menu shortcut and a licence pane, upgrades in
+    place, and refuses a downgrade with a message that says so.
+  - **Both are verified rather than assumed**, in the way each artefact allows.
+    `verify-pkg.sh` extracts the payload and asks the binary inside the package about itself
+    (`--diagnose`), the same interrogation the bundle and the Linux packages get.
+    `verify-msi.ps1` goes further and **really installs it**, checks the files, the licence,
+    the Start Menu shortcut and its target, interrogates the installed binary, then
+    uninstalls and checks that nothing was left behind — because an MSI's components, key
+    paths and shortcut are *authored*, so they can build cleanly and still be wrong on a
+    machine.
+  - **`packaging/windows/icon.ico`**, rendered from `assets/logo.svg` by `make icons`, so the
+    Start Menu entry and the Programs-and-Features row are not generic. (The icon *inside*
+    the executable is a separate Windows resource and is still Wave 3.)
+  - **Signing is still blocked on procurement**, and every step for it is in place and
+    guarded by whether its secret exists: `MACOS_INSTALLER_SIGN_IDENTITY` for the `.pkg`
+    (a Developer ID **Installer** certificate — a different one from the application's),
+    `YKDM_NOTARY_PROFILE` for notarisation, and `WINDOWS_SIGN_CERT_THUMBPRINT` for
+    Authenticode on both the `.exe` and the `.msi`. Until they exist, Gatekeeper refuses the
+    package on first open and SmartScreen warns on first run, and both verifiers say so
+    instead of passing quietly.
+
 - **A box of keys in one sitting** — `features/bulk-enrollment.md`, as a **Batch** card on
   the Bootstrap screen. Schema **v8** adds `batches` and `batch_keys`.
 
