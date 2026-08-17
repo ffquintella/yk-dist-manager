@@ -47,7 +47,7 @@ deployment.
 > its own wave-0 phases finished. See
 > [Wave 0 is closed](#wave-0-is-closed).
 
-Released: **v0.16.2**. **Wave 1 is closed** (2026-08-14). Current wave: **Wave 2 — operations at scale.**
+Released: **v0.16.3**. **Wave 1 is closed** (2026-08-14). Current wave: **Wave 2 — operations at scale.**
 
 > Two rows moved on 2026-08-14, and one of them changed count twice: **key lifecycle &
 > revocation** finished (`[/]` → `[x]`), and **CI & coverage gate** was `[ ]` for a workflow

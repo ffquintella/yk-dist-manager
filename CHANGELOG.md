@@ -16,6 +16,30 @@ Maintenance instructions (see AGENTS.md §5):
 * A database schema change also bumps store::SCHEMA_VERSION and ships a migration.
 -->
 
+## [0.16.3] - 2026-08-17
+
+### Fixed
+
+- **The MSI verifier read its own output stream as an array**, so v0.16.2 built the installer
+  and then failed checking it — the third release in a row to die on the Windows leg, one
+  layer further in each time (`features/packaging-and-release.md` phase 4).
+
+  `View.Execute` is documented as returning nothing, which is why the call in
+  [`verify-msi.ps1`](packaging/windows/verify-msi.ps1)'s `Get-MsiProperties` was left
+  unassigned. Through `InvokeMember` it does not return nothing, and a PowerShell function
+  returns everything that reached the output stream rather than what `return` names — so the
+  property table came back as an **array** whose last element was the hashtable, and
+  `$msiProperties['ProductVersion']` failed trying to convert `ProductVersion` to an array
+  index. The message named the key, twenty lines from the call that caused it.
+
+  The call is now piped to `Out-Null`, and the type is asserted at the call site so the same
+  leak from anywhere else says what happened instead of producing that message again.
+
+  **What this does not fix**: `verify-msi.ps1` still only runs from a tag. CI's `-LinkOnly`
+  step catches WiX authoring errors on every push, which is why the MSI built this time — but
+  a bug in the verifier itself is still something only a release can find, and that is what
+  this release is.
+
 ## [0.16.2] - 2026-08-17
 
 ### Fixed
@@ -2263,7 +2287,10 @@ become rows.
 - Uploaded filenames are treated as data: any directory component is stripped, so a
   name like `../../etc/passwd.pdf` cannot escape.
 
-[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/releases/v0.16.0...HEAD
+[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/releases/v0.16.3...HEAD
+[0.16.3]: https://github.com/ffquintella/yk-dist-manager/compare/releases/v0.16.2...releases/v0.16.3
+[0.16.2]: https://github.com/ffquintella/yk-dist-manager/compare/releases/v0.16.1...releases/v0.16.2
+[0.16.1]: https://github.com/ffquintella/yk-dist-manager/compare/releases/v0.16.0...releases/v0.16.1
 [0.16.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.15.0...releases/v0.16.0
 [0.15.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.13.0...v0.14.0

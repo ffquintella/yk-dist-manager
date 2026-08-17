@@ -99,7 +99,16 @@ try {
                 'OpenDatabase', 'InvokeMethod', $null, $installer, @($Path, 0))
             $view = $database.GetType().InvokeMember(
                 'OpenView', 'InvokeMethod', $null, $database, @('SELECT Property, Value FROM Property'))
-            $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)
+            # Out-Null, and not because the value is uninteresting. A function in
+            # PowerShell returns everything that reached the output stream, not what
+            # `return` names — so an unassigned call here makes Get-MsiProperties
+            # return an *array* whose last element is the hashtable, and the next
+            # `$msiProperties['ProductVersion']` fails trying to convert the key to an
+            # array index. `View.Execute` is documented as returning nothing, which is
+            # exactly why it was left unassigned, and through InvokeMember it does not
+            # return nothing.
+            $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null) |
+                Out-Null
             while ($true) {
                 $record = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
                 if ($null -eq $record) { break }
@@ -122,6 +131,15 @@ try {
     }
 
     $msiProperties = Get-MsiProperties -Path $Msi
+
+    # The same leak, caught where it can still say what happened. Without this the
+    # symptom is "Cannot convert value 'ProductVersion' to type 'System.Int32'" from
+    # the line below — a message about the *key*, twenty lines from the call that
+    # actually put an extra value on the output stream.
+    if ($msiProperties -isnot [hashtable]) {
+        Fail ("the MSI property table came back as $($msiProperties.GetType().Name), not a hashtable — " +
+            'something in Get-MsiProperties wrote to the output stream')
+    }
 
     $match = Select-String -Path (Join-Path $repo 'Cargo.toml') -Pattern '^version = "(.*)"' |
         Select-Object -First 1
