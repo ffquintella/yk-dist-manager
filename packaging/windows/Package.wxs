@@ -56,7 +56,7 @@
     <MediaTemplate EmbedCab="yes" />
 
     <!-- Programs and Features: the icon, and no support URL, because a link that
-         goes stale is worse than none. `--diagnose` is how a build identifies
+         goes stale is worse than none. The diagnose flag is how a build identifies
          itself, and the Read Me installed beside the executable says so. -->
     <!-- The Id doubles as the Icon table's name, and Windows Installer decides how
          to read the icon from its extension — so an .ico source needs an Id ending

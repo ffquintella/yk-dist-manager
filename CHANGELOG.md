@@ -16,6 +16,21 @@ Maintenance instructions (see AGENTS.md §5):
 * A database schema change also bumps store::SCHEMA_VERSION and ships a migration.
 -->
 
+## [0.16.1] - 2026-08-17
+
+### Fixed
+
+- **The Windows installer builds again** (`features/packaging-and-release.md` phase 4). A
+  comment in [`packaging/windows/Package.wxs`](packaging/windows/Package.wxs) named the
+  `--diagnose` flag the way one writes it on a command line, and XML forbids `--` inside a
+  comment: WiX refused the whole file (`error WIX0104`) and the v0.16.0 release build failed
+  after the tag was pushed, with the other three platforms already built.
+
+  A new test, [`tests/unit_packaging.rs`](tests/unit_packaging.rs), reads the WiX authoring as
+  text on **any** platform and fails on a comment XML will not accept. That file was until now
+  read by exactly one thing — WiX, on a Windows runner, during a release build — so the
+  cheapest possible mistake in it cost a version number to find. It costs a `cargo test` now.
+
 ## [0.16.0] - 2026-08-17
 
 ### Added

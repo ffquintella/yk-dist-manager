@@ -256,6 +256,13 @@ change-document requirement is satisfied by the changelog plus the change record
     without them the static half still runs and the install is skipped with a warning, except
     under `YKDM_VERIFY_RELEASE=1`, where a skip is a failure — a release must not be the
     first time anybody finds out whether the installer works.
+- **The WiX authoring is read off Windows too**, by
+  [`tests/unit_packaging.rs`](../tests/unit_packaging.rs): a comment XML will not accept — one
+  containing `--`, which is how a command-line flag gets written into prose — makes WiX refuse
+  `Package.wxs` wholesale (`error WIX0104`). Until v0.16.1 that file was parsed by exactly one
+  thing, on a Windows runner, during a release build, so the mistake surfaced after the tag
+  was pushed. A text-level check on every platform is not a substitute for building the MSI;
+  it is what makes the cheap half of the mistakes cheap to find.
 - **The MSI's `UpgradeCode` is asserted against a literal in the verifier**, not read out of
   `Package.wxs`. It is the identity by which every future version recognises this product, so
   a check that read it from the same file it is declared in would agree with the edit that
