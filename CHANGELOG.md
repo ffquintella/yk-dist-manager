@@ -11,13 +11,37 @@ Maintenance instructions (see AGENTS.md §5):
 * Every behaviour change adds an entry under [Unreleased], in the right category:
   Added / Changed / Fixed / Removed / Security.
 * On release: move [Unreleased] into a dated version section, bump the version in
-  Cargo.toml, commit, and tag vX.Y.Z. Nothing is installed anywhere except from a tag.
+  Cargo.toml, commit, then `make release` — it tags releases/vX.Y.Z and pushes it.
+  Nothing is installed anywhere except from a tag.
 * A database schema change also bumps store::SCHEMA_VERSION and ships a migration.
 -->
 
-## [Unreleased]
+## [0.16.0] - 2026-08-17
 
 ### Added
+
+- **`make release` signals a release**, instead of a tag typed by hand at the end of a long
+  afternoon (`features/packaging-and-release.md` phase 6). [`scripts/release.sh`](scripts/release.sh)
+  tags `releases/vX.Y.Z` and pushes it, which is what starts the build; `make release-dry-run`
+  makes every check and creates nothing.
+
+  Four things it **refuses** rather than warns about, because the alternative to refusing is
+  a released build: a working tree with uncommitted changes (the tree that was tested is not
+  the tree that will be built), a tag that already exists locally or on the remote (a
+  released version never means two different trees), a changelog with no section for the
+  version (the same `release-notes.sh` check the workflow makes, moved to before the tag
+  instead of after it), and a `HEAD` no remote branch contains — that last one because
+  `git push <tag>` carries the commit without moving any branch, which is how a release ends
+  up reachable from nothing.
+
+  **The tag namespace is the point of the change.** `releases/v0.16.0` rather than `v0.16.0`
+  says what the tag is *for*, so `git tag -l 'releases/*'` is the list of what was built and
+  handed to somebody — the question asked during an incident, not during a release. The
+  workflow triggers on `releases/v*` **and** `v*`, so v0.15.0 and everything before it are
+  not orphaned, and `release-notes.sh` reduces either shape to the version, so notes can
+  still be generated for a tag from before the namespace existed. The draft release is now
+  named for its version rather than for the ref, which would otherwise have read
+  `releases/v0.16.0` where a version belongs.
 
 - **An installer on each desktop platform** — `features/packaging-and-release.md` phases 3c
   and 4. A tagged release now attaches a macOS **`.pkg`** and a Windows **`.msi`** alongside
@@ -2201,7 +2225,9 @@ become rows.
 - Uploaded filenames are treated as data: any directory component is stripped, so a
   name like `../../etc/passwd.pdf` cannot escape.
 
-[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/releases/v0.16.0...HEAD
+[0.16.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.15.0...releases/v0.16.0
+[0.15.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/ffquintella/yk-dist-manager/compare/v0.11.0...v0.12.0

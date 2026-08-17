@@ -6,7 +6,7 @@
         verify-bundle dmg pkg verify-pkg icons check check-all fmt lint test \
         test-all coverage coverage-core coverage-html hardware clean \
         release-check linux-package linux-package-release verify-package \
-        windows-msi verify-msi release-notes
+        windows-msi verify-msi release-notes release release-dry-run
 
 COVERAGE_FLOOR := 80
 
@@ -73,6 +73,12 @@ verify-package: ## Linux: check an artefact by asking the packaged binary about 
 
 release-notes: ## The notes for this version, including the schema upgrade warning
 	scripts/release-notes.sh
+
+release: ## Tag this version under releases/ and push it — starts the release build
+	scripts/release.sh
+
+release-dry-run: ## Every check `make release` makes, without creating the tag
+	scripts/release.sh --dry-run
 
 icons: ## Re-render every icon from assets/logo.svg (needs librsvg + ImageMagick)
 	assets/render-icons.sh

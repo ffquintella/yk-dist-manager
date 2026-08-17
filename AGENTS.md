@@ -319,8 +319,11 @@ Release steps:
 
 1. `CHANGELOG.md`: move `[Unreleased]` into `[x.y.z] - YYYY-MM-DD`.
 2. Bump `version` in `Cargo.toml`; commit.
-3. Tag `vX.Y.Z`. Every build installed anywhere comes from a tag — never from a
-   working tree.
+3. `make release` — it tags `releases/vX.Y.Z` and pushes it, which is what starts
+   the release build. It refuses a dirty tree, a changelog with no section for the
+   version, a tag that already exists, and a commit the remote has never seen;
+   `make release-dry-run` makes every check and creates nothing. Every build
+   installed anywhere comes from a tag — never from a working tree.
 4. Any schema change ships with a migration and a bumped `SCHEMA_VERSION`, and a
    database written by a newer build must be refused, not silently used.
 

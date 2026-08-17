@@ -43,7 +43,10 @@ name: Release
 
 on:
   push:
-    tags: ["v*"]
+    # `releases/v*` is what `make release` creates, and the namespace says the tag
+    # is a build somebody was handed rather than any other kind of marker. `v*`
+    # stays so the tags from before the namespace existed still build.
+    tags: ["releases/v*", "v*"]
   workflow_dispatch:
     inputs:
       tag:
@@ -295,10 +298,21 @@ jobs:
         with:
           path: artefacts
 
+      # The release is named for the version, not for the ref. Left to default,
+      # GitHub titles it with the tag — and since the namespace landed that reads
+      # "releases/v0.16.0", which is a path where a version belongs. Bound to an
+      # environment variable rather than interpolated into the script, the same
+      # way `inputs.tag` is handled everywhere else in this file.
+      - name: Name the release for its version
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: echo "RELEASE_NAME=${TAG##*/}" >>"$GITHUB_ENV"
+
       - name: Draft, never publish
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
+          name: ${{ env.RELEASE_NAME }}
           draft: true
           body_path: artefacts/release-notes/release-notes.md
           files: |
