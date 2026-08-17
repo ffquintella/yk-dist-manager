@@ -16,7 +16,7 @@
 # checkout compared with the previous tag.
 #
 # Usage:
-#   scripts/release-notes.sh [vX.Y.Z]        # defaults to the version in Cargo.toml
+#   scripts/release-notes.sh [releases/vX.Y.Z]   # defaults to the Cargo.toml version
 #
 # Exit codes:
 #   0  notes written to stdout
@@ -27,8 +27,12 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 CARGO_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
-TAG="${1:-v$CARGO_VERSION}"
-VERSION="${TAG#v}"
+TAG="${1:-releases/v$CARGO_VERSION}"
+# `releases/v0.16.0` since scripts/release.sh, `v0.15.0` and earlier before it.
+# Both reduce to the version, so notes can still be generated for a tag from
+# before the namespace existed.
+VERSION="${TAG##*/}"
+VERSION="${VERSION#v}"
 
 if [[ "$VERSION" != "$CARGO_VERSION" ]]; then
 	echo "tag $TAG does not match the version in Cargo.toml ($CARGO_VERSION)" >&2
@@ -63,8 +67,9 @@ schema_version_at() {
 }
 
 CURRENT_SCHEMA="$(schema_version_at)"
-PREVIOUS_TAG="$(git describe --tags --abbrev=0 --match 'v*' "$TAG^" 2>/dev/null ||
-	git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+# Both namespaces, so the release after the change still finds the one before it.
+PREVIOUS_TAG="$(git describe --tags --abbrev=0 --match 'releases/v*' --match 'v*' "$TAG^" 2>/dev/null ||
+	git describe --tags --abbrev=0 --match 'releases/v*' --match 'v*' 2>/dev/null || true)"
 PREVIOUS_SCHEMA="$(schema_version_at "$PREVIOUS_TAG")"
 PREVIOUS_SCHEMA="${PREVIOUS_SCHEMA:-0}"
 

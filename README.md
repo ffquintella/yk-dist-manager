@@ -130,8 +130,22 @@ make bundle        # assembles target/bundle/YubiKey Distribution Manager.app
 make verify-bundle # checks the bundle is what macOS needs, using --diagnose
 make run-bundled   # launch it
 make dmg           # release build wrapped in a .dmg
+make pkg           # release build wrapped in an installer .pkg
+make verify-pkg    # interrogates the binary inside the package
 make icons         # re-render the icon from assets/logo.svg after editing it
 ```
+
+On Windows, the installer is built from an existing release binary (WiX 6, installed as a
+.NET global tool on first use):
+
+```bat
+cargo build --release --features native-device,encrypted-db
+powershell -File packaging\windows\msi.ps1
+powershell -File packaging\windows\verify-msi.ps1
+```
+
+`verify-msi.ps1` really installs the package, interrogates it and uninstalls again, so it
+needs an elevated shell.
 
 The default build includes the file dialogs and camera scanning. With native hardware
 access and an encrypted database as well:

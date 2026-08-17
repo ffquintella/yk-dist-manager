@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The MSI, for WiX 6 (`wix build`; see msi.ps1, which is the only thing meant to
+  invoke this).
+
+  Why an MSI and not only the zip: the zip stays, because it is the artefact for an
+  operator who cannot install software on their own machine — unzip it anywhere and
+  run it. The MSI is for the other half of that: it installs to Program Files with a
+  Start Menu entry, it appears in Programs and Features so a machine can be asked
+  what version it has, it upgrades in place, and it can be pushed by Group Policy or
+  Intune with nobody at the keyboard. Neither artefact can do the other's job.
+
+  Deliberate choices, each of which has a failure mode behind it:
+
+  * `Scope="perMachine"`. A register of security tokens is installed on a
+    workstation, not into one person's profile, and a per-user install in
+    AppData is invisible to the next operator who sits down at it.
+  * `MajorUpgrade` with a downgrade message. Without it, installing 0.16 over 0.15
+    leaves two entries in Programs and Features and two copies on disk, and which
+    one the shortcut points at is a coin toss.
+  * The version comes in as a preprocessor variable from Cargo.toml
+    (single source of truth), never typed here.
+  * `UpgradeCode` is a literal, generated once, and must never change: it is the
+    identity by which every future version recognises this product. A new one
+    means the next release does not upgrade this one, it installs beside it.
+  * `WixUI_InstallDir` — a wizard with a licence pane and a choice of folder, which
+    is what somebody double-clicking an installer expects. It is also what makes
+    the silent install (`msiexec /qn INSTALLFOLDER=...`) meaningful, which is how
+    verify-msi.ps1 checks the thing.
+  * No file association, no service, no PATH entry, no registry beyond what the
+    installer needs. The tool reads and writes one SQLite file that the operator
+    chooses; there is nothing here to configure.
+
+  There is no `Manufacturer` naming an institution, and there cannot be: the
+  application carries no organisation's name — that is the operator's setting
+  (roadmap decision, 2026-08-11) — and packaging is exactly the place a name comes
+  back with nothing in the test suite to notice. So the manufacturer matches the
+  .deb's maintainer field, and a unit that wants its own sets YKDM_MANUFACTURER at
+  build time.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+
+  <Package
+      Name="YubiKey Distribution Manager"
+      Manufacturer="$(Manufacturer)"
+      Version="$(Version)"
+      UpgradeCode="132275b3-f866-4be4-bc2f-87090ead2fb7"
+      Scope="perMachine"
+      Compressed="yes">
+
+    <MajorUpgrade
+        AllowSameVersionUpgrades="yes"
+        DowngradeErrorMessage="A newer version of [ProductName] is already installed on this machine. Uninstall it first if you mean to go back to an older one." />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Programs and Features: the icon, and no support URL, because a link that
+         goes stale is worse than none. `--diagnose` is how a build identifies
+         itself, and the Read Me installed beside the executable says so. -->
+    <!-- The Id doubles as the Icon table's name, and Windows Installer decides how
+         to read the icon from its extension — so an .ico source needs an Id ending
+         in .ico, or the shell renders nothing and says nothing. -->
+    <Icon Id="AppIcon.ico" SourceFile="$(IconFile)" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
+    <!-- Nothing here needs a reboot, and an installer that asks for one when it
+         does not is an installer people stop trusting. -->
+    <Property Id="REBOOT" Value="ReallySuppress" />
+
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(LicenseRtf)" />
+
+    <!-- ProgramFiles6432Folder resolves to the 64-bit Program Files for the x64
+         build and the 32-bit one for an x86 build, so the architecture is decided
+         by `wix build -arch` and stated in exactly one place. -->
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="YubiKey Distribution Manager" />
+    </StandardDirectory>
+    <!-- Declared because the shortcut below refers to it. The Start Menu entry sits
+         directly in Programs rather than in a folder of its own: one application
+         does not need a folder, and a folder needs a component whose only purpose
+         is to remove it again on uninstall. -->
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <Feature Id="Main" Title="YubiKey Distribution Manager" Level="1">
+      <ComponentGroupRef Id="ApplicationFiles" />
+    </Feature>
+  </Package>
+
+  <Fragment>
+    <ComponentGroup Id="ApplicationFiles" Directory="INSTALLFOLDER">
+      <Component>
+        <!-- The shortcut is a child of the File, so it targets that file and the
+             component's key path is the executable. The alternative — a shortcut in
+             its own component — needs a registry value invented purely to be a key
+             path, which is a thing to explain forever. -->
+        <File Id="MainExecutable" Source="$(ExeFile)" KeyPath="yes">
+          <Shortcut
+              Id="StartMenuShortcut"
+              Directory="ProgramMenuFolder"
+              Name="YubiKey Distribution Manager"
+              Description="Register of security tokens: who holds which key, and what was applied to it"
+              Icon="AppIcon.exe"
+              WorkingDirectory="INSTALLFOLDER"
+              Advertise="no" />
+        </File>
+      </Component>
+
+      <!-- The licence and the changelog travel with the build, as they do in the
+           zip and in the Linux packages, and README.install is the Windows copy of
+           the notes that have to be in front of somebody at the machine rather
+           than only in docs/operations.md. -->
+      <Component>
+        <File Source="$(LicenseFile)" Name="LICENSE.txt" />
+      </Component>
+      <Component>
+        <File Source="$(ChangelogFile)" Name="CHANGELOG.md" />
+      </Component>
+      <Component>
+        <File Source="$(ReadmeFile)" Name="README.install.txt" />
+      </Component>
+      <Component>
+        <File Source="$(IconFile)" Name="icon.ico" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

@@ -19,12 +19,38 @@ build says which commit it came from — `yk-dist-manager --version` prints
 `0.13.0 (a1b2c3d4e5f6)`, and a build from an uncommitted tree says `-dirty`. If a build on a
 workstation cannot name its commit, it did not come from a release.
 
-**macOS.** Open the `.dmg` and drag the application to `/Applications`. Until the project
-has a Developer ID certificate the bundle is ad-hoc signed, so Gatekeeper refuses it on
-first launch: right-click → **Open** → *Open* is the documented way past that, and the
-camera permission will be asked for again after each new version, because macOS remembers
-the grant against the signature. Both go away when the certificate arrives
-([`../features/packaging-and-release.md`](../features/packaging-and-release.md) phase 3b).
+**Which artefact to take.** macOS and Windows each ship two, and they are the same build —
+what differs is how it gets onto the machine.
+
+| Take | When |
+|---|---|
+| macOS `.pkg` | The machine is managed, or you want the version recorded in a receipt. Installs to `/Applications`; a management tool can push it with nobody at the keyboard |
+| macOS `.dmg` | You administer this Mac yourself and would rather drag the app across |
+| Windows `.msi` | You have administrator rights. Installs to Program Files, adds a Start Menu entry, appears in Programs and Features, and upgrades in place |
+| Windows `.zip` | You have **no** administrator rights. Unzip anywhere and run it |
+| Linux `.deb` / `.tar.gz` | The `.deb` puts the udev rule in place for you; the tarball works on any distribution |
+
+Match the architecture: the macOS `.pkg` names it (`arm64` for Apple silicon, `x86_64` for
+Intel) and refuses to install on the other one rather than installing a program that cannot
+run.
+
+**macOS.** With the `.pkg`, double-click it and follow the installer; it puts the
+application in `/Applications` and nowhere else. With the `.dmg`, open it and drag the
+application to `/Applications`.
+
+Until the project has Developer ID certificates, neither is signed for distribution, so
+Gatekeeper refuses both on first open: right-click → **Open** → *Open* is the documented way
+past that. The camera permission will also be asked for again after each new version, because
+macOS remembers the grant against the code signature. Both go away when the certificates
+arrive ([`../features/packaging-and-release.md`](../features/packaging-and-release.md) phases
+3b and 3c) — note that it is two certificates, one for the application and one for the
+installer.
+
+To install the `.pkg` without a person at the keyboard:
+
+```bash
+sudo installer -pkg "YubiKey Distribution Manager 0.15.0 arm64.pkg" -target /
+```
 
 **Linux.** Either package works; the `.deb` is the one that puts the udev rule in place for
 you.
@@ -43,10 +69,25 @@ reports *no device* (missing rule), or nothing works at all (`pcscd` not running
 requirements are also in `/usr/share/doc/yk-dist-manager/README.install`, which travels
 inside the artefact.
 
-**Windows.** Unzip anywhere and run the executable. It is unsigned until the project has an
-Authenticode certificate, so SmartScreen warns on first run: *More info* → *Run anyway*.
-Check that the **Smart Card** service is running (`sc query SCardSvr`) — the PIV applet is
-unreachable without it.
+**Windows.** With the `.msi`, double-click it; it installs per machine to Program Files, adds
+a Start Menu entry, and replaces any earlier version in place. With the `.zip`, unzip
+anywhere and run the executable — no administrator rights needed, and nothing is registered.
+
+Both are unsigned until the project has an Authenticode certificate, so SmartScreen warns on
+first run: *More info* → *Run anyway*. Check that the **Smart Card** service is running
+(`sc query SCardSvr`) — the PIV applet is unreachable without it. The requirements also
+travel inside the MSI, as `README.install.txt` next to the installed executable.
+
+To install or remove the MSI without a person at the keyboard (an elevated prompt):
+
+```bat
+msiexec /i yk-dist-manager-0.15.0-x86_64.msi /qn /norestart
+```
+
+An upgrade is the same command with the newer file; it removes the old version itself. A
+*downgrade* is refused with a message saying so — uninstall first if you really mean to go
+back. To remove it: `msiexec /x yk-dist-manager-0.15.0-x86_64.msi /qn`, or Programs and
+Features.
 
 ### Upgrading
 

@@ -17,9 +17,9 @@ version control and carries a tag. No hand-built binaries.
 
 ## Current state
 
-**Every platform builds an artefact from a tag, and every artefact is verified by asking
-the binary about itself. What is left is two code-signing certificates this project does
-not have.**
+**Every platform builds its artefacts from a tag, each one is verified by asking the binary
+about itself, and each desktop platform now has an installer as well as a portable
+artefact. What is left is two code-signing certificates this project does not have.**
 
 - **The release workflow** ([`.github/workflows/release.yml`](../.github/workflows/release.yml))
   triggers on `v*`, re-runs the whole gate against the tag, builds macOS, Linux and Windows
@@ -41,9 +41,24 @@ not have.**
   for a dependency whose maintainer cannot be waited on: a patched copy in
   [`vendor/block`](../vendor/block/README.md), four lines, with the reasoning and the way to
   revert written down beside it.
-- **Windows** produces a zip of the executable rather than an MSI, deliberately: an
-  *unsigned* MSI is a worse experience than an unsigned executable, not a better one, so the
-  installer waits for the certificate that makes it worth having.
+- **Two artefacts on macOS and on Windows, for two different people.** The
+  [`.pkg`](../packaging/macos/pkg.sh) and the [MSI](../packaging/windows/Package.wxs) install:
+  to `/Applications` and to Program Files, with a receipt or a Programs-and-Features entry
+  naming the version, upgradeable in place, and pushable by a management tool with nobody at
+  the keyboard. The `.dmg` and the zip do not install: they are for the operator who
+  administers their own workstation, and for the one who cannot install software at all and
+  needs something that runs from wherever it was unzipped. Neither pair member does the
+  other's job, so shipping one of each is not the "two confusing artefacts" the flags
+  decision below warns about — the confusion that decision is about is two builds with
+  *different capabilities*, and these four have identical ones.
+
+  This reverses an earlier decision recorded here, that an unsigned MSI is a worse
+  experience than an unsigned executable and the installer should therefore wait for the
+  Authenticode certificate. It was wrong about who the artefact is for: the operator who
+  needs an installer is usually the one who cannot choose to use something else, and
+  SmartScreen's warning is a warning, while "we ship nothing your management tool can
+  deploy" is a wall. The unsigned state is documented in the artefact itself, in
+  `docs/operations.md`, and in a CI warning on every release.
 - **No artefact names an institution.** The 2026-08-11 decision — the application carries no
   institution's name, the organisation is the operator's setting — has to be upheld here in
   particular, because packaging is the one place a name can come back with no code changing:
@@ -144,7 +159,9 @@ changes. A release is:
 
 1. `CHANGELOG.md`: `[Unreleased]` → `[x.y.z] - YYYY-MM-DD`.
 2. Bump `Cargo.toml`, commit.
-3. Tag `vX.Y.Z`.
+3. `make release` — tags `releases/vX.Y.Z` and pushes it. The tag lives in its own
+   namespace so `git tag -l 'releases/*'` answers "what is in the field", which is the
+   question asked during an incident rather than during a release.
 4. CI builds the three platforms from the tag and attaches the artefacts.
 
 Any schema change bumps `SCHEMA_VERSION`, ships a migration, and is called out in the
@@ -207,9 +224,10 @@ identifies the exact build.
 | 2 | Version + commit hash embedded and shown in Settings | **Done** | [`build.rs`](../build.rs) → `crate::COMMIT` / `crate::build_id()`, reported by `--version`, `--diagnose`, the About box and the Settings footer, and checked by both verifiers. `unknown` when there is no `git` (a source tarball), `-dirty` from a tree with uncommitted changes; a release build fails the verifier on either |
 | 3 | macOS `.app` + `.dmg` | **Done** | `bundle.sh [--release] [--dmg]`; the plist writer is `write-plist.sh`, and free text no longer goes through a substitution |
 | 3b | Developer ID signing + notarisation | **Blocked on a certificate** | The workflow's macOS step signs with `secrets.MACOS_SIGN_IDENTITY` when it exists and warns loudly when it does not, so this is a secret away rather than a rewrite. Until then: Gatekeeper blocks the bundle, and the camera grant does not survive a rebuild because macOS remembers it against the signature. **Procurement, not code** — see the gate below |
-| 4 | Windows MSI + Authenticode | **Partly done; the installer is blocked on a certificate** | The workflow builds Windows from the tag, interrogates the binary with `--diagnose` and ships a zip. No MSI yet, deliberately: an unsigned MSI is a worse experience than an unsigned executable, so the installer waits for the Authenticode certificate that makes it worth having |
+| 3c | macOS installer package (`.pkg`) | **Done** | [`pkg.sh`](../packaging/macos/pkg.sh) wraps the bundle `verify-bundle.sh` has already checked: `pkgbuild` for the payload, `productbuild` for the wizard, a licence pane from `LICENSE` and a Read Me pane carrying the platform requirements. **Not relocatable** (the default upgrades an existing copy wherever it happens to be, so `/Applications` never changes) and restricted to the architecture the binary was actually built for. [`verify-pkg.sh`](../packaging/macos/verify-pkg.sh) checks the distribution, the payload root, the install location, the relocation setting and the panes, then extracts the payload and interrogates the binary inside it. Signing needs a Developer ID **Installer** certificate — a *different* one from 3b's Application certificate — passed as `--sign-installer`; notarisation runs when `YKDM_NOTARY_PROFILE` names a `notarytool` keychain profile, so no credential is ever an argument |
+| 4 | Windows MSI + Authenticode | **MSI done; the signature is blocked on a certificate** | [`Package.wxs`](../packaging/windows/Package.wxs) + [`msi.ps1`](../packaging/windows/msi.ps1) build a per-machine MSI with WiX 6 (pinned): Program Files, a Start Menu shortcut, a licence pane, `MajorUpgrade` with a downgrade refusal, and `packaging/windows/icon.ico` in Programs and Features. The zip stays beside it for the operator with no administrator rights. [`verify-msi.ps1`](../packaging/windows/verify-msi.ps1) **installs it**, checks the payload, the licence, the shortcut and its target, interrogates the installed binary and uninstalls — an MSI's components and key paths are authored, so a clean build proves less here than on the other platforms. Authenticode signs the `.exe` before packaging *and* the `.msi` after it when `WINDOWS_SIGN_CERT_THUMBPRINT` names a certificate in the runner's store; until then SmartScreen warns on first run |
 | 5 | Linux packages + udev rule + `pcscd` dependency documented | **Done** | [`package.sh`](../packaging/linux/package.sh) (tarball + `.deb`), the `uaccess` udev rule, the `.desktop` entry, the `hicolor` icons, install notes that travel with the artefact, and [`verify-package.sh`](../packaging/linux/verify-package.sh), which checks all of it and then runs the packaged binary |
-| 6 | Tagged release workflow with artefacts attached | **Done** | [`release.yml`](../.github/workflows/release.yml): gate → three platforms → verify → **draft** release with generated notes. Publishing stays a human action |
+| 6 | Tagged release workflow with artefacts attached | **Done** | [`release.yml`](../.github/workflows/release.yml): gate → three platforms → verify → **draft** release with generated notes. Publishing stays a human action. The tag is created by [`scripts/release.sh`](../scripts/release.sh) (`make release`) under `releases/`, and the four checks it refuses on are there because each one produces an artefact nobody can rebuild: a dirty tree, a changelog with no section for the version, a tag that already exists, and a commit the remote has never seen. The trigger still matches the bare `v*` tags from before the namespace |
 | 7 | Install/upgrade documentation per platform | **Done** | `docs/operations.md`, "Installing", plus `README.install` inside the Linux artefact — the copy that is there when somebody is installing it |
 | 8 | Upgrade note automation: warn when a schema bump is in the release | **Done** | [`scripts/release-notes.sh`](../scripts/release-notes.sh) compares `store::SCHEMA_VERSION` against the previous tag and appends the upgrade note when it moved. It also refuses to produce notes at all when the changelog has no section for the version, which is the other thing that gets forgotten |
 
@@ -222,10 +240,26 @@ change-document requirement is satisfied by the changelog plus the change record
 ## Tests
 
 - CI compiles every feature combination that will ship, on every platform (`ci.yml`).
-- A smoke test per platform, and it is the same interrogation on all three: the packaged
+- A smoke test per artefact, and it is the same interrogation every time: the packaged
   binary is run with `--diagnose`, which opens no database and writes nothing but proves the
   artefact links and starts. A bundle or package that cannot start fails in CI rather than
   at a desk.
+- **The installers are verified as installers**, which each platform allows to a different
+  depth, and the difference is the point rather than an inconsistency:
+  - a `.pkg` is a copy operation with metadata, so `verify-pkg.sh` extracts the payload and
+    interrogates it without installing anything — and separately checks the four pieces of
+    metadata that decide where the copy lands (payload root, install location, relocation,
+    architecture restriction);
+  - an MSI's behaviour is *authored*, so `verify-msi.ps1` installs it for real, checks what
+    landed including the Start Menu shortcut's target, interrogates the installed binary,
+    uninstalls, and then checks that nothing was left behind. It needs administrator rights;
+    without them the static half still runs and the install is skipped with a warning, except
+    under `YKDM_VERIFY_RELEASE=1`, where a skip is a failure — a release must not be the
+    first time anybody finds out whether the installer works.
+- **The MSI's `UpgradeCode` is asserted against a literal in the verifier**, not read out of
+  `Package.wxs`. It is the identity by which every future version recognises this product, so
+  a check that read it from the same file it is declared in would agree with the edit that
+  breaks upgrades forever. Two places that must agree is the mechanism.
 - The artefact's version matches `Cargo.toml`, and its commit is neither `unknown` nor
   `-dirty` — checked by `verify-bundle.sh` and `verify-package.sh` with
   `YKDM_VERIFY_RELEASE=1`.
@@ -246,8 +280,21 @@ change-document requirement is satisfied by the changelog plus the change record
 - **Code-signing certificates**: does the unit have a Developer ID and an Authenticode
   certificate? Without them, macOS and Windows will fight every installation. This is a
   procurement question with a long lead time — worth raising early. **It is now the only
-  thing between this feature and done**: phases 3b and 4 are a secret and a signing step
-  away, and everything either of them needs is already in the workflow.
+  thing between this feature and done**: every signing step is already in the workflow,
+  guarded by whether its secret exists, so what is missing is the certificates and not code.
+  Note that it is **three** secrets, not two, because macOS signs an application and an
+  installer package with different certificates from the same programme:
+  `MACOS_SIGN_IDENTITY` (Developer ID Application, the `.app`),
+  `MACOS_INSTALLER_SIGN_IDENTITY` (Developer ID Installer, the `.pkg`) and
+  `WINDOWS_SIGN_CERT_THUMBPRINT` (Authenticode, the `.exe` and the `.msi`). A package signed
+  with the wrong one of the first two is rejected with a message that does not say so.
+- **Where the Authenticode certificate lives when it arrives.** `msi.ps1` takes a
+  thumbprint of a certificate in the machine's own store, which is the analogue of the
+  keychain identity the macOS scripts take and keeps every private key and password off the
+  command line. A GitHub-hosted runner has no such store, so the day the certificate exists
+  there is a choice to make — a self-hosted runner, an import step in the workflow, or Azure
+  Trusted Signing, which needs no local key at all. Worth deciding with ESI rather than at
+  the moment the certificate lands.
 - Distribution channel: a share, an internal package repository, or GitHub releases? A
   security tool downloaded over HTTP from an unsigned source is its own problem.
 - Whether `encrypted-db` is in the default artefact (recommendation above).
