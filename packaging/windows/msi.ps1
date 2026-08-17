@@ -27,6 +27,22 @@
     The WiX architecture: x64 (default) or arm64. Decides Program Files and the
     filename, and must match what cargo actually built.
 
+.PARAMETER LinkOnly
+    Link the authoring and throw the result away, against a placeholder in place of
+    the compiled binary. It answers one question — does WiX accept Package.wxs? —
+    and no other: the MSI it writes installs a text file and is deleted.
+
+    It exists because the answer used to cost a version number. Half the errors in
+    an installer are found by the *linker*, after every source is parsed, so the
+    authoring is not proven by anything short of a build; and this build needed a
+    release binary, which meant a tag, which meant the release. v0.16.0 died on a
+    comment XML would not accept and v0.16.1 on a shortcut naming an icon that was
+    not declared — two mistakes a linker finds in nine seconds, each found instead
+    by a release. Under -LinkOnly, CI finds them on the commit that makes them.
+
+    It is not a substitute for building the real MSI, and does not check that what
+    is installed works: verify-msi.ps1 does that, from a tag.
+
 .PARAMETER SignCertThumbprint
     SHA-1 thumbprint of an Authenticode certificate **already in this machine's
     certificate store**. When given, the executable is signed before it is packaged
@@ -51,6 +67,8 @@ param(
     [ValidateSet('x64', 'arm64')]
     [string]$Arch = 'x64',
 
+    [switch]$LinkOnly,
+
     [string]$SignCertThumbprint = '',
 
     [string]$TimestampUrl = 'http://timestamp.digicert.com'
@@ -72,9 +90,15 @@ function Assert-NativeSuccess {
 $repo = Resolve-Path (Join-Path $PSScriptRoot '..\..')
 Push-Location $repo
 try {
+    # Signing a placeholder would produce a signature over a file nobody installs,
+    # and the only reason to ask for both is a mistake about what -LinkOnly does.
+    if ($LinkOnly -and $SignCertThumbprint) {
+        throw "-LinkOnly builds a throwaway MSI around a placeholder; there is nothing here worth signing"
+    }
+
     $binary = 'yk-dist-manager'
     $exe = Join-Path $repo "target\$CargoProfile\$binary.exe"
-    if (-not (Test-Path $exe)) {
+    if (-not $LinkOnly -and -not (Test-Path $exe)) {
         throw "no binary at $exe — build it first: cargo build --$CargoProfile --features native-device,encrypted-db"
     }
 
@@ -86,11 +110,14 @@ try {
 
     # The binary has to agree, or what is being packaged is a leftover from an
     # earlier build. Asking it is cheap and it is the same interrogation the
-    # verifiers make.
-    $reported = & $exe --version
-    Assert-NativeSuccess "$binary --version"
-    if ($reported -notmatch [regex]::Escape($version)) {
-        throw "version drift: Cargo.toml says $version, but the binary reports '$reported' — rebuild it"
+    # verifiers make. There is nothing to ask under -LinkOnly, where the version
+    # is only what the authoring is linked against.
+    if (-not $LinkOnly) {
+        $reported = & $exe --version
+        Assert-NativeSuccess "$binary --version"
+        if ($reported -notmatch [regex]::Escape($version)) {
+            throw "version drift: Cargo.toml says $version, but the binary reports '$reported' — rebuild it"
+        }
     }
 
     # An MSI ProductVersion is major.minor.build with a 255.255.65535 ceiling, and
@@ -107,7 +134,18 @@ try {
     $stage = Join-Path $outDir 'msi-stage'
     New-Item -ItemType Directory -Force -Path $outDir, $stage | Out-Null
 
-    Write-Host "==> packaging $binary $version ($CargoProfile, $Arch)"
+    if ($LinkOnly) {
+        # A File element needs a file to exist, and needs nothing else of it: what
+        # is being asked is whether WiX accepts the authoring, not what the program
+        # does. So the placeholder is a text file, and the MSI around it is deleted
+        # at the end rather than kept where somebody could pick it up.
+        $exe = Join-Path $stage "$binary.exe"
+        Set-Content -Path $exe -Value "placeholder for -LinkOnly; not a program" -Encoding ASCII
+        Write-Host "==> linking the authoring only ($binary $version, $Arch) — no MSI is kept"
+    }
+    else {
+        Write-Host "==> packaging $binary $version ($CargoProfile, $Arch)"
+    }
 
     # --- The licence, as RTF -------------------------------------------------
     #
@@ -218,7 +256,7 @@ Check what this build can reach on this machine:
             /tr $TimestampUrl /td SHA256 $exeToPackage
         Assert-NativeSuccess 'signtool sign (executable)'
     }
-    else {
+    elseif (-not $LinkOnly) {
         Write-Host "    note: no signing certificate given — the executable and the MSI will be unsigned, and SmartScreen will warn on first run"
     }
 
@@ -257,7 +295,15 @@ Check what this build can reach on this machine:
     Assert-NativeSuccess 'wix extension add'
 
     $archTag = switch ($Arch) { 'x64' { 'x86_64' } 'arm64' { 'aarch64' } }
-    $msi = Join-Path $outDir "$binary-$version-$archTag.msi"
+    # Under -LinkOnly the name says what the file is, because a file called
+    # yk-dist-manager-0.16.2-x86_64.msi that installs a placeholder is the kind of
+    # thing that reaches somebody's machine.
+    $msi = if ($LinkOnly) {
+        Join-Path $outDir 'link-check.msi'
+    }
+    else {
+        Join-Path $outDir "$binary-$version-$archTag.msi"
+    }
     Remove-Item $msi -Force -ErrorAction SilentlyContinue
 
     Write-Host "==> building $msi"
@@ -284,8 +330,15 @@ Check what this build can reach on this machine:
     }
 
     Write-Host ''
-    Write-Host "built: $msi"
-    Write-Host 'check it with:  powershell -File packaging\windows\verify-msi.ps1'
+    if ($LinkOnly) {
+        Remove-Item $msi -Force -ErrorAction SilentlyContinue
+        Write-Host 'the authoring links: WiX accepts Package.wxs and every reference in it resolves'
+        Write-Host 'that is all it says — the MSI it built installed a placeholder, and is deleted'
+    }
+    else {
+        Write-Host "built: $msi"
+        Write-Host 'check it with:  powershell -File packaging\windows\verify-msi.ps1'
+    }
 }
 finally {
     Pop-Location

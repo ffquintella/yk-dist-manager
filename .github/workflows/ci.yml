@@ -9,7 +9,9 @@
 #   has no PC/SC reader and no USB HID device, so those stay `#[ignore]`d and
 #   what the matrix proves is that the platform-specific transports still build.
 #   `features/testing-strategy.md` records that limitation rather than pretending
-#   the matrix is more than it is.
+#   the matrix is more than it is. Its Windows leg also *links* the MSI authoring,
+#   which is the one thing in this repository that used to be proven only by a
+#   release build — see the step for what that cost.
 #
 # No job ever touches a real key, in line with the hardware policy: "no test
 # writes to a YubiKey. Ever. Not even an ignored one."
@@ -122,3 +124,16 @@ jobs:
 
       - name: Tests
         run: cargo test
+
+      # Half the mistakes available in an installer are found by the *linker*,
+      # after every source has been parsed — a shortcut naming an icon that was
+      # never declared parses perfectly. Until now the only thing that linked this
+      # authoring was a release build, which needs a tag, so those mistakes cost a
+      # version number each: v0.16.0 and v0.16.1 both died there. -LinkOnly links
+      # it against a placeholder instead of a compiled binary and throws the result
+      # away, which takes seconds and needs nothing built. It does not check that
+      # the installer *works* — verify-msi.ps1 does that, from a tag.
+      - name: The Windows installer authoring links
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\packaging\windows\msi.ps1 -LinkOnly

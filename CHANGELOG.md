@@ -16,6 +16,29 @@ Maintenance instructions (see AGENTS.md §5):
 * A database schema change also bumps store::SCHEMA_VERSION and ships a migration.
 -->
 
+## [0.16.2] - 2026-08-17
+
+### Fixed
+
+- **The Windows installer builds again, and this time something other than a release
+  says so** (`features/packaging-and-release.md` phase 4). The Start Menu shortcut in
+  [`packaging/windows/Package.wxs`](packaging/windows/Package.wxs) asked for an icon called
+  `AppIcon.exe`, and the only icon declared is `AppIcon.ico`. That is not a parse error — it
+  is a *link* error (`WIX0094`), raised after every source has been read — so the v0.16.0 fix
+  could not have revealed it: that build died earlier, on the comment. The reference has been
+  wrong since the installer was written, and both releases since spent themselves finding one
+  layer of it.
+
+  So the fix is not only the one word. [`packaging/windows/msi.ps1`](packaging/windows/msi.ps1)
+  takes `-LinkOnly`, which links the authoring against a placeholder instead of a compiled
+  binary and deletes the result, and CI's Windows leg now runs it on every commit
+  ([`ci.yml`](.github/workflows/ci.yml)). It needs no release build, takes seconds, and turns
+  "does WiX accept this?" from a question only a tag could answer into one every push does.
+  [`tests/unit_packaging.rs`](tests/unit_packaging.rs) additionally catches this specific class
+  off Windows: an `Icon=` naming nothing declared, and an `Icon` whose `Id` does not carry the
+  extension of the file behind it — the second being the mistake that renders no icon at all
+  and reports nothing.
+
 ## [0.16.1] - 2026-08-17
 
 ### Fixed

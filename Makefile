@@ -6,7 +6,7 @@
         verify-bundle dmg pkg verify-pkg icons check check-all fmt lint test \
         test-all coverage coverage-core coverage-html hardware clean \
         release-check linux-package linux-package-release verify-package \
-        windows-msi verify-msi release-notes release release-dry-run
+        windows-msi msi-link-check verify-msi release-notes release release-dry-run
 
 COVERAGE_FLOOR := 80
 
@@ -54,6 +54,9 @@ verify-pkg: ## macOS: check the .pkg by interrogating the binary inside it
 
 windows-msi: ## Windows: build the MSI (needs cargo build --release first)
 	powershell -File packaging/windows/msi.ps1
+
+msi-link-check: ## Windows: does WiX accept the authoring? No build needed, no MSI kept
+	powershell -File packaging/windows/msi.ps1 -LinkOnly
 
 verify-msi: ## Windows: install the MSI, interrogate it, uninstall (needs admin)
 	powershell -File packaging/windows/verify-msi.ps1

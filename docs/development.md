@@ -75,7 +75,15 @@ make verify-pkg      # extracts the payload and runs --diagnose from inside it
 rem Windows, from an existing release build:
 powershell -File packaging\windows\msi.ps1
 powershell -File packaging\windows\verify-msi.ps1
+
+rem Does WiX still accept the authoring? Needs no build, keeps no MSI:
+powershell -File packaging\windows\msi.ps1 -LinkOnly
 ```
+
+`-LinkOnly` is what CI's Windows leg runs on every commit. It links `Package.wxs` against a
+placeholder in place of the binary and deletes the result, which answers the one question a
+reader of the file cannot — does every reference resolve? — in seconds and without a release
+build. Two versions were spent learning that the alternative is finding out from a tag.
 
 `verify-msi.ps1` installs the package for real, checks what landed (including the Start Menu
 shortcut's target), interrogates the installed binary and uninstalls — so it needs an

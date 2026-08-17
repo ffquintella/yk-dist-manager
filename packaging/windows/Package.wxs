@@ -60,7 +60,9 @@
          itself, and the Read Me installed beside the executable says so. -->
     <!-- The Id doubles as the Icon table's name, and Windows Installer decides how
          to read the icon from its extension — so an .ico source needs an Id ending
-         in .ico, or the shell renders nothing and says nothing. -->
+         in .ico, or the shell renders nothing and says nothing. Everything that
+         wants this icon names that Id: the property below and the Start Menu
+         shortcut, which is one row of the Icon table and not one each. -->
     <Icon Id="AppIcon.ico" SourceFile="$(IconFile)" />
     <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
     <!-- Nothing here needs a reboot, and an installer that asks for one when it
@@ -100,7 +102,7 @@
               Directory="ProgramMenuFolder"
               Name="YubiKey Distribution Manager"
               Description="Register of security tokens: who holds which key, and what was applied to it"
-              Icon="AppIcon.exe"
+              Icon="AppIcon.ico"
               WorkingDirectory="INSTALLFOLDER"
               Advertise="no" />
         </File>

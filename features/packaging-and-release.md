@@ -21,6 +21,12 @@ version control and carries a tag. No hand-built binaries.
 about itself, and each desktop platform now has an installer as well as a portable
 artefact. What is left is two code-signing certificates this project does not have.**
 
+**One artefact has never completed a release build**: the MSI failed on v0.16.0 (illegal XML
+in a comment) and again on v0.16.1 (a shortcut naming an undeclared icon), each time after
+the tag was pushed and the other three platforms had already built. Both are fixed, and as of
+v0.16.2 the authoring is linked on every commit rather than only on a tag — but until a
+release build gets past that step, treat "the MSI builds" as expected rather than observed.
+
 - **The release workflow** ([`.github/workflows/release.yml`](../.github/workflows/release.yml))
   triggers on `v*`, re-runs the whole gate against the tag, builds macOS, Linux and Windows
   from a fresh checkout, verifies each artefact, and attaches the results to a **draft**
@@ -256,13 +262,26 @@ change-document requirement is satisfied by the changelog plus the change record
     without them the static half still runs and the install is skipped with a warning, except
     under `YKDM_VERIFY_RELEASE=1`, where a skip is a failure — a release must not be the
     first time anybody finds out whether the installer works.
-- **The WiX authoring is read off Windows too**, by
-  [`tests/unit_packaging.rs`](../tests/unit_packaging.rs): a comment XML will not accept — one
-  containing `--`, which is how a command-line flag gets written into prose — makes WiX refuse
-  `Package.wxs` wholesale (`error WIX0104`). Until v0.16.1 that file was parsed by exactly one
-  thing, on a Windows runner, during a release build, so the mistake surfaced after the tag
-  was pushed. A text-level check on every platform is not a substitute for building the MSI;
-  it is what makes the cheap half of the mistakes cheap to find.
+- **The WiX authoring is linked on every commit**, by CI's Windows leg
+  ([`ci.yml`](../.github/workflows/ci.yml)) running `msi.ps1 -LinkOnly`: the authoring is built
+  against a placeholder in place of the compiled binary, and the resulting MSI is deleted. It
+  needs no release build and takes seconds, and it is the only thing here that proves what a
+  *linker* proves — that every reference resolves. A shortcut naming an icon that was never
+  declared parses perfectly and fails the link (`error WIX0094`), which is how the v0.16.1
+  build failed; a reader of the file alone cannot catch that class, because resolving a
+  reference is exactly what reading one file is not.
+- **The WiX authoring is also read off Windows**, by
+  [`tests/unit_packaging.rs`](../tests/unit_packaging.rs), which is cheaper still and runs where
+  the work is done. It fails on a comment XML will not accept — one containing `--`, which is
+  how a command-line flag gets written into prose, and which makes WiX refuse `Package.wxs`
+  wholesale (`error WIX0104`, the v0.16.0 failure) — and on the two icon mistakes: an `Icon=`
+  naming no declared `<Icon>`, and an `Icon` whose `Id` does not end in the extension of its
+  source, which installs silently and renders nothing.
+- **The lesson of v0.16.0 and v0.16.1**, which is why there are now three checks and not one:
+  until v0.16.2 the only thing that read `Package.wxs` was WiX, on a Windows runner, during a
+  release build — so every mistake in it surfaced *after* a tag was pushed, when the fix costs
+  a version number rather than a commit, and each release revealed exactly one layer because
+  the first error stops the build. Nothing in a release should be the only reader of a file.
 - **The MSI's `UpgradeCode` is asserted against a literal in the verifier**, not read out of
   `Package.wxs`. It is the identity by which every future version recognises this product, so
   a check that read it from the same file it is declared in would agree with the edit that
