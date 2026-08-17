@@ -16,8 +16,9 @@ and the "which key am I holding" bookkeeping in the tool.
 
 ## Current state
 
-**Built** — a **Batch** card on the Bootstrap screen, both shapes, persisted as it goes
-and resumable. [`src/batch/`](../src/batch/) holds the model and the pairing import;
+**Done** — a **Batch** card on the Bootstrap screen, both shapes, persisted as it goes
+and resumable, and the terms the box owes are written in one action.
+[`src/batch/`](../src/batch/) holds the model, the pairing import and the document plan;
 schema **v8** holds `batches` and `batch_keys`.
 
 The design decision worth stating first: **a batch drives the wizard.** Each key still
@@ -79,7 +80,7 @@ territory (v2 is per-step run rows), so it comes after the executor.
 | 4 | Pairing list import (CSV) with up-front validation | 2 | **Done** | **The whole file or none of it**, and every bad row reported at once. See below |
 | 5 | Assigned enrolment with per-holder certificates | 2 | **Done** | The list may name the key or leave it to the box. A key with nobody left to belong to is refused rather than paired with an invented holder |
 | 6 | Batch summary and evidence export | 2 | **Done** | The needs-attention list on screen, and the runs a batch produced are ordinary runs — so the bootstrap-compliance and custody-model reports already cover them |
-| 7 | Batch hand-over document generation | 2 | Todo | with [`receipts-and-terms.md`](receipts-and-terms.md) phase 7 |
+| 7 | Batch hand-over document generation | 2 | **Done** | [`batch::documents`](../src/batch/documents.rs) decides which positions owe a term and what each file is called; `YkDistApp::generate_batch_terms` renders each one through the same `term::render_term_pdf` the single hand-over uses. One PDF per finished key, into a dated folder carrying the batch. A **stock** batch is refused — it has no holders, and a consignment term with no name on it is a form rather than a record |
 | 8 | Schema: `batches` table | 2 | **Done** | **v8** — `batches` + `batch_keys`. Two tables because a batch is a header and a list, and the list is what has to be written *as it goes* |
 
 ### Why the pairing list is all-or-nothing
@@ -106,6 +107,7 @@ an operator fixing a spreadsheet wants every bad row in one pass.
 | `batch.finished` | `succeeded=<n> failed=<n> skipped=<n>` |
 | `batch.key.skipped` | A position the operator passed over, with the reason |
 | `batch.resumed` | `batch=<id> from_key=<n>` |
+| `batch.terms` | `documents=<n> skipped=<n> refused=<n> path=…` — the set. Each term also writes its own `term.generated`, because "fifty terms were generated" cannot answer which holder's term came from which template version |
 
 Per-key bootstrap events are still emitted individually: a batch is not an excuse for a
 coarser audit trail.
@@ -122,6 +124,11 @@ coarser audit trail.
   is; a key that failed is refused too. — `src/batch/mod.rs`
 - Unit: a box with one more key than expected is not an error.
 - Unit: an assigned batch refuses a key with nobody left rather than inventing a holder.
+- Unit: only finished positions owe a term; a half-done batch still produces what it can; the
+  file name carries the serial and never the holder. — `src/batch/documents.rs`
+- Behaviour: an assigned batch writes one PDF per finished key and one `term.generated` per
+  holder, and reports the position that produced nothing; a stock batch is refused with a
+  sentence naming where to go instead. — `tests/behaviour_app_batch_terms.rs`
 - Unit: CSV pairing import rejects the whole file on one malformed e-mail, reports **every**
   bad row with its line number, refuses a repeated address or serial, and stops listing
   after twelve. — `src/batch/pairing.rs`

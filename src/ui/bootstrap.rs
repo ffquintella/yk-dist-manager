@@ -239,6 +239,15 @@ fn batch_progress(app: &mut YkDistApp, ui: &mut egui::Ui) {
         if app.batch.position.is_some() && super::row_button(ui, "Skip this key").clicked() {
             app.skip_batch_key("not in the box");
         }
+        // Offered on an assigned batch only, and offered *while* it runs rather
+        // than at the end: half a box done at five o'clock is the ordinary case,
+        // and the terms for the keys that are ready are wanted then. What each
+        // position produced — or did not — comes back in the notice.
+        if batch.shape == crate::batch::Shape::AssignedEnrolment
+            && super::row_button(ui, "Hand-over documents…").clicked()
+        {
+            app.generate_batch_terms_interactive();
+        }
         if super::row_button(ui, "Put the batch down").clicked() {
             app.close_batch();
         }

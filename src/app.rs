@@ -6607,6 +6607,193 @@ impl YkDistApp {
         self.batch.notice = Some(tally.describe());
     }
 
+    /// Write the consignment terms the open batch owes, in one action
+    /// (`features/bulk-enrollment.md` phase 7, `features/receipts-and-terms.md`
+    /// phase 7).
+    ///
+    /// Each term is rendered by the same `term::render_term_pdf` the single
+    /// hand-over uses, from the same context: a batch is not a second way of
+    /// producing a term. What it removes is the fifty trips through the
+    /// Distribution screen, which is where the fiftieth term stops getting
+    /// generated at all.
+    ///
+    /// One **language** for the set, the one chosen on the term panel. Holders do
+    /// not carry a language on the register, so per-holder wording is not
+    /// something this can derive — and guessing it from a name or an address is
+    /// exactly the guess a consignment document should not make. A unit that
+    /// needs two languages runs the action twice.
+    pub fn generate_batch_terms(&mut self, into: &Path) -> Option<PathBuf> {
+        use crate::batch::documents;
+        use crate::term::{TermContext, choose_template};
+
+        self.batch.error = None;
+        let Some(batch) = self.batch.current.clone() else {
+            self.batch.error = Some("no batch is open".into());
+            return None;
+        };
+
+        let plan = match documents::plan(&batch) {
+            Ok(plan) => plan,
+            Err(refusal) => {
+                self.batch.error = Some(refusal.message().to_owned());
+                return None;
+            }
+        };
+        if plan.is_empty() {
+            self.batch.error = Some(format!(
+                "no key in this batch has finished a run yet, so there is nothing to \
+                 generate — {}",
+                plan.describe()
+            ));
+            return None;
+        }
+
+        let language = self.term_panel.language.clone();
+        // Cloned before anything borrows `self` mutably, and once for the whole
+        // set: fifty terms from one template version is what makes them a set.
+        let Some(template) =
+            choose_template(&self.term_templates, crate::term::CONSIGNMENT_ID, &language).cloned()
+        else {
+            self.batch.error = Some(format!("no consignment term template for `{language}`"));
+            return None;
+        };
+
+        let now = chrono::Utc::now();
+        let directory = into.join(documents::directory_name(&batch, now));
+        if let Err(e) = std::fs::create_dir_all(&directory) {
+            let message = format!("could not create {}: {e}", directory.display());
+            tracing::error!(event = "batch.terms.failed", reason = %e);
+            self.batch.error = Some(message.clone());
+            self.status = message;
+            return None;
+        }
+
+        let mut written = 0usize;
+        // Problems are collected rather than returned on: a term that cannot be
+        // produced for one holder is not a reason to leave the other forty-nine
+        // unwritten, and the operator needs the whole list in one pass.
+        let mut problems: Vec<String> = Vec::new();
+
+        for planned in &plan.planned {
+            let Some(holder) = self
+                .holders
+                .iter()
+                .find(|h| h.id == planned.holder_id)
+                .cloned()
+            else {
+                problems.push(format!(
+                    "serial {}: the holder is no longer in the register",
+                    planned.serial
+                ));
+                continue;
+            };
+            let key = self
+                .keys
+                .iter()
+                .find(|k| k.serial == planned.serial)
+                .cloned()
+                .unwrap_or_else(|| {
+                    YubiKeyRecord::from_serial(planned.serial, SerialSource::ManualEntry)
+                });
+            // The hand-over record when the key has already been given out, and
+            // `None` while it has not — which is the ordinary case here and is
+            // what leaves the hand-over lines out of a term that is about to be
+            // signed. The same `Option` the single path passes.
+            let record = self
+                .distributions
+                .iter()
+                .find(|d| d.key_serial == planned.serial && d.returned_at.is_none())
+                .cloned();
+            let run = batch
+                .entries
+                .get(planned.position)
+                .and_then(|entry| entry.run_id)
+                .and_then(|id| self.runs.iter().find(|r| r.id == id));
+            let applied = run
+                .map(|r| r.summary())
+                .unwrap_or_else(|| "nothing recorded".to_owned());
+            let custody = run
+                .and_then(|r| crate::domain::CustodyModel::parse(&r.custody))
+                .unwrap_or(crate::domain::CustodyModel::DEFAULT)
+                .label()
+                .to_owned();
+
+            let ctx = TermContext::from_records(
+                &holder,
+                &key,
+                record.as_ref(),
+                &applied,
+                &custody,
+                &self.operator,
+                &self.org,
+            );
+
+            let Some(bytes) = self.term_pdf(&template, &ctx) else {
+                problems.push(format!(
+                    "serial {}: the PDF could not be produced",
+                    planned.serial
+                ));
+                continue;
+            };
+            let path = directory.join(planned.file_name("pdf"));
+            if let Err(e) = std::fs::write(&path, &bytes) {
+                tracing::error!(event = "batch.terms.failed", reason = %e);
+                problems.push(format!(
+                    "serial {}: could not write the file ({e})",
+                    planned.serial
+                ));
+                continue;
+            }
+
+            written += 1;
+            // Audited per term, with the same event the single path writes. A
+            // batch is not an excuse for a coarser trail: "fifty terms were
+            // generated" cannot answer which holder's term was produced from
+            // which template version.
+            self.record(
+                "term.generated",
+                &format!("serial:{}", planned.serial),
+                &format!(
+                    "holder={} language={} template={}@{} batch={}",
+                    holder.email, template.language, template.id, template.version, batch.id
+                ),
+            );
+        }
+
+        self.record(
+            "batch.terms",
+            &format!("batch:{}", batch.id),
+            &format!(
+                "documents={written} skipped={} refused={} path={}",
+                plan.skipped.len(),
+                problems.len(),
+                directory.display()
+            ),
+        );
+
+        let mut notice = format!("{written} term(s) written to {}", directory.display());
+        if !plan.skipped.is_empty() {
+            notice.push_str(&format!(
+                " — {} position(s) produced nothing, the first being {}",
+                plan.skipped.len(),
+                plan.skipped[0].describe
+            ));
+        }
+        self.batch.notice = Some(notice.clone());
+        self.status = notice;
+        if !problems.is_empty() {
+            self.batch.error = Some(problems.join("; "));
+        }
+        Some(directory)
+    }
+
+    /// Ask where the terms go, then write them.
+    pub fn generate_batch_terms_interactive(&mut self) {
+        if let Some(directory) = self.choose_export_directory() {
+            self.generate_batch_terms(&directory);
+        }
+    }
+
     /// Read the batches somebody could pick up.
     pub fn reload_batches(&mut self) {
         let Some(store) = &self.store else { return };

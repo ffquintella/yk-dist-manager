@@ -16,6 +16,46 @@ Maintenance instructions (see AGENTS.md §5):
 * A database schema change also bumps store::SCHEMA_VERSION and ships a migration.
 -->
 
+## [Unreleased]
+
+### Added
+
+- **The terms a box of keys owes, in one action** — `features/bulk-enrollment.md` phase 7 and
+  `features/receipts-and-terms.md` phase 7, the last unfinished phase of bulk enrolment.
+  *Hand-over documents…* on the Batch card writes one PDF per finished key into a dated
+  folder carrying the batch, and the batch is done.
+
+  Each term is rendered by the same `term::render_term_pdf`, from the same context, as a
+  single hand-over. That is the point rather than an implementation note: a batch is not a
+  second way of producing a term, for the same reason it is not a second way of writing to a
+  key — the second way is the one that drifts. What the batch removes is the fifty trips
+  through the Distribution screen, which is where the fiftieth term stops being generated at
+  all.
+
+  Three decisions worth stating:
+
+  - **A stock batch is refused**, not rendered with the name left blank. Stock preparation
+    has no holders by definition, and a consignment term with an empty holder is a form —
+    one that comes out of the register looks like a record. The refusal names the
+    Distribution screen as where to go once the keys have people.
+  - **A half-done batch produces what it can.** Five o'clock with thirty of fifty done is the
+    ordinary case, and the terms for the ready keys are wanted then. Every position that
+    produced nothing is counted in the notice and in the audit summary, which is what keeps
+    that honest.
+  - **The file name is `termo-<serial>.pdf`** and never the holder's name. The term inside
+    carries it, because the document is a consignment to a person; a directory listing is
+    read by anybody who can see the folder, and fifty file names would be a staff list
+    nobody decided to publish.
+
+  One language for the set, the one chosen on the term panel: a holder does not carry a
+  language on the register, and deriving one from a name or an address is not a guess a
+  consignment document should make. A unit that needs two runs the action twice.
+
+  Audited one `term.generated` per holder — naming the holder, the language, the template
+  version and the batch — plus one `batch.terms` for the set. A batch is not an excuse for a
+  coarser trail: "fifty terms were generated" cannot answer which holder's term came from
+  which template version.
+
 ## [0.16.3] - 2026-08-17
 
 ### Fixed

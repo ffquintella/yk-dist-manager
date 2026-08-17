@@ -187,7 +187,7 @@ hand-over as acknowledged because the return was.
 | 4 | Signature state machine with an age warning | 0 | **Done** | [`crate::receipt`](../src/receipt.rs) — five states derived from the record, what is filed **per kind** and the clock; a per-unit threshold (14 days by default, or terms turned off entirely); a banner on the Distribution screen; and `receipt.pending_overdue` written **once per hand-over, ever**, using the trail itself as the marker. Recording the unit's own reference *after* the hand-over is now possible, which is what `receipt.signed` records |
 | 5 | Store the signed document | 0 | **Done** | [signed-term-documents.md](signed-term-documents.md) — stored **in** the database, reversing the original plan; the reasoning is in that spec |
 | 6 | Return receipt (the mirror document) | 0 | **Done** | a second template **id** (`term::RETURN_ID`), so it inherits versioning, the editor, both languages and the PDF writer. Offered on returned rows only, filed as `DocumentKind::ReturnReceipt`, and tracked separately from the term — a signed receipt does not settle a term nobody signed |
-| 7 | Batch generation for a bulk hand-over | 2 | Todo | `features/bulk-enrollment.md` |
+| 7 | Batch generation for a bulk hand-over | 2 | **Done** | `features/bulk-enrollment.md` phase 7. One PDF per finished key of an assigned batch, rendered by this spec's own `render_term_pdf` from this spec's own stored template — the batch adds the loop and the folder, not a second way of producing a term. One language for the set, because a holder does not carry one on the register and guessing it from a name is not a guess a consignment document should make |
 
 ## Audit events
 

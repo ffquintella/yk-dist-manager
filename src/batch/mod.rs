@@ -32,6 +32,7 @@
 //! not an excuse for a coarser trail, and `batch.key.done` sits *beside*
 //! `bootstrap.finished` rather than instead of it.
 
+pub mod documents;
 pub mod pairing;
 
 use chrono::{DateTime, Utc};
