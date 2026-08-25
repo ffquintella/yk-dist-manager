@@ -1197,8 +1197,10 @@ fn reset_confirmation(app: &mut YkDistApp, ui: &mut egui::Ui, serial: u32) {
 
             // The one refusal an operator can do something about from here. It is
             // usually the timing window closing anyway — the key enumerated slowly,
-            // or `ykman` took longer to start than the applet was willing to wait —
-            // and the answer to that is another power cycle, not a command line.
+            // or the port was slower to hand it back than the applet was willing to
+            // wait — and the answer to that is another power cycle, not a command
+            // line. (Until 2026-08-25 the commonest cause was a `ykman` process
+            // starting inside the five seconds; the frame is sent in process now.)
             let fido2_refused = outcomes
                 .iter()
                 .any(|o| o.applet == Applet::Fido2 && o.status == Status::Failed);

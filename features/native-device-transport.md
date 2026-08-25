@@ -24,6 +24,19 @@ A subprocess transport has four concrete problems for this tool:
 
 ## Current state
 
+**Phases 2a and 4a shipped 2026-08-25, and with them no factory reset needs
+`ykman`.** That was the last place the subprocess was load-bearing rather than a
+fallback: FIDO2 and OTP resets both went out through it, so a workstation without
+`ykman` on `PATH` could reset one applet out of three — on a tool whose own
+pre-flight refuses an already-configured key and names the reset as the way past.
+Phase 2a writes the three CTAPHID frames `authenticatorReset` needs
+([`src/device/ctaphid.rs`](../src/device/ctaphid.rs)), because `ctap-hid-fido2`
+implements no such call and keeps its CTAPHID layer private. Phase 4a reaches the
+OTP applet over **CCID** rather than HID
+([`src/device/native_otp.rs`](../src/device/native_otp.rs)), which is what makes
+it a different decision from the frame phase 4 still declines to write — see
+below. Neither is hardware-verified.
+
 **Phases 1, 2 and 6 shipped; phase 3 built and reachable since 2026-08-13.** That
 last word is the whole of what changed: the PIV *writes* were shipped in a state
 where two of them — on-device key generation and certificate import — could not
@@ -71,7 +84,7 @@ and FIPS state.
 |---|---|---|
 | `native-piv` | `yubikey` crate, PIV applet | PC/SC |
 | `native-fido` | `ctap-hid-fido2`, FIDO2 applet | USB HID |
-| `native-otp` | `hidapi`, OTP slots | USB HID |
+| `native-otp` | the OTP applet — slot status, clearing a slot | PC/SC (via `ccid`) |
 | `native-device` | all three | — |
 
 **`native-device` is on by default as of 0.12.0.** It was opt-in while the transports
@@ -155,7 +168,9 @@ paperwork.
 | 1 | PIV identification over PC/SC | 0 | Done | serial + firmware, hardware-verified |
 | 2 | FIDO2 transport (`get_info`, PIN, credential) | 1 | **Done** | [`src/device/native_fido.rs`](../src/device/native_fido.rs) — **hardware-verified on a 5.7.4 key**, reads and writes, including the resident credential `ykman` cannot create |
 | 3 | PIV write operations (PIN/PUK/mgmt key, keygen, cert import, attest) | 1 | **Done** | **Reachable on current firmware since 2026-08-13**: `generate` and certificate import authenticated through the crate's 3DES `MgmKey`, which a 5.7 slot refuses, so both were shipped and unusable. They now run on [`device::piv_session`](../src/device/piv_session.rs) — one session that authenticates with AES and then issues the write, because PIV authentication belongs to the session. Before that, the CSR was the last gap and [`device::csr`](../src/device/csr.rs) closed it — PKCS#10 with the `rfc822Name` SAN, assembled purely and signed through the slot, checked against `openssl`. `attest` added for `device-detection.md` phase 6. **No key was attached when these were written** |
-| 4 | OTP slot HID config frames | 1 | Todo — **read done via the fallback, writes blocked on hardware** | `ykman otp info` now answers which slots are programmed (`device::ykman::parse_otp_info`, unit-tested), which is what this phase requires *before* any write. The frames themselves are unwritten: no crate exposes them, and hand-rolling a write whose failure mode is an access code nobody holds is not something to do without a key to try it on |
+| 2a | FIDO2 `authenticatorReset` over CTAPHID | 1 | **Done** | [`src/device/ctaphid.rs`](../src/device/ctaphid.rs) — the one FIDO2 operation phase 2 could not cover, because `ctap-hid-fido2` implements no `authenticatorReset` and its CTAPHID module is private. Three frames: `CTAPHID_INIT` with a nonce that is checked, `CTAPHID_CBOR` carrying the single byte `0x07`, then reads through `CTAPHID_KEEPALIVE` until the authenticator answers. The framing is unit-tested; the **exchange is not hardware-verified**. Worth noting what it buys beyond removing a dependency: `ykman` had to start a Python interpreter inside the applet's power-up window, and this sends the frame from a process already running |
+| 4a | OTP slot status and clearing a slot, over CCID | 1 | **Done** | [`src/device/native_otp.rs`](../src/device/native_otp.rs) — AID `A0 00 00 05 27 20 01`, instruction `00 01`. **Not the frame phase 4 declines to write**: over CCID the card carries the framing (no chunked frame, no CRC), the payload for a clear is all zeros so no byte can become an access code, and the applet answers each write with its status structure so the result is confirmed by re-reading the valid flags. The status parse refuses a response that is not a status structure rather than reading it as *both slots empty*, because that reading would record a key with two programmed slots as needing nothing done. **Not hardware-verified** |
+| 4 | OTP slot HID config frames (programme a slot, set an access code) | 1 | Todo — **still a decision, not a backlog item** The **read** this phase required before any write is done twice over — natively over CCID (4a) and through `ykman otp info` on the fallback. What is left is the HID configuration frame that *programmes* a slot or *sets* an access code, and it stays unwritten: no crate exposes it, and hand-rolling a write whose failure mode is an access code nobody holds is not something to do without a key to try it on. 4a is not a partial delivery of this — it is a write of a different shape, over a different wire, whose payload has no value in it to get wrong |
 | 5 | Management applet APDU (form factor, capabilities, FIPS) | 1 | **Done** | removes the last read-only dependency on `ykman` — **the code is complete and the protocol conversation is unverified against a key**; the pure half is covered by tests |
 | 6 | Backend auto-selection + Settings override | 1 | **Done** | [`src/device/select.rs`](../src/device/select.rs); `via: …` in the status bar, override in Settings, `device.transport.selected` audited. **This is what made phases 1–2 reachable** — until it landed, `YkDistApp::new` said `YkmanBackend::default()` and no build flag or setting could change it |
 | 7 | Cross-check mode | 2 | Todo | run both transports on read paths and log divergence during the migration |

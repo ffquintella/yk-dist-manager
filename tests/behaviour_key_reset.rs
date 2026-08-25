@@ -140,9 +140,10 @@ fn scenario_an_operator_returns_a_whole_key_to_factory_default() {
             applet.label()
         );
     }
-    // And: which transport ran is on the record. Two of the three are `ykman`,
-    // and a trail that did not say which would leave nobody able to answer "how
-    // was this key reset" a year later.
+    // And: which transport ran is on the record. All three go native in a build
+    // that has the transports, and out through `ykman` in one that does not — a
+    // trail that did not say which would leave nobody able to answer "how was
+    // this key reset" a year later.
     assert!(
         resets.iter().all(|d| d.contains("transport=")),
         "{resets:?}"

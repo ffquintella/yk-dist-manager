@@ -7,7 +7,7 @@
 //! Two real transports exist, in this order of preference:
 //!
 //! 1. [`native`] — pure-Rust access to the applets (`yubikey` over PC/SC for
-//!    PIV, `ctap-hid-fido2` for FIDO2, `hidapi` for OTP). No external process,
+//!    PIV, `ctap-hid-fido2` for FIDO2, the OTP applet over CCID). No external process,
 //!    typed errors, no output parsing. Behind the `native-*` features.
 //! 2. [`ykman`] — subprocess fallback, for the operations no crate covers yet
 //!    (management-applet metadata such as form factor and per-application
@@ -25,6 +25,9 @@ pub mod composite;
 /// only that feature brings in the card the request is signed by.
 #[cfg(feature = "native-piv")]
 pub mod csr;
+/// The three CTAPHID frames a FIDO2 factory reset needs. Behind `native-fido`
+/// for the HID device; the framing itself is pure and always tested.
+pub mod ctaphid;
 /// The management applet — form factor, per-application enable flags, FIPS state.
 /// The parser is always compiled; only the card exchange needs `native-piv`.
 pub mod mgmt;
@@ -33,6 +36,9 @@ pub mod mock;
 pub mod native;
 #[cfg(feature = "native-fido")]
 pub mod native_fido;
+/// The Yubico OTP applet over CCID: which slots are programmed, and clearing one.
+/// The parsing is always compiled; only the card exchange needs `native-otp`.
+pub mod native_otp;
 #[cfg(feature = "native-piv")]
 pub mod native_piv;
 #[cfg(feature = "native-piv")]

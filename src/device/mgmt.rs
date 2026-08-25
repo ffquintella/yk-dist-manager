@@ -40,13 +40,17 @@
 use super::tlv::{be_integer, tlvs};
 
 /// Management application id, selected over CCID.
-#[cfg_attr(not(feature = "native-piv"), allow(dead_code))]
-const MGMT_AID: [u8; 8] = [0xA0, 0x00, 0x00, 0x05, 0x27, 0x47, 0x11, 0x17];
+///
+/// `pub(crate)` because [`super::native_otp`] selects this applet too — not to
+/// read a configuration but to establish *which key* the card in front of it is,
+/// before it goes on to write to the OTP applet.
+#[cfg_attr(not(feature = "ccid"), allow(dead_code))]
+pub(crate) const MGMT_AID: [u8; 8] = [0xA0, 0x00, 0x00, 0x05, 0x27, 0x47, 0x11, 0x17];
 
 /// `READ CONFIG`, the one instruction this module sends. A read: the applet's
 /// write instruction is `0x1C`, which is deliberately not implemented here.
-#[cfg_attr(not(feature = "native-piv"), allow(dead_code))]
-const INS_READ_CONFIG: u8 = 0x1D;
+#[cfg_attr(not(feature = "ccid"), allow(dead_code))]
+pub(crate) const INS_READ_CONFIG: u8 = 0x1D;
 
 const TAG_USB_SUPPORTED: u32 = 0x01;
 const TAG_SERIAL: u32 = 0x02;
@@ -77,7 +81,7 @@ const CAPABILITIES: [(u64, &str); 7] = [
 /// The applet says whether more is waiting (`TAG_MORE_DATA`), and a bound exists
 /// because a card that always says "more" would otherwise loop for ever. Three is
 /// past what any shipped firmware uses.
-#[cfg_attr(not(feature = "native-piv"), allow(dead_code))]
+#[cfg_attr(not(feature = "ccid"), allow(dead_code))]
 const MAX_PAGES: u8 = 3;
 
 /// What the management applet says about a key.
@@ -317,7 +321,7 @@ fn form_factor(byte: u64) -> Option<String> {
 ///
 /// Read-only, so it is safe from a screen the operator merely opened — the rule
 /// `AGENTS.md` states for hardware and the reason [`super::applets`] exists.
-#[cfg(feature = "native-piv")]
+#[cfg(feature = "ccid")]
 pub fn read(serial: u32) -> super::write::Result<DeviceConfig> {
     const OP: &str = "mgmt.read_config";
     let mut session = Session::open(serial, OP)?;
@@ -345,7 +349,7 @@ pub fn read(serial: u32) -> super::write::Result<DeviceConfig> {
 
 /// Not compiled without a card transport. The caller reports the gap; returning a
 /// default here would say "nothing is enabled".
-#[cfg(not(feature = "native-piv"))]
+#[cfg(not(feature = "ccid"))]
 pub fn read(serial: u32) -> super::write::Result<DeviceConfig> {
     let _ = serial;
     Err(super::write::WriteError::TransportUnavailable {
@@ -360,12 +364,12 @@ pub fn read(serial: u32) -> super::write::Result<DeviceConfig> {
 /// one has selected the PIV applet, and selecting another on the same card
 /// discards PIV's authentication state. Two short sessions cost a reconnect; one
 /// shared session costs an authentication nobody expected to lose.
-#[cfg(feature = "native-piv")]
+#[cfg(feature = "ccid")]
 struct Session {
     card: pcsc::Card,
 }
 
-#[cfg(feature = "native-piv")]
+#[cfg(feature = "ccid")]
 impl Session {
     fn open(serial: u32, operation: &'static str) -> super::write::Result<Self> {
         use super::write::WriteError;
@@ -745,7 +749,7 @@ mod tests {
     fn a_build_with_no_card_transport_says_so_instead_of_answering() {
         // Only meaningful in the `ykman`-only build; asserted there so the honest
         // failure is covered rather than assumed.
-        #[cfg(not(feature = "native-piv"))]
+        #[cfg(not(feature = "ccid"))]
         {
             let err = read(20_423_633).unwrap_err();
             assert!(err.detail().contains("native-piv"), "{}", err.detail());

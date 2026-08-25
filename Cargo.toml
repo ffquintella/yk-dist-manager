@@ -1,6 +1,6 @@
 [package]
 name = "yk-dist-manager"
-version = "0.17.0"
+version = "0.17.1"
 edition = "2024"
 description = "YubiKey distribution and bootstrap manager (egui desktop app)"
 license = "MIT"
@@ -179,11 +179,24 @@ encrypted-db = ["rusqlite/bundled-sqlcipher-vendored-openssl"]
 # dead. Turned on deliberately, with the reasoning and the alternatives recorded
 # in `features/step-piv-pin-puk-management-key.md`, and every operation
 # exercised against a dedicated test key before it is relied on.
-native-piv = ["dep:yubikey", "dep:pcsc", "dep:aes", "yubikey/untested"]
+native-piv = ["ccid", "dep:yubikey", "dep:aes", "yubikey/untested"]
 # FIDO2 / CTAP2 over USB HID.
-native-fido = ["dep:ctap-hid-fido2"]
-# Yubico OTP slot configuration over USB HID.
-native-otp = ["dep:hidapi"]
+#
+# `hidapi` is here as well as inside `ctap-hid-fido2` because that crate
+# implements no `authenticatorReset` and keeps its CTAPHID layer private, so the
+# three frames a factory reset needs are written directly against the HID device
+# (`src/device/ctaphid.rs`). It is the same `hidapi` the crate already links.
+native-fido = ["dep:ctap-hid-fido2", "dep:hidapi"]
+# The Yubico OTP applet: which slots are programmed, and clearing one.
+#
+# Over CCID rather than USB HID (`src/device/native_otp.rs`), which is why this
+# asks for `ccid` and not for `hidapi`. The HID configuration frame — the one that
+# *programmes* a slot or sets an access code — stays unwritten by the decision
+# recorded in `docs/yubikey-reference.md`.
+native-otp = ["ccid"]
+# Reaching an applet over the card interface, shared by PIV, the management applet
+# and OTP. Not selected directly: the applet features above ask for it.
+ccid = ["dep:pcsc"]
 # Everything native.
 native-device = ["native-piv", "native-fido", "native-otp"]
 

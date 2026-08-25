@@ -35,15 +35,40 @@
 //!
 //! ## Which transport does which applet
 //!
-//! Two of the three are `ykman`, and AGENTS.md requires a fallback to be labelled
-//! as one where the operator sees it — [`Route::fallback`] is that label, and it
-//! carries the reason rather than an apology:
+//! **All three go native** in a build that has the transports and a session that
+//! chose them. That was not true until 2026-08-25: FIDO2 and OTP both went out
+//! through `ykman`, and a workstation without `ykman` on `PATH` therefore could
+//! not reset the two applets whose reset this module exists to perform. What it
+//! could do was refuse two thirds of a factory reset and report the refusal
+//! accurately, which is not the same thing as working.
 //!
 //! | Applet | Transport | Why |
 //! |---|---|---|
-//! | FIDO2 | `ykman` | `ctap-hid-fido2` implements no `authenticatorReset`; there is nothing native to call |
-//! | PIV | native, where this build and this session have it | `yubikey` exposes the whole sequence |
-//! | OTP | `ykman` | the OTP config frames are not implemented natively (`native-device-transport.md` phase 4) |
+//! | FIDO2 | native | [`super::ctaphid`] sends `authenticatorReset` itself, because `ctap-hid-fido2` implements no such call and keeps its CTAPHID layer private |
+//! | PIV | native | `yubikey` exposes the whole sequence |
+//! | OTP | native | [`super::native_otp`] clears each programmed slot over CCID, where the card carries the framing |
+//!
+//! `ykman` remains the route for a build compiled without the transports, and for
+//! a session whose transport probe demoted it — a machine with no PC/SC service or
+//! no HID permission is a real deployment, and this is where it lands. AGENTS.md
+//! requires a fallback to be labelled as one where the operator sees it:
+//! [`Route::fallback`] is that label, and it carries the reason rather than an
+//! apology.
+//!
+//! Every native route is gated on the **session's** transport as well as on the
+//! feature, so a `via: ykman` status bar and a native reset cannot happen at once.
+//! An operator who forced the fallback is usually the person diagnosing the
+//! machine, and an application that quietly overruled them would make the
+//! diagnosis impossible (`features/native-device-transport.md` phase 6).
+//!
+//! ## What is still not native
+//!
+//! Nothing in a *reset*. `docs/yubikey-reference.md` records a decision to leave
+//! the Yubico OTP configuration frame unwritten because a wrong frame leaves a
+//! slot protected by an access code nobody holds; that decision is about
+//! *programming* a slot and setting a code, both of which still go through
+//! `ykman`. Clearing a slot writes zeros, over a wire that carries its own
+//! framing, and confirms the result by re-reading the applet.
 
 use super::write::WriteError;
 use super::{AppletStates, Transport, TransportChoice};
@@ -154,37 +179,56 @@ pub struct Route {
 /// Pure — the session's choice is handed in — so every branch is a unit test
 /// rather than something that only shows up with a key in a port.
 pub fn route(applet: Applet, choice: &TransportChoice) -> Route {
-    let native_piv = cfg!(feature = "native-piv")
-        && applet == Applet::Piv
-        && choice.transport == Transport::Native;
+    let session_is_native = choice.transport == Transport::Native;
+    let compiled = match applet {
+        Applet::Fido2 => cfg!(feature = "native-fido"),
+        Applet::Piv => cfg!(feature = "native-piv"),
+        Applet::Otp => cfg!(feature = "native-otp"),
+    };
 
-    match (applet, native_piv) {
-        (Applet::Piv, true) => Route {
+    if session_is_native && compiled {
+        return Route {
             applet,
             transport: Transport::Native.label(),
             fallback: false,
-            reason: "the `yubikey` crate performs the whole sequence in process",
-        },
-        (Applet::Piv, false) => Route {
-            applet,
-            transport: Transport::Ykman.label(),
-            fallback: true,
-            reason: "this session does not read through the native transport, so the PIV reset \
-                     goes through `ykman piv reset`",
-        },
-        (Applet::Fido2, _) => Route {
-            applet,
-            transport: Transport::Ykman.label(),
-            fallback: true,
-            reason: "no crate in this build implements the CTAP `authenticatorReset` command — \
-                     `ykman fido reset` is the only way to send it",
-        },
-        (Applet::Otp, _) => Route {
-            applet,
-            transport: Transport::Ykman.label(),
-            fallback: true,
-            reason: "the OTP configuration frames are not implemented natively \
-                     (`features/native-device-transport.md` phase 4)",
+            reason: match applet {
+                Applet::Fido2 => {
+                    "this build sends the CTAP `authenticatorReset` frame itself, \
+                                  from a process that is already running rather than one that \
+                                  has to start inside the applet's power-up window"
+                }
+                Applet::Piv => "the `yubikey` crate performs the whole sequence in process",
+                Applet::Otp => {
+                    "the OTP applet answers over CCID, so each programmed slot is \
+                                cleared in process and the result is confirmed by re-reading \
+                                the applet"
+                }
+            },
+        };
+    }
+
+    Route {
+        applet,
+        transport: Transport::Ykman.label(),
+        fallback: true,
+        reason: if !compiled {
+            match applet {
+                Applet::Fido2 => {
+                    "this build has no `native-fido` transport, so the FIDO2 reset \
+                                  goes through `ykman fido reset`"
+                }
+                Applet::Piv => {
+                    "this build has no `native-piv` transport, so the PIV reset goes \
+                                through `ykman piv reset`"
+                }
+                Applet::Otp => {
+                    "this build has no `native-otp` transport, so the OTP slots are \
+                                cleared through `ykman otp delete`"
+                }
+            }
+        } else {
+            "this session does not read through the native transport, so the reset follows it \
+             out through `ykman` rather than contradicting the transport the status bar names"
         },
     }
 }
@@ -663,11 +707,20 @@ impl HardwareResetter {
     ///
     /// The applet *is* its two slots, so this reads which are programmed and
     /// deletes those. A read that fails is a failure rather than a guess: asking
-    /// `ykman` to delete a slot it never saw would turn "the applet is disabled
-    /// over USB" into "the reset did not work", and the two need different
-    /// answers from the operator.
+    /// for a slot to be deleted that was never seen would turn "the applet is
+    /// disabled over USB" into "the reset did not work", and the two need
+    /// different answers from the operator.
     fn reset_otp(&self) -> Result<Done, WriteError> {
         const OP: &str = "otp.reset";
+        if self.route(Applet::Otp).transport == Transport::Native.label() {
+            return super::native_otp::clear_slots(self.serial).map(|cleared| match cleared {
+                Some(detail) => Done::written(detail),
+                None => Done::nothing_to_do(
+                    "the OTP applet answered that both slots are already empty, so nothing was \
+                     written",
+                ),
+            });
+        }
         let state =
             super::ykman::otp_state(&self.ykman, self.serial).map_err(|e| from_device(OP, e))?;
 
@@ -721,17 +774,29 @@ impl Resetter for HardwareResetter {
             return Err(WriteError::NotAttached(serial));
         }
 
+        let native = self.route(applet).transport == Transport::Native.label();
+
         match applet {
-            Applet::Fido2 => super::ykman::reset_fido2(&self.ykman, serial)
-                .map(|_| {
-                    Done::written(
-                        "FIDO2 reset via `ykman fido reset`: every credential and the PIN are gone",
-                    )
-                })
-                .map_err(|e| from_device("fido2.reset", e)),
+            Applet::Fido2 => {
+                if native {
+                    return super::ctaphid::reset(serial, "fido2.reset").map(|()| {
+                        Done::written(
+                            "FIDO2 reset over CTAPHID: every credential and the PIN are gone",
+                        )
+                    });
+                }
+                super::ykman::reset_fido2(&self.ykman, serial)
+                    .map(|_| {
+                        Done::written(
+                            "FIDO2 reset via `ykman fido reset`: every credential and the PIN \
+                             are gone",
+                        )
+                    })
+                    .map_err(|e| from_device("fido2.reset", e))
+            }
             Applet::Piv => {
                 #[cfg(feature = "native-piv")]
-                if self.route(applet).transport == Transport::Native.label() {
+                if native {
                     return self.reset_piv_native(serial);
                 }
                 super::ykman::reset_piv(&self.ykman, serial)
@@ -903,34 +968,55 @@ mod tests {
         assert_eq!(request.applets, vec![Applet::Fido2, Applet::Otp]);
     }
 
+    /// Is this applet's native transport in this build?
+    fn compiled(applet: Applet) -> bool {
+        match applet {
+            Applet::Fido2 => cfg!(feature = "native-fido"),
+            Applet::Piv => cfg!(feature = "native-piv"),
+            Applet::Otp => cfg!(feature = "native-otp"),
+        }
+    }
+
     #[test]
-    fn fido2_and_otp_are_labelled_as_the_fallback_they_are() {
-        // AGENTS.md: `ykman` is allowed where nothing else exists, and must be
-        // labelled as a fallback in the plan the operator sees.
+    fn every_applet_goes_native_where_the_build_and_the_session_have_it() {
+        // The whole of what changed on 2026-08-25: FIDO2 and OTP used to be
+        // labelled `ykman` unconditionally, so a workstation without `ykman` on
+        // `PATH` could reset one applet out of three.
         let native = choice(Transport::Native);
-        for applet in [Applet::Fido2, Applet::Otp] {
+        for applet in Applet::ALL {
             let route = route(applet, &native);
-            assert!(route.fallback, "{} must be labelled", applet.label());
-            assert_eq!(route.transport, "ykman");
+            if compiled(applet) {
+                assert_eq!(route.transport, "native", "{}", applet.label());
+                assert!(
+                    !route.fallback,
+                    "{} is not a fallback when it is the native path",
+                    applet.label()
+                );
+            } else {
+                // A build without the transport must not claim it has one.
+                assert_eq!(route.transport, "ykman", "{}", applet.label());
+                assert!(route.fallback, "{}", applet.label());
+                assert!(
+                    route.reason.contains("this build has no"),
+                    "a missing transport says so: {}",
+                    route.reason
+                );
+            }
             assert!(!route.reason.is_empty());
         }
     }
 
     #[test]
-    fn piv_goes_native_when_the_session_does_and_says_so_when_it_does_not() {
-        let ykman = route(Applet::Piv, &choice(Transport::Ykman));
-        assert_eq!(ykman.transport, "ykman");
-        assert!(ykman.fallback);
-        assert!(ykman.reason.contains("ykman piv reset"), "{}", ykman.reason);
-
-        let native = route(Applet::Piv, &choice(Transport::Native));
-        if cfg!(feature = "native-piv") {
-            assert_eq!(native.transport, "native");
-            assert!(!native.fallback);
-        } else {
-            // A build without the transport must not claim it has one.
-            assert_eq!(native.transport, "ykman");
-            assert!(native.fallback);
+    fn a_session_on_the_subprocess_transport_is_not_overruled_by_a_reset() {
+        // AGENTS.md: `ykman` must be labelled as a fallback where the operator
+        // sees it. And an operator who forced the subprocess is usually the person
+        // diagnosing the machine — a reset that went native anyway would make the
+        // status bar a lie (`native-device-transport.md` phase 6).
+        let ykman = choice(Transport::Ykman);
+        for applet in Applet::ALL {
+            let route = route(applet, &ykman);
+            assert_eq!(route.transport, "ykman", "{}", applet.label());
+            assert!(route.fallback, "{}", applet.label());
         }
     }
 

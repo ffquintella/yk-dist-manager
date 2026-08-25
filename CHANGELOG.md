@@ -18,6 +18,66 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-08-25
+
+### Changed
+
+- **A factory reset no longer needs `ykman` for any applet** —
+  `features/native-device-transport.md` phases 2a and 4a,
+  `features/key-lifecycle-and-revocation.md` phase 5, `src/device/ctaphid.rs` (new),
+  `src/device/native_otp.rs` (new), `src/device/reset.rs`, `src/device/applets.rs`,
+  `src/device/mgmt.rs`, `Cargo.toml`.
+
+  As shipped, only the PIV reset ran in process. FIDO2 went out through `ykman fido reset`
+  and OTP through `ykman otp delete`, because no crate in this dependency graph implements
+  either — so on a workstation without `ykman` on `PATH`, the reset panel reported two
+  thirds of a factory reset **refused**. That is the one screen standing between a returned
+  key and the next holder, and the pre-flight that refuses an already-configured key names
+  the reset as the way past it.
+
+  Both are now native, and the route each applet takes is decided once and shown in the
+  preview:
+
+  - **FIDO2** — `src/device/ctaphid.rs` writes the three CTAPHID frames
+    `authenticatorReset` needs. `ctap-hid-fido2` implements no such command and keeps its
+    CTAPHID layer private, so there was nothing to call and nothing to borrow. The channel
+    nonce is checked, `CTAPHID_KEEPALIVE` is waited through while the authenticator holds
+    out for the touch, and every CTAP status byte an operator can act on — the power-up
+    window, the missed touch, the declined touch — is worded rather than printed as a
+    number. It also stops a Python interpreter having to start inside the applet's
+    power-up window.
+  - **OTP** — `src/device/native_otp.rs` reaches the applet over **CCID** (AID
+    `A0 00 00 05 27 20 01`, instruction `00 01`), reads which slots are programmed from
+    the status structure, clears each one, and confirms the result by re-reading the valid
+    flags. A slot still holding a configuration is reported as a refusal naming the access
+    code, not recorded as a reset.
+
+  This is deliberately **not** the OTP configuration frame `docs/yubikey-reference.md`
+  records a decision to leave unwritten. That decision is about programming a slot and
+  setting an access code over USB HID, where a wrong frame leaves a slot protected by a
+  code nobody holds; both still go through `ykman`. Clearing a slot goes over a wire that
+  carries its own framing, sends a payload of nothing but zeros — so no byte can become an
+  access code — and checks that it worked.
+
+  **Neither native path is hardware-verified**, and both say so in their own module docs,
+  as `piv_session` and `mgmt` do. `ykman` remains the route for a build compiled without
+  the transports and for a session whose transport probe demoted it, labelled as the
+  fallback it is: a native reset and a `via: ykman` status bar cannot happen at once.
+
+- **The OTP applet's slot status is read natively** — `src/device/applets.rs`. A session
+  reading through the native transport now reads which OTP slots are programmed over CCID
+  instead of shelling out for it. Without `ykman` the reset preview used to say *OTP was
+  not read* and then offer to destroy what it could not name. A response that is not a
+  status structure is refused rather than parsed as *both slots empty*, because that
+  reading would record a key with two programmed slots as needing nothing done.
+
+- **New internal feature `ccid`** — `Cargo.toml`, `src/device/mgmt.rs`. `native-piv` and
+  `native-otp` both need the card interface and neither is the other's prerequisite, so
+  the `pcsc` dependency and the management applet's card exchange now sit behind a feature
+  that says what it is. `native-otp` no longer pulls `hidapi`, which it never used;
+  `native-fido` now does, because the reset frames are written against the HID device
+  directly. `--features native-device` is unchanged.
+
 ## [0.17.0] - 2026-08-25
 
 ### Added

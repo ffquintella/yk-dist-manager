@@ -80,6 +80,19 @@ revoke** the certificate that was on the key — nothing can, from here; what th
 does is list that certificate as outstanding and hold the reference once the operator has
 revoked it at the CA.
 
+**No applet's reset needs `ykman` any more (2026-08-25).** As shipped, only PIV was reset
+in process: FIDO2 went out through `ykman fido reset` and OTP through `ykman otp delete`,
+because no crate in this dependency graph implements either. On a workstation without
+`ykman` on `PATH` the panel therefore did what it was built to do and reported two thirds
+of a factory reset refused — accurate, and useless, on the one screen that stands between a
+returned key and the next holder. Both are now native
+(`features/native-device-transport.md` phases 2a and 4a): the CTAP `authenticatorReset`
+frame is written by this tool, and each programmed OTP slot is cleared over CCID and the
+clearing confirmed by re-reading the applet. `ykman` remains the route for a build compiled
+without the transports and for a session whose transport probe demoted it, labelled as the
+fallback it is. **Neither native path is hardware-verified**, and until it is, the reissue
+gate below is resting on outcomes reported by an exchange no key has answered.
+
 **The power cycle a FIDO2 reset needs (phase 5a).** That "within seconds of power-up" was,
 until now, a sentence in the preview asking the operator to unplug the key and plug it back
 in *before* confirming — a race they could not see the start of, and one they mostly lost:

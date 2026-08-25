@@ -6,7 +6,8 @@
 //! |---|---|---|---|
 //! | PIV | [`yubikey`] | PC/SC (CCID) | identification here; writes in [`super::piv_session`] |
 //! | FIDO2 / CTAP2 | `ctap-hid-fido2` | USB HID | `features/step-fido2-pin.md`, `features/step-fido2-credentials.md` |
-//! | Yubico OTP | `hidapi` | USB HID feature reports | `features/step-otp-access-code.md` |
+//! | Yubico OTP | — | CCID `00 01` | [`super::native_otp`] — slot status and clearing a slot, written by hand; the HID frame that *programmes* a slot stays unwritten (`features/step-otp-access-code.md`) |
+//! | FIDO2 factory reset | — | USB HID (CTAPHID) | [`super::ctaphid`], written by hand because the crate implements no `authenticatorReset` |
 //! | Management (form factor, capabilities, FIPS) | — | CCID `00 1D` | [`super::mgmt`], written by hand because no crate covers it |
 //!
 //! Compiled only with the `native-piv` feature, because `pcsc` links against a

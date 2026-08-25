@@ -293,9 +293,31 @@ pub fn read(serial: u32, choice: &TransportChoice) -> Snapshot {
         ));
     }
 
-    // OTP goes through `ykman` whatever the session transport is, because the native
-    // status frame is not implemented (`native-device-transport.md` phase 4). Labelled
-    // as the fallback it is, rather than presented as a native read.
+    // OTP used to go through `ykman` whatever the session transport was, because the
+    // native status read did not exist. It does now — the applet answers its status
+    // structure to a CCID select — so a session that reads natively reads this
+    // natively too, and a workstation with no `ykman` no longer has a blind applet.
+    read_otp(serial, choice, &mut snapshot);
+
+    snapshot
+}
+
+/// Which OTP slots are programmed, by the session's own transport.
+///
+/// The native read is not merely faster: without it, an operator with no `ykman`
+/// on `PATH` was told "OTP was not read", and a reset then had nothing to say
+/// about what it was about to destroy.
+fn read_otp(serial: u32, choice: &TransportChoice, snapshot: &mut Snapshot) {
+    if choice.transport == Transport::Native && cfg!(feature = "native-otp") {
+        match super::native_otp::state(serial) {
+            Ok(state) => snapshot.otp = Some(state),
+            Err(e) => snapshot
+                .unread
+                .push(format!("OTP was not read (over CCID): {e}")),
+        }
+        return;
+    }
+
     let ykman = super::YkmanBackend::default();
     match super::ykman::otp_state(&ykman, serial) {
         Ok(state) => snapshot.otp = Some(state),
@@ -303,8 +325,6 @@ pub fn read(serial: u32, choice: &TransportChoice) -> Snapshot {
             .unread
             .push(format!("OTP was not read (via `ykman otp info`): {e}")),
     }
-
-    snapshot
 }
 
 #[cfg(feature = "native-piv")]

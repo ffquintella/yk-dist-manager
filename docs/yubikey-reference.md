@@ -16,8 +16,12 @@ verified against **ykman 5.9.2** and a **YubiKey 5 NFC, firmware 5.4.3**, on 202
 | Force PIN change | CTAP 2.1 | `fido access force-change` | ykman for now |
 | **Create a FIDO2 credential** | `ctap-hid-fido2` `make_credential(rk=true)` | **✗ impossible** | **native only** |
 | List / delete FIDO2 credentials | `ctap-hid-fido2` | `fido credentials list/delete` | either |
-| OTP slot status | `hidapi` (protocol ours to write — unwritten) | `otp info` | **ykman**, parsed in `device::ykman::parse_otp_info` |
+| **Factory reset: FIDO2** | our own CTAPHID frames (`device::ctaphid`; the crate implements no `authenticatorReset` and keeps its CTAPHID layer private) | `fido reset` | native, **built but not hardware-verified** — the framing is covered by tests |
+| **Factory reset: PIV** | `yubikey` | `piv reset` | native |
+| **Factory reset: OTP (clear each programmed slot)** | our own APDU (`device::native_otp`, CCID `00 01` on AID `A0 00 00 05 27 20 01`) | `otp delete <slot>` | native, **built but not hardware-verified** — an all-zero configuration, confirmed by re-reading the applet |
+| OTP slot status | our own APDU (`device::native_otp`; the applet answers its status structure to a CCID select) | `otp info` | native where the session is native, else **ykman**, parsed in `device::ykman::parse_otp_info` |
 | OTP access code | `hidapi` (protocol ours to write — deliberately unwritten, see below) | `otp settings <slot> --force --new-access-code -` | **ykman only**, code on **stdin**, built but not hardware-verified |
+| Programme an OTP slot | `hidapi` (same unwritten frame) | `otp chalresp` / `static` / `yubiotp` | **ykman only** |
 | PIV PIN / PUK | `yubikey` | `piv access change-pin/change-puk` | native, **built but not hardware-verified** |
 | PIV management key | our own APDU (`device::piv_session`; the crate's 3DES type fails on 5.7) | `piv access change-management-key` | native, **hardware-verified 2026-08-11** (the same APDUs, moved into the shared session on 2026-08-13 and not re-run since) |
 | PIV on-device keygen | our own APDU (`device::piv_session`; it needs the AES management-key authentication the crate cannot do) | `piv keys generate` | native, **built but not hardware-verified** |
@@ -37,9 +41,16 @@ before it is relied on, and the feature specs say **Built** rather than **Done**
 happens.
 
 One thing **nothing** on this table can read: whether an OTP slot carries an **access
-code**. Neither the status frame nor `ykman otp info` reports it — the only way to find out
-is to attempt a write and be rejected — so no read in this tool claims one, and it is the
-register rather than the key that records whether one was set.
+code**. Neither the status structure nor `ykman otp info` reports it — the only way to find
+out is to attempt a write and be rejected — so no read in this tool claims one, and it is
+the register rather than the key that records whether one was set. The one place this shows
+up as a failure rather than a gap is a reset: a protected slot refuses to be cleared, and
+the OTP reset says so in those words.
+
+**No factory reset needs `ykman` any more.** Until 2026-08-25 two of the three applets went
+out through it, so a workstation without `ykman` on `PATH` could reset PIV and nothing else
+— on a tool whose own pre-flight names the reset as the only way past an already-configured
+key. The three rows above are what closed that.
 
 ## The two things `ykman` cannot do
 
@@ -225,12 +236,27 @@ the field is read. Three details are load-bearing:
 ## Why the native OTP frame is still unwritten
 
 Every other gap in the matrix above is "not yet"; this one is a decision. No crate in
-this dependency graph exposes the Yubico OTP configuration frame, so writing it means
-hand-rolling the protocol — frame, CRC, status confirmation — for an operation whose
-failure mode is a slot **write-protected by a code nobody holds**, which is not
-recoverable from this tool. `features/step-otp-access-code.md` phase 4 keeps it unwritten
-until there is a key to verify it against, and the `ykman` path exists so the step is not
-blocked meanwhile.
+this dependency graph exposes the Yubico OTP configuration frame **over USB HID**, so
+writing it means hand-rolling the protocol — frame, CRC, status confirmation — for an
+operation whose failure mode is a slot **write-protected by a code nobody holds**, which
+is not recoverable from this tool. `features/step-otp-access-code.md` phase 4 keeps it
+unwritten until there is a key to verify it against, and the `ykman` path exists so the
+step is not blocked meanwhile.
+
+**What that decision does not cover, and why.** Since 2026-08-25 the *factory reset*
+clears each programmed slot natively (`device::native_otp`), and the three things that
+made the HID frame a decision are all absent from it:
+
+* it goes **over CCID**, where the card protocol carries the framing — so the chunked
+  frame and the CRC, the two things most likely to be got wrong, are not ours to get
+  wrong. `device::mgmt` already reaches an applet this way;
+* the payload is **all zeros**, so the bytes that would carry an access code carry no
+  value — the feared outcome is not reachable from a write with nothing in it;
+* the applet answers every configuration write with its status structure, so the write is
+  **confirmed by re-reading the valid flags**. A slot that is still there is reported as a
+  refusal, not recorded as a reset.
+
+Setting an access code and programming a slot are unchanged, and stay on `ykman`.
 
 What that path costs, and the reason the step and the pre-flight both say so: `ykman otp
 settings` **rewrites the slot's other settings to their defaults**, and it refuses an
