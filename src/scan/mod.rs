@@ -91,7 +91,12 @@ impl LumaFrame {
             return None;
         }
         let mut data = Vec::with_capacity(pixels);
-        for pixel in rgb.chunks_exact(3).take(pixels) {
+        // `as_chunks` rather than `chunks_exact(3)`: the chunk size is a constant,
+        // so each pixel arrives as `&[u8; 3]` and the three reads below need no
+        // bounds check. The tail `as_chunks` returns is deliberately dropped — a
+        // frame is only accepted when it carries whole pixels, which the length
+        // check above already established.
+        for pixel in rgb.as_chunks::<3>().0.iter().take(pixels) {
             let luma = 0.299 * f32::from(pixel[0])
                 + 0.587 * f32::from(pixel[1])
                 + 0.114 * f32::from(pixel[2]);
@@ -308,6 +313,19 @@ mod tests {
     #[test]
     fn a_short_rgb_buffer_is_refused() {
         assert!(LumaFrame::from_rgb(4, 4, &[0; 10]).is_none());
+    }
+
+    #[test]
+    fn a_buffer_longer_than_the_frame_is_read_up_to_the_frame_and_no_further() {
+        // A camera hands over a buffer with slack in it — row padding, or simply a
+        // larger allocation reused between frames. Only `width * height` pixels
+        // belong to this frame, and a trailing part-pixel belongs to nobody.
+        let mut rgb = vec![255, 255, 255, 0, 0, 0];
+        rgb.extend_from_slice(&[255, 0, 0]); // a fourth pixel, outside a 3x1 frame
+        rgb.extend_from_slice(&[9, 9]); // and two bytes that are not a pixel at all
+
+        let frame = LumaFrame::from_rgb(2, 1, &rgb).expect("converts");
+        assert_eq!(frame.data, vec![255, 0], "two pixels, not four");
     }
 
     /// A decoder that returns whatever it was told to, so the reduction logic can

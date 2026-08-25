@@ -135,6 +135,15 @@ make coverage-core                                         # THE GATE: core line
 `make release-check` is exactly `fmt` + `lint` + `test-all` + `coverage-core`.
 Run it once, at the end.
 
+**`rustup update stable` first, if you are about to tag.** CI resolves
+`dtolnay/rust-toolchain@stable` when it runs, so `cargo clippy -- -D warnings`
+there is whatever stable is *that day* — and a new release of Rust brings new
+lints. A workstation a version or two behind passes `make release-check` on a
+command CI then fails, which is how `releases/v0.17.0` and `v0.17.1` both died at
+the first gate on a lint (`chunks_exact_to_as_chunks`) that did not exist in the
+local toolchain. Check `rustc --version` against the version in the workflow log
+before believing a green gate.
+
 ### Level 4 — on request, or when releasing
 
 ```bash

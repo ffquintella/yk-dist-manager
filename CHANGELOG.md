@@ -18,6 +18,29 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+## [0.17.2] - 2026-08-25
+
+### Fixed
+
+- **The release build compiles again** — `src/scan/mod.rs`, `AGENTS.md`. `v0.17.0` and
+  `v0.17.1` both failed their release workflow at the first gate, on one clippy lint:
+  `chunks_exact_to_as_chunks` against `LumaFrame::from_rgb`'s `rgb.chunks_exact(3)`. The
+  pixel loop now takes `as_chunks::<3>()`, so each pixel arrives as `&[u8; 3]` and the
+  three reads need no bounds check.
+
+  The lint is not the interesting part — **why it reached a tag** is. `make release-check`
+  passed on this workstation and CI failed on the same command, because CI resolves
+  `dtolnay/rust-toolchain@stable` at run time and this machine's `stable` was 1.96.1 while
+  CI's was 1.98.0. `chunks_exact_to_as_chunks` does not exist in 1.96, so no local run
+  could see it. A gate that cannot see what CI enforces is not a gate; AGENTS.md's Level 3
+  now says to `rustup update` before tagging, and names this as the failure it prevents.
+  Verified by updating to 1.98.0 and re-running the whole of Level 3 on it.
+
+  Also covered: a `from_rgb` buffer **longer** than the frame. `take(pixels)` was always
+  what bounded the loop and nothing tested it, which is exactly the line a rewrite of this
+  shape could have broken silently — a camera hands over a buffer with row padding or
+  simply reuses a larger allocation.
+
 ## [0.17.1] - 2026-08-25
 
 ### Changed
