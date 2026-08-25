@@ -205,6 +205,40 @@ fn scenario_the_same_person_is_not_duplicated_by_email() {
 }
 
 #[test]
+fn scenario_correcting_a_holder_keeps_their_hand_overs() {
+    // Given a person who was registered with a mistyped address, and a key in
+    // their hands
+    let world = World::new();
+    let key = world.key_in_stock(20_423_633);
+    let ana = world.holder("Ana Sliva", "ana.sliva@example.org");
+    world.distribute(&key, &ana, "felipe");
+
+    // When the operator corrects the record — the name and the address both
+    let corrected = ana
+        .with_details("Ana Silva", "ana.silva@example.org", "ESI", "")
+        .unwrap();
+    world.store.update_holder(&corrected).unwrap();
+
+    // Then there is still one person, corrected, with the same id
+    let holders = world.store.holders().unwrap();
+    assert_eq!(holders.len(), 1);
+    assert_eq!(holders[0].id, ana.id);
+    assert_eq!(holders[0].full_name, "Ana Silva");
+    assert_eq!(holders[0].email, "ana.silva@example.org");
+
+    // And the hand-over still points at them, while its own line keeps the name
+    // it was signed under: the record of what was handed over on the day is not
+    // rewritten by a later correction
+    let records = world.store.distributions().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].holder_id, ana.id);
+    assert_eq!(
+        records[0].holder_display,
+        "Ana Sliva <ana.sliva@example.org>"
+    );
+}
+
+#[test]
 fn scenario_reading_the_same_key_twice_does_not_duplicate_inventory() {
     // Given a key already in the inventory
     let world = World::new();

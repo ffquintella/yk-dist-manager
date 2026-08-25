@@ -438,6 +438,29 @@ fn chooser(app: &mut YkDistApp, ui: &mut egui::Ui) {
         let typed = PathBuf::from(app.db_form.path.trim());
         let has_path = !app.db_form.path.trim().is_empty();
 
+        // Opt-in, every time, and never pre-ticked
+        // (`features/db-password-and-encryption.md` phase 8). The sentence beside
+        // it is the trade the operator is actually making: the register stops
+        // being protected by something only they know and starts being protected
+        // by their login session on this machine.
+        ui.add_space(10.0);
+        ui.add(elegance::Checkbox::new(
+            &mut app.db_form.remember,
+            format!(
+                "Remember this password in {}",
+                crate::vault::platform_label()
+            ),
+        ));
+        ui.add_space(6.0);
+        super::hint(
+            ui,
+            "Only on this workstation, only for this register, and only once the password has \
+             actually opened it. A copy of the file — a backup, a sync client's conflict copy — \
+             stays unreadable, because the saved password never leaves this machine. What it \
+             does give up is that anybody signed in here can open the register without knowing \
+             the password. Settings → Password protection takes it back off.",
+        );
+
         // The meter belongs to a password being *chosen*, not to one being typed
         // to unlock a file that already has one — grading somebody's existing
         // password tells them nothing they can act on here. So it appears exactly

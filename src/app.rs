@@ -71,6 +71,20 @@ pub enum DbRequest {
         /// Take the password off, leaving a plain file.
         remove: bool,
     },
+    /// Save the password the open register was opened with, without typing it
+    /// again (`features/db-password-and-encryption.md` phase 8).
+    ///
+    /// The one place a password can be saved without being retyped, and the one
+    /// place it is certain to be right: the register is open, so what is saved is
+    /// the password that *did* open it.
+    SaveCurrentPassword,
+    /// Drop the password this workstation saved for the open register
+    /// (`features/db-password-and-encryption.md` phase 8).
+    ///
+    /// The register is not touched and its password does not change: what goes is
+    /// the copy in this workstation's credential store, so the next launch asks
+    /// for it again.
+    ForgetSavedPassword,
 }
 
 impl DbRequest {
@@ -95,9 +109,30 @@ impl DbRequest {
             | DbRequest::UseShare(_)
             | DbRequest::ForgetShare(_)
             | DbRequest::DisconnectShare
-            | DbRequest::SetPassword { .. } => false,
+            | DbRequest::SetPassword { .. }
+            | DbRequest::SaveCurrentPassword
+            | DbRequest::ForgetSavedPassword => false,
         }
     }
+}
+
+/// What came of offering the register the password this workstation saved for it.
+///
+/// Three outcomes and not two, because "there was nothing saved" and "there was,
+/// and it no longer opens the register" want different things next. The first
+/// falls through to the ordinary route — a probe at startup, a typed password at
+/// the chooser. The second must **not**: retrying with an empty password would
+/// replace an explanation the operator can act on ("the saved password no longer
+/// opens this register, and it has been forgotten") with SQLite's own
+/// `file is not a database`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SavedPassword {
+    /// Nothing was saved for this register on this workstation.
+    NotSaved,
+    /// It opened, with no prompt.
+    Opened,
+    /// It did not open. The entry has been dropped, and this says so.
+    Refused(String),
 }
 
 /// The database chooser's form state.
@@ -105,6 +140,17 @@ impl DbRequest {
 pub struct DatabaseForm {
     pub path: String,
     pub password: String,
+    /// Save this password in the workstation's credential store once it has
+    /// opened the register (`features/db-password-and-encryption.md` phase 8).
+    ///
+    /// **Off unless the operator ticks it**, every time, and it is only read after
+    /// an open that *succeeded* — a password that did not open the register is not
+    /// worth keeping, and saving one that did is the only moment at which the
+    /// application knows it is the right one.
+    ///
+    /// Deliberately not cleared by a failed attempt: an operator who ticked the box
+    /// and mistyped the password still means to save it.
+    pub remember: bool,
     pub error: Option<String>,
     /// Set when an open was refused because another workstation holds the
     /// single-writer lock on a cloud-hosted database.
@@ -121,6 +167,20 @@ pub struct DatabaseForm {
 /// operator who has just walked back to the desk is told before they start typing
 /// into a register that is no longer there.
 pub const SHARE_CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long a register that was just reopened is left alone before it would be
+/// reopened again (`features/smb-share-hosting.md` phase 11).
+///
+/// A guard against the pathological case, not the ordinary one. A connection whose
+/// session was torn down is fixed by one open, and that open does enough real work —
+/// the pragmas, the migration check, the backup, the chain verification, the presence
+/// row — that a handle surviving it is a live handle. What this stops is the other
+/// shape: a mount that answers `open` and then fails every operation, which without a
+/// guard would be abandoned and reopened on every frame, writing a `db.reopened` entry
+/// each time. One attempt a minute; after that the operator is told and left in charge,
+/// because a register that will not stay open is not something to keep reopening at
+/// them.
+pub const REOPEN_NOT_BEFORE: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// The share that went away, and what it takes to get back on it.
 ///
@@ -185,6 +245,13 @@ pub struct PasswordForm {
     /// Typed twice, because a mistyped password that nobody can verify against
     /// anything is a lost register — there is no reset and no administrator.
     pub confirm: String,
+    /// Save the new password in this workstation's credential store as well.
+    ///
+    /// Pre-ticked *only* when one was already saved, so a password change keeps a
+    /// workstation working the way it worked yesterday instead of silently
+    /// stopping. A register that never had a saved password does not acquire one
+    /// by being re-keyed.
+    pub remember: bool,
     pub error: Option<String>,
 }
 
@@ -202,6 +269,7 @@ impl PasswordForm {
         let _ = self.take();
         self.open = false;
         self.removing = false;
+        self.remember = false;
         self.error = None;
     }
 }
@@ -685,7 +753,8 @@ impl Default for ReportPanel {
     }
 }
 
-/// New-holder form.
+/// The holder form, in either of its two modes: registering a new person, or
+/// correcting the record of one already on the register.
 #[derive(Default)]
 pub struct HolderForm {
     pub full_name: String,
@@ -696,7 +765,43 @@ pub struct HolderForm {
     pub identification_number: String,
     pub phone: String,
     pub address: String,
+    /// The record as it was read, when this form is editing one.
+    ///
+    /// The whole record rather than its id, for two reasons: it keeps `id` and
+    /// `created_at` so the correction stays the same person
+    /// ([`Holder::with_details`]), and it is what the audit detail is diffed
+    /// against — the trail says which fields moved, which needs the old values.
+    pub editing: Option<Holder>,
     pub error: Option<String>,
+}
+
+impl HolderForm {
+    /// The form filled in from a record, ready to be corrected.
+    pub fn for_edit(holder: &Holder) -> Self {
+        Self {
+            full_name: holder.full_name.clone(),
+            email: holder.email.clone(),
+            unit: holder.unit.clone(),
+            registration: holder.registration.clone(),
+            identification_number: holder.identification_number.clone(),
+            phone: holder.phone.clone(),
+            address: holder.address.clone(),
+            editing: Some(holder.clone()),
+            error: None,
+        }
+    }
+
+    /// The address this edit would move the holder away from, when it moves them
+    /// at all. `None` while registering, and while the address is untouched.
+    ///
+    /// What the screen warns about: the e-mail is the `rfc822Name` in the
+    /// certificate already on the person's key, so changing it makes that
+    /// certificate name an address the register no longer holds.
+    pub fn email_moving_from(&self) -> Option<&str> {
+        let before = self.editing.as_ref()?;
+        let typed = self.email.trim().to_ascii_lowercase();
+        (!typed.is_empty() && typed != before.email).then_some(before.email.as_str())
+    }
 }
 
 /// Hand-over form.
@@ -916,6 +1021,10 @@ pub struct YkDistApp {
     pub share_checked: Option<std::time::Instant>,
     /// The share this session lost, while it is lost. `None` the rest of the time.
     pub share_lost: Option<LostShare>,
+    /// When this register was last reopened after its connection stopped answering
+    /// (`features/smb-share-hosting.md` phase 11). Cleared by adopting any register,
+    /// so it counts reopenings of *this* one and not openings in general.
+    pub register_reopened_at: Option<std::time::Instant>,
     /// Setting, changing or removing the database password.
     pub password_form: PasswordForm,
     /// The public key being added to the template trust store.
@@ -935,6 +1044,21 @@ pub struct YkDistApp {
     /// anywhere near it, and a test that mounted a real share would be a test that
     /// needs a network.
     pub share_connector: Box<dyn Fn() -> Box<dyn crate::store::smb::Connector>>,
+    /// Where a database password is kept between sessions, when the operator has
+    /// asked for one to be (`features/db-password-and-encryption.md` phase 8).
+    ///
+    /// A field rather than a call to [`crate::vault::platform_vault`] for the
+    /// reason [`Self::share_connector`] is one: the real store needs a login
+    /// session, a keyring daemon and — on macOS — a signed bundle, none of which a
+    /// test binary has. Every test injects [`crate::vault::MemoryVault`].
+    pub vault: Box<dyn crate::vault::Vault>,
+    /// Does the register that is open have a password saved on this workstation?
+    ///
+    /// Cached rather than asked each frame: the answer only changes when a
+    /// register is opened, saved, forgotten or re-keyed, and a credential store is
+    /// a syscall — on macOS one that can put a dialog on screen. Paint code reads
+    /// this; nothing paints from the vault directly.
+    pub saved_password: bool,
     pub scan: ScanPanel,
     pub open_error: Option<String>,
     pub tab: Tab,
@@ -1050,6 +1174,19 @@ pub struct YkDistApp {
 impl YkDistApp {
     /// `explicit` comes from `$YKDM_DB` and wins over the remembered database.
     pub fn new(explicit: Option<PathBuf>) -> Self {
+        Self::with_vault(explicit, crate::vault::platform_vault())
+    }
+
+    /// [`Self::new`], with the credential store stated rather than taken from the
+    /// platform (`features/db-password-and-encryption.md` phase 8).
+    ///
+    /// A constructor rather than a field a test assigns afterwards, because the
+    /// saved password is consulted **inside** the constructor — that is the whole
+    /// point of it, opening the register with no prompt — so a test that set the
+    /// field on the returned value would be too late, and `cargo test` on an
+    /// operator's own workstation would read and write their real Keychain.
+    /// Every test passes [`crate::vault::MemoryVault`].
+    pub fn with_vault(explicit: Option<PathBuf>, vault: Box<dyn crate::vault::Vault>) -> Self {
         let settings = AppSettings::load();
 
         // Precedence: an explicit path, then the database last used, then the
@@ -1099,10 +1236,13 @@ impl YkDistApp {
             share_form: ShareForm::default(),
             share_checked: None,
             share_lost: None,
+            register_reopened_at: None,
             password_form: PasswordForm::default(),
             key_form: TemplateKeyForm::default(),
             throttle: crate::password::Throttle::new(),
             share_connector: Box::new(crate::store::smb::platform_connector),
+            vault,
+            saved_password: false,
             scan: ScanPanel::default(),
             open_error: None,
             tab: Tab::Inventory,
@@ -1174,9 +1314,39 @@ impl YkDistApp {
             return app;
         }
 
-        // Try without a password first: an unencrypted file opens straight away,
-        // an encrypted one falls through to the chooser.
-        app.try_open(None);
+        // A register this workstation was asked to remember the password for opens
+        // on what it remembered, and this comes *first*: the probe below is the
+        // question "does this file need a password at all", and there is no need
+        // to ask it about a file whose password is already here.
+        let account = crate::vault::account_for_path(&app.config.path);
+        let config = app.config.clone();
+        let stale = match app.open_with_saved_password(config, &account) {
+            SavedPassword::Opened => None,
+            SavedPassword::NotSaved => {
+                // Try without a password: an unencrypted file opens straight away,
+                // an encrypted one falls through to the chooser.
+                app.try_open(None);
+                None
+            }
+            // The entry has just been dropped, so the probe is worth making again:
+            // the usual reason a saved password stops working is that the register
+            // was re-keyed, and the other one is that its password was *removed* —
+            // in which case the probe opens it and the operator gets an explanation
+            // rather than a prompt.
+            SavedPassword::Refused(why) => {
+                app.try_open(None);
+                Some(why)
+            }
+        };
+        if let Some(why) = stale {
+            // After the probe, because a successful open overwrites the status
+            // with what the register is.
+            app.status = if app.store.is_some() {
+                format!("{} — {why}", app.status)
+            } else {
+                why
+            };
+        }
         app
     }
 
@@ -1205,10 +1375,7 @@ impl YkDistApp {
         match request {
             DbRequest::PickExisting => self.pick_existing_database(),
             DbRequest::PickNew => self.pick_new_database(),
-            DbRequest::Open(path) => {
-                let password = self.take_password();
-                self.open_database(&path, password);
-            }
+            DbRequest::Open(path) => self.open_existing_register(&path),
             DbRequest::Create(path) => {
                 let password = self.take_password();
                 self.create_database(&path, password);
@@ -1230,6 +1397,8 @@ impl YkDistApp {
             }
             DbRequest::DisconnectShare => self.close_database(),
             DbRequest::SetPassword { remove } => self.change_database_password(remove),
+            DbRequest::SaveCurrentPassword => self.save_current_password(),
+            DbRequest::ForgetSavedPassword => self.forget_saved_password(),
         }
     }
 
@@ -1376,6 +1545,11 @@ impl YkDistApp {
                 if !create {
                     self.note_unlock_success();
                 }
+                // The share's *location*, not the mount point the connection
+                // landed on: `self.share` is set just above, so this is the same
+                // account the next session will look under.
+                let account = self.vault_account();
+                self.remember_password_if_asked(&account);
                 self.refresh();
                 self.status = format!("{} — {describe}", self.status);
             }
@@ -1430,6 +1604,261 @@ impl YkDistApp {
         }
     }
 
+    /// Which register a saved password belongs to, for the one this session is
+    /// pointed at.
+    ///
+    /// A share is keyed by its **location** and a local file by its path, for the
+    /// reason `crate::vault` gives: on a share the path is a mount point, and
+    /// `/Volumes/ti-1` on the second connection of a session is the same register
+    /// as `/Volumes/ti` was on the first.
+    pub fn vault_account(&self) -> String {
+        match &self.share {
+            Some(connection) => crate::vault::account_for_share(&connection.target().location()),
+            None => crate::vault::account_for_path(&self.config.path),
+        }
+    }
+
+    /// Offer the register the password this workstation saved for it.
+    ///
+    /// A route of its own rather than a flag on [`Self::open_database`], because
+    /// what differs is the *failure*, and the failure is the whole point:
+    ///
+    /// * **A refusal is not a failed attempt.** Nobody guessed anything — the
+    ///   application offered a password it had been asked to keep. Counting it
+    ///   would start every launch one attempt down for the one operator who
+    ///   cannot fix it by typing more carefully.
+    /// * **A refusal drops the entry**, but *only* when the password was what was
+    ///   refused. An unmounted share, another workstation's lock or a schema from
+    ///   a newer build are not the password being wrong, and forgetting a saved
+    ///   password because a file server was asleep would be exactly the kind of
+    ///   quiet loss this application must not do.
+    /// * **It is silent when there is nothing saved**, which is the ordinary case
+    ///   and not a state worth a line on screen.
+    fn open_with_saved_password(&mut self, config: StoreConfig, account: &str) -> SavedPassword {
+        let saved = match self.vault.get(account) {
+            Ok(Some(saved)) => saved,
+            Ok(None) => return SavedPassword::NotSaved,
+            Err(e) => {
+                // A workstation with no credential store has nothing saved, which
+                // is the same thing as far as this open is concerned. A log line
+                // rather than a message on the chooser: nothing has gone wrong
+                // that typing the password does not answer.
+                tracing::info!(event = "db.password.store_unreachable", reason = %e);
+                return SavedPassword::NotSaved;
+            }
+        };
+
+        self.release_current_database();
+        let config = config.with_password(Some(saved));
+        let path = config.path.clone();
+        match Store::open_existing(&config) {
+            Ok(store) => {
+                self.adopt(store, config);
+                self.record("app.opened", "database", &path.display().to_string());
+                self.note_unlock_success();
+                self.saved_password = true;
+                self.refresh();
+                self.check_overdue_signatures();
+                SavedPassword::Opened
+            }
+            Err(e) if e.is_wrong_password() => {
+                tracing::warn!(
+                    event = "db.password.saved_refused",
+                    path = %path.display(),
+                    reason = %e,
+                );
+                self.store = None;
+                let store_name = self.vault.label();
+                let dropped = self.drop_saved_password(account);
+                SavedPassword::Refused(format!(
+                    "the password saved for this register in {store_name} no longer opens it{dropped}"
+                ))
+            }
+            Err(e) => {
+                // Not the password. The entry stays, and the ordinary route says
+                // what actually happened — it is better at it, because a lock
+                // refusal has to arrive as a card with a button on it.
+                tracing::info!(
+                    event = "db.password.saved_unused",
+                    path = %path.display(),
+                    reason = %e,
+                );
+                self.store = None;
+                SavedPassword::NotSaved
+            }
+        }
+    }
+
+    /// Open an existing register, with what was typed or with what was saved.
+    ///
+    /// The single route "open this file that already exists" takes, whichever
+    /// control started it — the field, a row in the recent list, the native file
+    /// dialog. Keeping the credential-store consult here rather than at each button
+    /// is what stops the three from drifting apart, which is exactly how the file
+    /// dialog came to be the one way in that still asked for a password the
+    /// workstation already had.
+    ///
+    /// **A typed password wins.** A password in the field is the operator saying
+    /// *this one*, and quietly using a saved one instead would make a wrong saved
+    /// password impossible to get past.
+    pub fn open_existing_register(&mut self, path: &Path) {
+        if let Some(password) = self.take_password() {
+            return self.open_database(path, Some(password));
+        }
+        let config = self.store_config(path);
+        let account = crate::vault::account_for_path(path);
+        match self.open_with_saved_password(config, &account) {
+            SavedPassword::Opened => {}
+            // Deliberately no second attempt: an empty password would be counted
+            // as a guess by the throttle, and its refusal would replace the
+            // sentence that explains what happened with SQLite's own
+            // `file is not a database`.
+            SavedPassword::Refused(why) => {
+                self.db_form.error = Some(why.clone());
+                self.open_error = Some(why);
+            }
+            // Nothing saved, or nothing saved that this open could use: the
+            // ordinary route, which for a plain register is the one that opens it.
+            SavedPassword::NotSaved => self.open_database(path, None),
+        }
+    }
+
+    /// The password this workstation saved for a register at this path, if any.
+    ///
+    /// Quiet: a store that cannot be reached is a log line, because every caller's
+    /// next move is the same either way — carry on with what was typed.
+    fn saved_password_for(&self, path: &Path) -> Option<String> {
+        match self.vault.get(&crate::vault::account_for_path(path)) {
+            Ok(saved) => saved,
+            Err(e) => {
+                tracing::info!(event = "db.password.store_unreachable", reason = %e);
+                None
+            }
+        }
+    }
+
+    /// Save the password this register was just opened with, if the operator
+    /// ticked the box, and leave [`Self::saved_password`] telling the truth either
+    /// way.
+    ///
+    /// Called after every successful open. Reading the box *after* the open is
+    /// deliberate: that is the only moment at which the application knows the
+    /// password is the right one, and a password that did not open the register is
+    /// not worth keeping.
+    fn remember_password_if_asked(&mut self, account: &str) {
+        let asked = std::mem::take(&mut self.db_form.remember);
+        match (asked, self.config.password.clone()) {
+            (true, Some(password)) => self.save_password(account, &password),
+            // Asked to save the password of a register that has none. Nothing has
+            // gone wrong and there is nothing to save: a plain file is readable by
+            // everyone who can read it, so there is no secret for a credential
+            // store to hold.
+            (true, None) => self.saved_password = false,
+            (false, _) => self.note_saved_password(account),
+        }
+    }
+
+    /// Does this register have a password saved on this workstation?
+    ///
+    /// One credential-store read per open, cached on [`Self::saved_password`] so
+    /// that paint code never touches the vault — on macOS a read is a syscall that
+    /// can put a dialog on the screen, which is not something to do once a frame.
+    fn note_saved_password(&mut self, account: &str) {
+        self.saved_password = match self.vault.has(account) {
+            Ok(saved) => saved,
+            Err(e) => {
+                tracing::info!(event = "db.password.store_unreachable", reason = %e);
+                false
+            }
+        };
+    }
+
+    /// Put the password in the workstation's credential store.
+    fn save_password(&mut self, account: &str, password: &str) {
+        let store_name = self.vault.label();
+        match self.vault.set(account, password) {
+            Ok(()) => {
+                self.saved_password = true;
+                // The account is the register's path or share location — what it
+                // is, never what opens it. AGENTS.md §2: custody is recorded,
+                // the value never is.
+                let detail = format!("store={store_name} register={account}");
+                self.record("db.password.saved", "database", &detail);
+                self.status = format!("{} — password saved in {store_name}", self.status);
+            }
+            Err(e) => {
+                self.saved_password = false;
+                tracing::error!(event = "db.password.save.failed", reason = %e);
+                // Loud rather than swallowed: the operator ticked a box, and is
+                // entitled to learn it did not happen now rather than at the next
+                // launch, in front of a prompt they were told they would not see.
+                self.status = format!("WARNING: the password was not saved — {e}");
+            }
+        }
+    }
+
+    /// Save the password the register that is open was opened with.
+    ///
+    /// Nothing is typed and nothing is guessed: this session is already holding
+    /// the password that opened the file, which makes this the one route on which
+    /// a saved password cannot be the wrong one.
+    pub fn save_current_password(&mut self) {
+        if self.store.is_none() {
+            return;
+        }
+        let Some(password) = self.config.password.clone() else {
+            self.status = "this register has no password to save — it is a plain SQLite \
+                           file"
+                .to_owned();
+            return;
+        };
+        let account = self.vault_account();
+        self.save_password(&account, &password);
+    }
+
+    /// Drop the saved password for the register that is open.
+    pub fn forget_saved_password(&mut self) {
+        let account = self.vault_account();
+        let store_name = self.vault.label();
+        match self.vault.forget(&account) {
+            Ok(()) => {
+                self.saved_password = false;
+                let detail = format!("store={store_name} register={account}");
+                self.record("db.password.forgotten", "database", &detail);
+                self.status = format!(
+                    "the saved password was removed from {store_name} — this register \
+                             asks for it again"
+                );
+            }
+            Err(e) => {
+                tracing::error!(event = "db.password.forget.failed", reason = %e);
+                self.status = format!("WARNING: the saved password was not removed — {e}");
+            }
+        }
+    }
+
+    /// Drop an entry that no longer opens the register, and say what became of it.
+    ///
+    /// Separate from [`Self::forget_saved_password`] because of *when* it runs: at
+    /// a refused open there is no database to write an audit entry into, which is
+    /// the same ordering problem `db.unlock.failed` has. So it goes to the log,
+    /// and the sentence it returns goes on the screen.
+    fn drop_saved_password(&mut self, account: &str) -> String {
+        self.saved_password = false;
+        match self.vault.forget(account) {
+            Ok(()) => {
+                tracing::info!(event = "db.password.forgotten", register = %account);
+                " — it has been forgotten, so type the password once and tick the box again to \
+                 save the one that works"
+                    .to_owned()
+            }
+            Err(e) => {
+                tracing::error!(event = "db.password.forget.failed", reason = %e);
+                format!(" — and it could not be removed: {e}")
+            }
+        }
+    }
+
     /// Open an existing database, remembering it on success.
     pub fn open_database(&mut self, path: &Path, password: Option<String>) {
         // Whatever is open goes first, through the closing protocol: on a sync
@@ -1446,6 +1875,7 @@ impl YkDistApp {
                     &self.config.path.display().to_string(),
                 );
                 self.note_unlock_success();
+                self.remember_password_if_asked(&crate::vault::account_for_path(path));
                 self.refresh();
             }
             Err(e) => self.report_open_failure(path, e),
@@ -1462,6 +1892,10 @@ impl YkDistApp {
                 self.adopt(store, config);
                 self.record("db.created", "database", &display);
                 self.status = format!("created {display}");
+                // A register created with a password is the one case where the box
+                // is ticked before the password exists anywhere else, so this is
+                // also the first chance to save it.
+                self.remember_password_if_asked(&crate::vault::account_for_path(path));
                 self.refresh();
             }
             Err(e) => {
@@ -1480,9 +1914,20 @@ impl YkDistApp {
     /// soon as the database is open.
     pub fn take_over_lock(&mut self, path: &Path, password: Option<String>) {
         self.release_current_database();
+        // Nothing typed, and this workstation saved one: taking a lock over is an
+        // assertion about the *other* workstation, not a reason to retype a
+        // password the operator was told they would not have to. This is the route
+        // it matters most on — a register whose password is saved is refused at
+        // startup by the *lock*, not the password, so the field the take-over
+        // button reads is empty by design.
+        let saved = match password {
+            Some(_) => None,
+            None => self.saved_password_for(path),
+        };
+        let from_vault = saved.is_some();
         let config = self
             .store_config(path)
-            .with_password(password)
+            .with_password(password.or(saved))
             .taking_over_stale_lease();
         match Store::open_existing(&config) {
             Ok(store) => {
@@ -1513,11 +1958,31 @@ impl YkDistApp {
                     &self.config.path.display().to_string(),
                 );
                 self.note_unlock_success();
+                self.remember_password_if_asked(&crate::vault::account_for_path(path));
                 self.refresh();
                 // The register is open and the clock has moved since it was last
                 // looked at: a term that went overdue while nobody had this file
                 // open is recorded now, once (`crate::receipt`).
                 self.check_overdue_signatures();
+            }
+            // A saved password that no longer opens the register is dropped here
+            // too, and — as on every route it arrives by — is not counted as
+            // somebody's guess: nobody guessed.
+            Err(e) if from_vault && e.is_wrong_password() => {
+                tracing::warn!(
+                    event = "db.password.saved_refused",
+                    path = %path.display(),
+                    reason = %e,
+                );
+                let store_name = self.vault.label();
+                let account = crate::vault::account_for_path(path);
+                let dropped = self.drop_saved_password(&account);
+                let message = format!(
+                    "the password saved for this register in {store_name} no longer opens \
+                     it{dropped}"
+                );
+                self.db_form.error = Some(message.clone());
+                self.open_error = Some(message);
             }
             Err(e) => self.report_open_failure(path, e),
         }
@@ -1639,6 +2104,8 @@ impl YkDistApp {
     /// unlock.
     pub fn change_database_password(&mut self, remove: bool) {
         let (new, confirm) = self.password_form.take();
+        let remember = self.password_form.remember;
+        let was_saved = self.saved_password;
 
         if !cfg!(feature = "encrypted-db") {
             self.password_form.error =
@@ -1696,6 +2163,7 @@ impl YkDistApp {
                 // password change would read as a failure. Nothing needs releasing
                 // here anyway — the store was consumed and its lock came off with
                 // the swap.
+                let saved_copy = new_password.clone();
                 self.reopen_current(&path, new_password);
                 if self.store.is_some() {
                     self.status = match (was_encrypted, now_encrypted) {
@@ -1705,6 +2173,26 @@ impl YkDistApp {
                                        longer encrypted"
                             .to_owned(),
                     };
+                }
+                // The old password does not open this register any more, so an
+                // entry still holding it is worse than none: at the next launch it
+                // would be offered, refused and dropped, in front of a prompt the
+                // operator was told they would not see. Either it is replaced with
+                // the new one now, or it goes now.
+                let account = self.vault_account();
+                match (saved_copy, remember, was_saved) {
+                    (Some(password), true, _) => self.save_password(&account, &password),
+                    (_, _, true) => {
+                        if self.store.is_some() {
+                            self.forget_saved_password();
+                        } else {
+                            // No register to audit into — the swap worked and the
+                            // reopen did not. The log carries it, the same way a
+                            // refused unlock does.
+                            self.drop_saved_password(&account);
+                        }
+                    }
+                    _ => {}
                 }
             }
             Err(e) => {
@@ -1769,6 +2257,10 @@ impl YkDistApp {
         self.db_form.error = None;
         self.db_form.locked = None;
         self.db_form.path = self.config.path.display().to_string();
+        // About the register that was open, and there is none now. The entry in
+        // the credential store is untouched — closing a register is not deciding
+        // to stop remembering its password.
+        self.saved_password = false;
         self.status = match released {
             Some(settled) => format!("no database open — lock released, {}", settled.describe()),
             None => "no database open".into(),
@@ -1841,6 +2333,10 @@ impl YkDistApp {
         self.db_form.path = config.path.display().to_string();
         self.db_form.error = None;
         self.db_form.locked = None;
+        // Counts reopenings of one register, so adopting any register — this one
+        // again, or another — starts the count over. The reopen path sets it back
+        // immediately afterwards; every other caller means a fresh start.
+        self.register_reopened_at = None;
         self.open_error = None;
         self.status = store.describe();
         self.config = config;
@@ -2025,6 +2521,8 @@ impl YkDistApp {
                         );
                         self.record("app.opened", "database", &database.display().to_string());
                         self.note_unlock_success();
+                        let account = self.vault_account();
+                        self.remember_password_if_asked(&account);
                         self.refresh();
                         self.status =
                             format!("{} is back — the register is open again", lost.location);
@@ -2102,6 +2600,14 @@ impl YkDistApp {
 
     pub fn tick_lease(&mut self) {
         let operator = self.operator.clone();
+        // The first failure that says the *connection* under this register is dead
+        // rather than that one operation went wrong. Collected while the store is
+        // borrowed and acted on at the end, because what it is answered with is
+        // dropping the store. This tick is where it belongs and costs nothing extra:
+        // `presence` reads the register every frame and `renew_presence` writes to it
+        // every minute, so both halves of a torn-down session — reads and writes —
+        // are already being exercised here on the operator's behalf.
+        let mut connection_lost: Option<String> = None;
         let Some(store) = self.store.as_mut() else {
             return;
         };
@@ -2110,7 +2616,11 @@ impl YkDistApp {
         // "I am here" is logged and otherwise ignored — it costs a banner on
         // somebody else's screen, not the session.
         if let Err(e) = store.renew_presence(&operator) {
-            tracing::warn!(event = "db.presence.renew_failed", reason = %e);
+            if e.is_io_failure() {
+                connection_lost.get_or_insert_with(|| e.to_string());
+            } else {
+                tracing::warn!(event = "db.presence.renew_failed", reason = %e);
+            }
         }
         // Read back on the same tick: a session that goes quiet has to *leave*
         // the banner without anybody pressing Refresh, or the warning outlives
@@ -2119,10 +2629,16 @@ impl YkDistApp {
             Ok(batches) => self.batch.resumable = batches,
             // Not fatal: a batch that cannot be listed is one nobody is offered
             // to resume, which is a lesser failure than refusing to refresh.
+            Err(e) if e.is_io_failure() => {
+                connection_lost.get_or_insert_with(|| e.to_string());
+            }
             Err(e) => tracing::warn!(event = "batch.read.failed", reason = %e),
         }
         match store.presence() {
             Ok(presence) => self.presence = presence,
+            Err(e) if e.is_io_failure() => {
+                connection_lost.get_or_insert_with(|| e.to_string());
+            }
             Err(e) => tracing::warn!(event = "db.presence.read_failed", reason = %e),
         }
         match store.renew_lease() {
@@ -2140,9 +2656,131 @@ impl YkDistApp {
                      reopening it."
                 );
             }
+            Err(e) if e.is_io_failure() => {
+                connection_lost.get_or_insert_with(|| e.to_string());
+            }
             Err(e) => {
                 tracing::error!(event = "db.lock.renew.failed", reason = %e);
                 self.status = format!("could not refresh the database lock: {e}");
+            }
+        }
+
+        if let Some(reason) = connection_lost {
+            self.handle_register_connection_lost(reason);
+        }
+    }
+
+    /// The connection under an open register died while the file stayed where it is
+    /// (`features/smb-share-hosting.md` phase 11).
+    ///
+    /// The other half of phase 9. [`Self::tick_share_health`] watches for the
+    /// **mount point disappearing**, which is the visible way a file server goes away
+    /// and the only way a [`ShareConnection`](crate::store::smb::ShareConnection) this
+    /// session opened can. The invisible way is a share the operating system mounted:
+    /// it stays mounted and the path keeps resolving, while the session behind the
+    /// descriptors this process already holds is torn down — a workstation that slept,
+    /// a link that flapped, a file server that restarted. `is_file` says yes to all of
+    /// it, and every operation on that connection returns `SQLITE_IOERR` while a
+    /// freshly opened one works.
+    ///
+    /// What that looks like from the other side of the screen, and what makes it worth
+    /// its own path: an inventory that stays empty because nothing can be saved, a
+    /// hand-over that will not record, a factory reset that refuses at the moment the
+    /// key is in the operator's hand — every one of them reported truthfully as *disk
+    /// I/O error*, none of them pointing at the register, and no way back short of
+    /// quitting the application.
+    ///
+    /// **Let go, do not close.** The polite close writes `db.closed` into the register
+    /// first, over the connection that is exactly what stopped answering: the write
+    /// fails and the operator is shown an audit failure for a fault that is not one.
+    /// Same reasoning as a dropped share, same second path.
+    ///
+    /// **Then open it again, once, before saying anything.** A connection that has
+    /// already been re-established is the common case — the mount is there, the server
+    /// is answering, and only this process was still holding a dead handle. An
+    /// operator told to reopen a register that reopens itself learns to distrust the
+    /// message.
+    pub fn handle_register_connection_lost(&mut self, reason: String) {
+        let path = self.config.path.clone();
+        tracing::error!(
+            event = "db.connection.lost",
+            path = %path.display(),
+            reason = %reason,
+        );
+
+        // A share *this session* connected has its own way back, which knows the
+        // location, the identity and the credential rule. Nothing here improves on
+        // it, and doing both would disconnect a mount out from under it.
+        if self.share.is_some() {
+            self.handle_dropped_share();
+            return;
+        }
+
+        // Whether this is the fix or a symptom, decided before the register is let go
+        // of so that the answer does not depend on what the open does.
+        let thrashing = self
+            .register_reopened_at
+            .is_some_and(|at| at.elapsed() < REOPEN_NOT_BEFORE);
+
+        self.abandon_current_database();
+        // Nothing was written to the key, and there is no register left to say so in.
+        // The handshake goes quietly rather than leaving a panel counting down a
+        // window for a reset that has nowhere to be recorded.
+        self.abandon_power_cycle("the register's connection stopped answering");
+
+        if thrashing {
+            tracing::error!(event = "db.reopen.thrashing", path = %path.display());
+            let said = format!(
+                "the connection to {} stopped answering again ({reason}) straight after it was \
+                 reopened, so it has not been reopened a second time — a register that will not \
+                 stay open is not something to keep reopening at you. The register itself is \
+                 where it was and is intact; nothing was written while the connection was out. \
+                 Open it again below once the share is steady.",
+                path.display()
+            );
+            self.db_form.error = Some(said.clone());
+            self.open_error = Some(said);
+            self.status = format!(
+                "{} keeps dropping — it has been left closed",
+                path.display()
+            );
+            return;
+        }
+
+        let config = self.config.clone();
+        match Store::open_existing(&config) {
+            Ok(store) => {
+                self.adopt(store, config);
+                self.register_reopened_at = Some(std::time::Instant::now());
+                // Audited on the register that came back, the only place it can be:
+                // the gap itself has no entry and cannot have one.
+                self.record(
+                    "db.reopened",
+                    "database",
+                    &format!(
+                        "path={} reason=the connection stopped answering: {reason}",
+                        path.display()
+                    ),
+                );
+                self.refresh();
+                self.status = format!(
+                    "the connection to the register stopped answering ({reason}) and it has been \
+                     reopened. Nothing was lost — anything that failed while it was out has to be \
+                     done again."
+                );
+            }
+            Err(e) => {
+                tracing::error!(event = "db.reopen.failed", reason = %e);
+                let said = format!(
+                    "the connection to {} stopped answering ({reason}), and opening it again did \
+                     not work either: {e}. The register itself is where it was and is intact — \
+                     nothing was written while the connection was out. Open it again below once \
+                     the share is answering.",
+                    path.display()
+                );
+                self.db_form.error = Some(said.clone());
+                self.open_error = Some(said);
+                self.status = format!("{} is not answering", path.display());
             }
         }
     }
@@ -2173,8 +2811,7 @@ impl YkDistApp {
             dialog = dialog.set_directory(parent);
         }
         if let Some(path) = dialog.pick_file() {
-            let password = self.take_password();
-            self.open_database(&path, password);
+            self.open_existing_register(&path);
         }
     }
 
@@ -2579,7 +3216,20 @@ impl YkDistApp {
         let poll = poll_for(native);
         let handshake = Handshake::start(serial, applets, poll, std::time::Instant::now());
         let (event, detail) = handshake.requested();
-        self.record(event, &format!("serial:{serial}"), &detail);
+        // Asked of the register *before* anything is asked of the operator. The run
+        // this arms refuses to write to the key unless its own trail is written
+        // (`device::reset::perform`, rule 3), so a register that cannot take this
+        // entry cannot take that one either — and starting anyway buys a two-step
+        // key dance that ends in the same refusal half a minute later, with the real
+        // fault hidden behind the status line this used to overwrite one statement
+        // after `record` had put it there.
+        if let Err(e) = self.try_record(event, &format!("serial:{serial}"), &detail) {
+            self.reset.error = Some(format!(
+                "the register could not be written, so the reset was not started and nothing \
+                 will be sent to the key: {e}"
+            ));
+            return;
+        }
 
         self.reset.presence_seen = crate::device::reinsert::Presence::default();
         self.reset.presence = Some(PresenceWatch::start(
@@ -2630,8 +3280,16 @@ impl YkDistApp {
         let applets = handshake.applets().to_vec();
         let entry = handshake.audit_for(reaction);
         let target = format!("serial:{serial}");
-        if let Some((event, detail)) = entry {
-            self.record(event, &target, &detail);
+        // Kept rather than dropped, because every arm below writes the status line
+        // and would otherwise wipe the audit failure `try_record` put there. On
+        // `Fire` it is left alone: `run_confirmed_reset` is about to hit the same
+        // register with the same entry and report the refusal itself, and saying it
+        // twice in two places is worse than saying it once in the right one.
+        let mut audit_failure = None;
+        if let Some((event, detail)) = entry
+            && let Err(e) = self.try_record(event, &target, &detail)
+        {
+            audit_failure = Some(e);
         }
 
         match reaction {
@@ -2663,6 +3321,15 @@ impl YkDistApp {
                 self.status = format!("serial {serial}: the power cycle was abandoned");
             }
         }
+
+        if let Some(e) = audit_failure
+            && reaction != Reaction::Fire
+        {
+            self.reset.error = Some(match self.reset.error.take() {
+                Some(said) => format!("{said}\n\nAUDIT FAILURE: {e}"),
+                None => format!("AUDIT FAILURE: {e}"),
+            });
+        }
     }
 
     /// Ask again, after a window that closed or an operator who stepped away.
@@ -2677,7 +3344,18 @@ impl YkDistApp {
         let (event, detail) = handshake.requested();
         let target = format!("serial:{}", handshake.serial());
         self.reset.error = None;
-        self.record(event, &target, &detail);
+        // Same gate as the first attempt, for the same reason: a retry is another
+        // chance at the same agreement, and the register has to be able to record
+        // that it was asked for before the operator is asked to give it.
+        if let Err(e) = self.try_record(event, &target, &detail) {
+            self.reset.presence = None;
+            self.reset.handshake = None;
+            self.reset.error = Some(format!(
+                "the register could not be written, so the reset was not asked for again and \
+                 nothing will be sent to the key: {e}"
+            ));
+            return;
+        }
         self.reset.presence_seen = crate::device::reinsert::Presence::default();
         self.status = "pull the key out and plug it back in — nothing has been written".into();
     }
@@ -3554,9 +4232,11 @@ impl YkDistApp {
         let path = config.path.clone();
         match Store::open(&config) {
             Ok(store) => {
+                let account = crate::vault::account_for_path(&path);
                 self.adopt(store, config);
                 self.record("app.opened", "database", "");
                 self.note_unlock_success();
+                self.remember_password_if_asked(&account);
                 self.refresh();
                 self.check_overdue_signatures();
             }
@@ -5236,17 +5916,45 @@ impl YkDistApp {
     /// Append an audit entry. Audit coverage is mandatory: every state change
     /// goes through here (see AGENTS.md, "Audit coverage").
     pub fn record(&mut self, event: &str, target: &str, details: &str) {
-        let Some(store) = &self.store else { return };
+        let _ = self.try_record(event, target, details);
+    }
+
+    /// Append an audit entry, and say whether it landed.
+    ///
+    /// [`Self::record`] is this with the answer thrown away, which is right for the
+    /// many call sites where the state change has already happened and there is
+    /// nothing left to decide. Use **this** one wherever the next thing the
+    /// application does must not happen if the trail was not written — §3 read
+    /// forwards: a state change that cannot be audited is a state change that must
+    /// not occur.
+    ///
+    /// The status line is still set on failure, exactly as before, so a caller that
+    /// ignores the answer loses nothing. What a caller must not do is set the status
+    /// line itself afterwards: that is how a register which could not be written
+    /// announced itself for zero frames and then asked an operator to power-cycle a
+    /// key for a reset it was never going to be allowed to send.
+    pub fn try_record(&mut self, event: &str, target: &str, details: &str) -> Result<(), String> {
+        // No register is not an audit failure: it is the state the application is in
+        // before one is chosen and after one is let go of, and the callers that reach
+        // here in it have nothing to record.
+        let Some(store) = &self.store else {
+            return Err("no register is open".to_owned());
+        };
         match store.append_audit(&self.operator, event, target, details) {
-            Ok(entry) => tracing::info!(
-                event = "audit.appended",
-                seq = entry.seq,
-                what = entry.event.as_str()
-            ),
+            Ok(entry) => {
+                tracing::info!(
+                    event = "audit.appended",
+                    seq = entry.seq,
+                    what = entry.event.as_str()
+                );
+                Ok(())
+            }
             Err(e) => {
                 // Failing to audit is never silent.
                 tracing::error!(event = "audit.append.failed", what = event, reason = %e);
-                self.status = format!("AUDIT FAILURE: {e}");
+                let message = e.to_string();
+                self.status = format!("AUDIT FAILURE: {message}");
+                Err(message)
             }
         }
     }
@@ -6165,11 +6873,46 @@ impl YkDistApp {
     pub fn submit_holder(&mut self) {
         self.holder_form.error = None;
         let form = &self.holder_form;
-        match Holder::new(&form.full_name, &form.email, &form.unit, &form.registration).and_then(
-            |holder| holder.with_optional(&form.identification_number, &form.phone, &form.address),
-        ) {
-            Ok(holder) => {
-                let Some(store) = &self.store else { return };
+        // One validation for both modes; what differs is where the record comes
+        // from. An edit starts from the stored one, so `id` and `created_at`
+        // survive the correction and every hand-over keeps pointing at it.
+        let built = match &form.editing {
+            Some(before) => {
+                before.with_details(&form.full_name, &form.email, &form.unit, &form.registration)
+            }
+            None => Holder::new(&form.full_name, &form.email, &form.unit, &form.registration),
+        }
+        .and_then(|holder| {
+            holder.with_optional(&form.identification_number, &form.phone, &form.address)
+        });
+
+        let holder = match built {
+            Ok(holder) => holder,
+            Err(e) => {
+                self.holder_form.error = Some(e.to_string());
+                return;
+            }
+        };
+        let Some(store) = &self.store else { return };
+
+        match self.holder_form.editing.clone() {
+            Some(before) => {
+                let changes = holder.describe_changes_from(&before);
+                if changes.is_empty() {
+                    self.status = "nothing to save — the record is as it was".to_owned();
+                    return;
+                }
+                if let Err(e) = store.update_holder(&holder) {
+                    self.holder_form.error = Some(e.to_string());
+                    return;
+                }
+                let display = holder.display();
+                self.record("holder.updated", &holder.email.clone(), &changes);
+                self.holder_form = HolderForm::default();
+                self.status = format!("holder updated: {display} ({changes})");
+                self.refresh();
+            }
+            None => {
                 if let Err(e) = store.insert_holder(&holder) {
                     self.holder_form.error = Some(e.to_string());
                     return;
@@ -6180,8 +6923,39 @@ impl YkDistApp {
                 self.status = format!("holder registered: {display}");
                 self.refresh();
             }
-            Err(e) => self.holder_form.error = Some(e.to_string()),
         }
+    }
+
+    /// Load a holder into the form so their record can be corrected.
+    ///
+    /// Reads from the loaded register rather than the table row on screen, so an
+    /// edit started from a stale page still begins from what is stored.
+    pub fn begin_holder_edit(&mut self, id: uuid::Uuid) {
+        let Some(holder) = self.holders.iter().find(|holder| holder.id == id).cloned() else {
+            self.status = "that holder is no longer on the register".to_owned();
+            return;
+        };
+        self.status = format!("editing {}", holder.display());
+        self.holder_form = HolderForm::for_edit(&holder);
+    }
+
+    /// Leave the edit without saving; the form goes back to registering.
+    pub fn cancel_holder_edit(&mut self) {
+        self.holder_form = HolderForm::default();
+    }
+
+    /// How many keys this holder has out, and how many hand-overs they have ever
+    /// had — what makes a change of address worth warning about.
+    pub fn holder_key_counts(&self, id: uuid::Uuid) -> (usize, usize) {
+        let mut open = 0usize;
+        let mut ever = 0usize;
+        for record in self.distributions.iter().filter(|d| d.holder_id == id) {
+            ever += 1;
+            if record.is_open() {
+                open += 1;
+            }
+        }
+        (open, ever)
     }
 
     /// Record a hand-over from the distribution form.

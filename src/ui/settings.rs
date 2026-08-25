@@ -374,6 +374,11 @@ fn password_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
     let encrypted = store.is_encrypted();
     let read_only = store.is_read_only();
     let available = cfg!(feature = "encrypted-db");
+    // Read from the cache the app refreshes when a register is opened, saved,
+    // forgotten or re-keyed — never from the credential store itself. A paint pass
+    // that talked to the Keychain would talk to it sixty times a second, and on
+    // macOS a read is a syscall that can put a dialog on the screen.
+    let saved = app.saved_password;
     let mut request: Option<DbRequest> = None;
     let mut dismiss = false;
 
@@ -414,6 +419,63 @@ fn password_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
             return;
         }
 
+        // Where the password is kept between sessions, and how to stop keeping it
+        // (`features/db-password-and-encryption.md` phase 8). Below the read-only
+        // guard on purpose: both actions are state changes and both are audited,
+        // and an audit entry needs a register this session can write to.
+        if encrypted {
+            ui.add_space(12.0);
+            let store_name = crate::vault::platform_label();
+            if saved {
+                super::notice(
+                    ui,
+                    CalloutTone::Neutral,
+                    &format!(
+                        "This workstation has this register's password saved in {store_name}, so \
+                         it opens here without a prompt. Anybody signed in as this operator on \
+                         this machine can therefore open it without knowing the password. A copy \
+                         of the file taken anywhere else is unaffected — the saved password never \
+                         leaves this workstation."
+                    ),
+                );
+                ui.add_space(10.0);
+                if ui
+                    .add(Button::new("Forget the saved password").outline())
+                    .on_hover_text(
+                        "removes it from this workstation's credential store; the register and \
+                         its password are not changed",
+                    )
+                    .clicked()
+                {
+                    request = Some(DbRequest::ForgetSavedPassword);
+                }
+            } else {
+                super::hint(
+                    ui,
+                    &format!(
+                        "The password is typed at every launch. It can be saved in {store_name} \
+                         instead — only on this workstation, and reversible from here. What that \
+                         gives up is that anybody signed in here opens the register without \
+                         knowing the password; what it does not give up is the file itself, \
+                         because a backup or a sync copy stays unreadable elsewhere."
+                    ),
+                );
+                ui.add_space(10.0);
+                if ui
+                    .add(Button::new("Save the password on this workstation").outline())
+                    .on_hover_text(
+                        "saves the password this session opened the register with — nothing is \
+                         retyped, so the saved one is the one that works",
+                    )
+                    .clicked()
+                {
+                    request = Some(DbRequest::SaveCurrentPassword);
+                }
+            }
+            ui.add_space(4.0);
+            ui.separator();
+        }
+
         ui.add_space(12.0);
 
         if !app.password_form.open {
@@ -431,6 +493,9 @@ fn password_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
                     .clicked()
                 {
                     app.password_form.open = true;
+                    // Opens reflecting what is true now, so leaving the tick alone
+                    // keeps this workstation behaving the way it behaves today.
+                    app.password_form.remember = saved;
                 }
                 if encrypted
                     && ui
@@ -514,6 +579,19 @@ fn password_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
 
         ui.add_space(10.0);
         let assessment = super::password_meter(ui, &app.password_form.new);
+
+        // Pre-ticked only when one is already saved, so a re-key keeps this
+        // workstation working the way it worked yesterday. Whichever way it is
+        // left, the entry holding the *old* password does not survive the change:
+        // it is replaced with the new one, or removed.
+        ui.add_space(10.0);
+        ui.add(elegance::Checkbox::new(
+            &mut app.password_form.remember,
+            format!(
+                "Keep the new password in {}",
+                crate::vault::platform_label()
+            ),
+        ));
         let matching = app.password_form.new == app.password_form.confirm;
         if !matching && !app.password_form.confirm.is_empty() {
             ui.add_space(6.0);

@@ -31,6 +31,9 @@ documenting which tables hold personal data — see
 - `certificate_subject(org, org_unit)` builds an RFC 4514 DN (`CN=…,OU=…,O=…`) with
   proper escaping of `, + " \ < > ; #` and leading/trailing spaces.
 - `display()` renders `Name <email>` for tables and receipts.
+- A saved record can be **corrected** from the Holders screen (phase 8):
+  `Holder::with_details` revalidates the four mandatory-ish fields while keeping
+  `id`, `created_at` and `active`, and `Store::update_holder` writes it by **id**.
 
 Not yet done: AD/LDAP lookup, deactivation flow, and the LGPD-driven data-retention
 work.
@@ -70,6 +73,44 @@ contains no `@`, so a well-meaning change cannot quietly reintroduce it. Getting
 the e-mail into the SAN is the subject of
 `features/step-piv-signing-certificate.md`.
 
+### Editing a saved record (Phase 8)
+
+The upsert on `email` was the only way to change a record, and it cannot change
+the one field that most often needs it: a mistyped **address** is what the upsert
+matches on, so correcting it registers a second person and leaves the first
+behind, with the certificate binding pointing at neither. Hence a real edit.
+
+Three decisions, each following from *the operator is looking at this record*:
+
+- **Matched by `id`, not by e-mail.** `Store::update_holder` updates the row with
+  this id, so the address itself is editable. The id is what every hand-over,
+  bootstrap run and term points at, so a correction stays the same person rather
+  than becoming a second one to reconcile — [`Holder::with_details`] keeps `id`
+  and `created_at` for exactly that reason.
+- **An emptied optional field is cleared.** The upsert only ever fills one in,
+  because a re-registration that omitted a field did not mean to erase it. An
+  edit that emptied it did, and the screen says so.
+- **Moving the address warns, and does not reissue anything.** The e-mail is the
+  `rfc822Name` in the certificate already on the person's keys
+  (`features/step-piv-signing-certificate.md`), so the warning names how many
+  keys they have been handed and how many are still out, and says plainly that
+  correcting the register does not reissue any of them
+  ([`domain::email_change_warning`]). Moving onto an address that is already
+  somebody else's is **refused**, naming them: an address identifies one person.
+
+What is deliberately *not* here: `created_at` and `active` are not editable —
+the first is history, the second is the deactivation flow (phase 4) rather than a
+field on a form — and the holders table has no `updated_at`, so an edit has **no
+optimistic-concurrency check** the way `keys.notes` does. That is the pre-existing
+position (the upsert overwrote a name with no check either) and it is bounded by
+the single-writer lock; giving it the `seen` check `Store::set_key_notes` has
+means a column, a migration and a schema bump, and is worth doing the next time
+the schema moves for another reason.
+
+A hand-over's `holder_display` is a **snapshot** and is not rewritten: the record
+of what was handed over on the day, under the name it was signed under, is not
+edited by a later correction. That is the audit position, not an oversight.
+
 ### AD integration (Phase 3)
 
 The norm requires integration with the corporate Active Directory. For this tool
@@ -90,12 +131,14 @@ a later phase rather than a startup dependency.
 | 5 | Search and filter | 0 | **Done** | shipped as `features/gui-shell.md` phase 3: [`browse::holders`](../src/browse.rs) matches the name, e-mail, unit and registration, with sorting and paging |
 | 6 | Per-holder view: keys held, history, bootstrap evidence | 2 | Todo | one screen answering "what does Ana have?" |
 | 7 | Retention: what happens to a holder record when they leave | — | Todo | blocked on the DPO/retention decision |
+| 8 | Edit a saved record | 0 | **Done** | `Holder::with_details` + `Store::update_holder`, matched by id; the address is editable and a move is warned about; an emptied optional field is cleared; `holder.updated` names the fields that moved |
 
 ## Audit events
 
 | Event | When |
 |---|---|
-| `holder.registered` | A person was added, or an existing record updated |
+| `holder.registered` | A person was added, or re-registered at the same address |
+| `holder.updated` | A saved record was corrected; the detail names the fields that moved, the e-mail old and new, and no optional value |
 | `holder.deactivated` | Phase 4 |
 | `holder.imported` | Phase 3, filled from the directory |
 
@@ -109,10 +152,29 @@ a later phase rather than a startup dependency.
 - `certificate_subject_is_rfc4514_and_excludes_the_email`
 - `rfc4514_special_characters_are_escaped`
 - `email_is_normalised_to_lowercase` (in `src/domain/mod.rs`)
+- `an_edit_corrects_the_record_without_becoming_a_second_person`
+- `an_edit_can_clear_an_optional_field`
+- `an_edit_is_validated_like_a_registration`
+- `the_trail_names_the_fields_an_edit_changed`
+- `moving_an_address_warns_only_when_a_key_carries_the_old_one`
+
+`tests/unit_store.rs`:
+
+- `a_holder_record_is_corrected_in_place`
+- `a_holder_cannot_be_moved_onto_another_persons_address`
+- `correcting_a_holder_who_is_not_on_the_register_is_refused`
 
 `tests/behaviour_distribution.rs`:
 
 - `scenario_the_same_person_is_not_duplicated_by_email`
+- `scenario_correcting_a_holder_keeps_their_hand_overs`
+
+`tests/behaviour_app_holder_edit.rs`:
+
+- `scenario_a_holder_record_is_corrected_after_it_was_saved` — the whole path
+  through `YkDistApp`: the form arrives filled in, a save that changed nothing
+  writes nothing, an address that is taken is refused with the operator left in
+  the form, and the correction lands with one `holder.updated` entry
 
 ## Open questions and gates
 

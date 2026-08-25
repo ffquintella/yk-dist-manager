@@ -30,7 +30,14 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
 }
 
 fn register_form(app: &mut YkDistApp, ui: &mut egui::Ui) {
-    super::titled_card(ui, "Register a holder", |ui| {
+    // One form, two modes: the title and the buttons say which, so an operator
+    // cannot type a correction into what is actually a second person's record.
+    let editing = app.holder_form.editing.clone();
+    let title = match &editing {
+        Some(holder) => format!("Edit {}", holder.full_name),
+        None => "Register a holder".to_owned(),
+    };
+    super::titled_card(ui, title, |ui| {
         // Two columns: what the certificate needs, and what only the term uses.
         // Each takes half the card, so the fields grow with the window.
         super::form_columns(ui, |left, right, _width| {
@@ -85,10 +92,39 @@ fn register_form(app: &mut YkDistApp, ui: &mut egui::Ui) {
              and the corresponding line is omitted when they are not.",
         );
 
-        ui.add_space(12.0);
-        if ui.add(Button::new("Register holder")).clicked() {
-            app.submit_holder();
+        if let Some(holder) = &editing {
+            super::hint(
+                ui,
+                "An optional field left empty here is cleared on the record — unlike \
+                 re-registering an address, which only ever fills one in.",
+            );
+
+            // Moving the address is the one edit with a consequence beyond the
+            // register: the certificate already on this person's key carries the
+            // old one as its rfc822Name, and no edit here reissues it.
+            if let Some(from) = app.holder_form.email_moving_from() {
+                let (open, ever) = app.holder_key_counts(holder.id);
+                if let Some(warning) = crate::domain::email_change_warning(from, ever, open) {
+                    ui.add_space(10.0);
+                    super::notice(ui, CalloutTone::Warning, &warning);
+                }
+            }
         }
+
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            let label = if editing.is_some() {
+                "Save changes"
+            } else {
+                "Register holder"
+            };
+            if ui.add(Button::new(label)).clicked() {
+                app.submit_holder();
+            }
+            if editing.is_some() && ui.add(Button::new("Cancel").outline()).clicked() {
+                app.cancel_holder_edit();
+            }
+        });
 
         if let Some(error) = app.holder_form.error.clone() {
             ui.add_space(10.0);
@@ -109,6 +145,11 @@ fn register(app: &mut YkDistApp, ui: &mut egui::Ui) {
     let summary = page.describe("holders");
     let (pages, current) = (page.pages, page.page);
     drop(page);
+
+    // Collected in the row loop and applied after the card: the form the edit
+    // loads into is painted above this table, so the mutation cannot happen while
+    // the table still borrows the app.
+    let mut edit: Option<uuid::Uuid> = None;
 
     super::titled_card(ui, summary.clone(), |ui| {
         super::table_controls(ui, &mut app.browse_holders, pages, current, &summary);
@@ -145,6 +186,7 @@ fn register(app: &mut YkDistApp, ui: &mut egui::Ui) {
                 "Identification",
                 "Contact",
                 "Keys held",
+                "Actions",
             ],
             |ui| {
                 for holder in &rows {
@@ -175,9 +217,19 @@ fn register(app: &mut YkDistApp, ui: &mut egui::Ui) {
                             elegance::BadgeTone::Info,
                         ));
                     }
+                    if super::row_button(ui, "Edit")
+                        .on_hover_text("correct this record in the form above")
+                        .clicked()
+                    {
+                        edit = Some(holder.id);
+                    }
                     ui.end_row();
                 }
             },
         );
     });
+
+    if let Some(id) = edit {
+        app.begin_holder_edit(id);
+    }
 }

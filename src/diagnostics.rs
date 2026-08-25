@@ -62,11 +62,30 @@ Environment:
   YKDM_DATA_DIR                Per-user data directory
   YKDM_LOG                     Log filter, e.g. `debug`
   YKDM_ALLOW_UNBUNDLED_CAMERA  Attempt the camera outside an app bundle (may abort)
+  YKDM_NO_SAVED_PASSWORD       Never keep a database password in the workstation's
+                               credential store: the option is offered nowhere and
+                               the password is typed every time
   YKDM_SYNC_QUIET_MS           Cloud-sync folder: how long the database file must be
                                unchanged before it counts as downloaded (default 1500)
   YKDM_SYNC_TIMEOUT_MS         Cloud-sync folder: how long to wait for the sync client
                                before saying so and carrying on (default 15000)
 ";
+
+/// Whether a saved database password could be read on this workstation, and from
+/// where (`features/db-password-and-encryption.md` phase 8).
+///
+/// Probed rather than assumed, because the interesting failures are all at run
+/// time: the store is there on every supported platform and can still be
+/// unreachable — a locked keyring, a session with no D-Bus, a policy that switched
+/// it off. Asked about an account that cannot exist, so the probe reads nothing,
+/// writes nothing, and cannot put a password anywhere near this report.
+fn credential_store_state() -> String {
+    let vault = crate::vault::platform_vault();
+    match vault.get("(yk-dist-manager --diagnose probe)") {
+        Ok(_) => format!("{} (reachable)", vault.label()),
+        Err(e) => format!("{} — {e}", vault.label()),
+    }
+}
 
 /// The features this build was compiled with.
 pub fn compiled_features() -> Vec<&'static str> {
@@ -160,6 +179,18 @@ pub struct Report {
     /// Never a password — there is none stored to report.
     pub smb_shares: Vec<String>,
     pub settings: String,
+    /// The credential store this build would keep a saved database password in,
+    /// and whether it can be reached right now
+    /// (`features/db-password-and-encryption.md` phase 8).
+    ///
+    /// The state, not the contents: a support request about "it stopped opening
+    /// without a prompt" needs to know whether the store answers at all — a locked
+    /// keyring, a headless session with no Secret Service, a deployment that set
+    /// `$YKDM_NO_SAVED_PASSWORD` — and no part of that answer is a password. This
+    /// deliberately does **not** say whether any particular register has one saved:
+    /// that would mean naming registers and reaching into the store for each,
+    /// which is a lot of secret-handling to print a line nobody asked for.
+    pub credential_store: String,
     /// Which transport would read the hardware right now, and why
     /// (`features/native-device-transport.md` phase 6).
     ///
@@ -204,6 +235,7 @@ impl Report {
                 .collect(),
             database: effective.display().to_string(),
             smb_connector: crate::store::smb::platform_connector().label().to_owned(),
+            credential_store: credential_store_state(),
             smb_can_connect: crate::store::smb::can_connect(),
             // Read from the settings file, not probed: `--diagnose` must not open a
             // connection to a file server, and there is no password here to leak
@@ -313,6 +345,7 @@ impl Report {
             let _ = writeln!(out, "                   {share}");
         }
         let _ = writeln!(out, "settings:          {}", self.settings);
+        let _ = writeln!(out, "credential store:  {}", self.credential_store);
         let _ = writeln!(out, "device transport:  {}", self.transport);
         let _ = writeln!(
             out,
@@ -405,6 +438,7 @@ mod tests {
             database_lock: None,
             database_conflicts: Vec::new(),
             smb_connector: "NetFS (macOS)".into(),
+            credential_store: "the macOS Keychain (reachable)".into(),
             smb_can_connect: true,
             smb_shares: Vec::new(),
             settings: "/tmp/settings.json".into(),
@@ -631,6 +665,7 @@ mod tests {
             "YKDM_DB",
             "YKDM_SETTINGS",
             "YKDM_ALLOW_UNBUNDLED_CAMERA",
+            crate::vault::DISABLE_ENV,
         ] {
             assert!(USAGE.contains(expected), "USAGE omits {expected}");
         }

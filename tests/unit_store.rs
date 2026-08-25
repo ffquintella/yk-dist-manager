@@ -786,6 +786,79 @@ fn run_writing(serial: u32, kind: yk_dist_manager::domain::StepKind) -> Bootstra
 }
 
 #[test]
+fn a_holder_record_is_corrected_in_place() {
+    let store = Store::open_in_memory().unwrap();
+    let before = Holder::new("Ana Silva", "ana.silva@example.org", "ESI", "1")
+        .unwrap()
+        .with_optional("123.456.789-00", "+55 21 0000-0000", "Rua A, 1")
+        .unwrap();
+    store.insert_holder(&before).unwrap();
+
+    // Every field an operator may correct, including the address the upsert
+    // cannot reach, and an optional field emptied on purpose.
+    let after = before
+        .with_details("Ana Silva Souza", "ana.souza@example.org", "DCI", "2")
+        .unwrap()
+        .with_optional("123.456.789-00", "", "")
+        .unwrap();
+    store.update_holder(&after).unwrap();
+
+    let holders = store.holders().unwrap();
+    assert_eq!(holders.len(), 1, "a correction is not a second person");
+    let stored = &holders[0];
+    assert_eq!(stored.id, before.id);
+    assert_eq!(stored.full_name, "Ana Silva Souza");
+    assert_eq!(stored.email, "ana.souza@example.org");
+    assert_eq!(stored.unit, "DCI");
+    assert_eq!(stored.registration, "2");
+    assert_eq!(stored.identification_number, "123.456.789-00");
+    assert_eq!(stored.phone, "", "an edit clears what it emptied");
+    assert_eq!(stored.address, "");
+    assert_eq!(stored.created_at, before.created_at);
+}
+
+#[test]
+fn a_holder_cannot_be_moved_onto_another_persons_address() {
+    let store = Store::open_in_memory().unwrap();
+    let ana = Holder::new("Ana Silva", "ana.silva@example.org", "ESI", "").unwrap();
+    let bruno = Holder::new("Bruno Lima", "bruno.lima@example.org", "ESI", "").unwrap();
+    store.insert_holder(&ana).unwrap();
+    store.insert_holder(&bruno).unwrap();
+
+    let clash = bruno
+        .with_details("Bruno Lima", "ana.silva@example.org", "ESI", "")
+        .unwrap();
+    let refusal = store.update_holder(&clash).unwrap_err();
+    assert!(
+        matches!(&refusal, StoreError::EmailTaken { email, holder }
+            if email == "ana.silva@example.org" && holder == "Ana Silva"),
+        "the refusal names who holds the address: {refusal}"
+    );
+    assert!(
+        refusal.to_string().contains("Nothing was saved"),
+        "and says the register was not touched: {refusal}"
+    );
+
+    // Neither record moved.
+    let stored = store.holder_by_email("bruno.lima@example.org").unwrap();
+    assert_eq!(stored.expect("Bruno is where he was").id, bruno.id);
+}
+
+#[test]
+fn correcting_a_holder_who_is_not_on_the_register_is_refused() {
+    let store = Store::open_in_memory().unwrap();
+    let stranger = Holder::new("Ana Silva", "ana.silva@example.org", "ESI", "").unwrap();
+    assert!(matches!(
+        store.update_holder(&stranger).unwrap_err(),
+        StoreError::NotFound(_)
+    ));
+    assert!(
+        store.holders().unwrap().is_empty(),
+        "a refused correction does not insert"
+    );
+}
+
+#[test]
 fn a_key_carrying_a_previous_holders_credentials_cannot_go_back_into_stock() {
     use yk_dist_manager::device::reset::Applet;
     use yk_dist_manager::domain::{Remediation, StepKind};

@@ -149,12 +149,14 @@ password, on any path, in any file.
 
 ## Current state
 
-**Done for Wave 0**, phases 1–9. A location parses, a credential is built,
+**Done for Wave 0**, phases 1–9 and 11. A location parses, a credential is built,
 `ShareConnection` attaches and releases, all three platform backends exist, the
 chooser has an *Open from a network share (SMB)* card, Settings shows which share is
-held and as whom, `--diagnose` reports how this build reaches a share, and a share
-that **drops mid-session** is noticed and offered back. What is left is Kerberos on
-macOS (phase 10), which gates no wave and which nobody has asked for.
+held and as whom, `--diagnose` reports how this build reaches a share, a share
+that **drops mid-session** is noticed and offered back, and a register whose
+**connection** dies under a mount that is still there is noticed too and reopened
+(phase 11 — the half `is_file` cannot see). What is left is Kerberos on macOS
+(phase 10), which gates no wave and which nobody has asked for.
 
 ## Phases
 
@@ -170,6 +172,7 @@ macOS (phase 10), which gates no wave and which nobody has asked for.
 | 8 | `--diagnose` reports the connector this build has and the shares this workstation used | 0 | Done | |
 | 9 | Reconnect a dropped share mid-session | 0 | **Done** | a five-second `is_file` check notices; the register is **abandoned rather than closed** (there is no file to write `db.closed` into); an identity that needs no password is retried immediately, a named account is asked; and the way back is one button on the chooser. `db.share.reconnected` records the round trip |
 | 10 | Kerberos / explicit domain-controller selection on macOS | — | Todo | NetFS can be told to use Kerberos; nobody has asked, and it needs a domain to test against |
+| 11 | A register whose **connection** dies while the mount stays | 0 | **Done** | phase 9 answers the mount going away; this answers the half `is_file` cannot see. `SQLITE_IOERR` is told apart from every other refusal, the register is abandoned and reopened once, and `db.reopened` records it |
 
 ### A share that goes away mid-session (Phase 9)
 
@@ -213,6 +216,60 @@ That middle row is the one worth having: without it the operator reads
 **The round trip is audited on the register that came back** — the only place it can
 be written: `db.share.connected` again, plus `db.share.reconnected` naming the share
 and the identity. The gap itself has no entry, and cannot.
+
+### A connection that dies while the mount stays (Phase 11)
+
+Phase 9 watches for the **mount point disappearing**. That is the visible way a file
+server goes away, and the only way a `ShareConnection` *this session* opened can. It
+is not the only way a register stops answering.
+
+A share the operating system mounted — the ordinary case, an operator who connected
+it in Finder or Explorer and then pointed the chooser at the file — stays mounted and
+keeps resolving while the session behind the descriptors this process already holds is
+torn down: a workstation that slept, a link that flapped, a file server that
+restarted. `is_file` says yes to every bit of that. Meanwhile every operation on that
+connection returns `SQLITE_IOERR`, and a freshly opened one works.
+
+What it looked like from the other side of the screen, which is why it earns a phase:
+an inventory that stays empty because nothing can be saved, a hand-over that will not
+record, and a **factory reset that refuses with the key in the operator's hand** —
+every one of them reported truthfully as *disk I/O error*, none of them pointing at the
+register, and no way back short of quitting the application.
+
+**`SQLITE_IOERR` is told apart from every other refusal**, by
+[`StoreError::is_io_failure`](../src/store/mod.rs). The rest of that enum is answered
+by waiting (`Busy`), by asking somebody (`Lease`), or by fixing what was typed. This
+one is answered by opening the file again and by nothing else, so it is the one worth
+classifying. `SQLITE_CORRUPT` is deliberately *not* included: reopening would hide it,
+and it has to reach the operator as itself.
+
+**Noticing costs nothing extra.** `tick_lease` already reads the register every frame
+(`presence`) and writes to it every minute (`renew_presence`), so both halves of a
+torn-down session are being exercised on the operator's behalf already. The check is
+a classification of a failure that was being logged and dropped.
+
+**Let go, then open once, then speak.** Abandon rather than close, for phase 9's
+reason — the polite close writes `db.closed` over the connection that is exactly what
+stopped answering. Then one immediate `open_existing`, because a connection that has
+already been re-established is the common case, and an operator told to reopen a
+register that reopens itself learns to distrust the message. Only if *that* fails is
+anything said, and what is said is that the register is intact and where it was.
+
+**Once a minute, not once a frame** ([`REOPEN_NOT_BEFORE`](../src/app.rs)). A
+connection whose session was torn down is fixed by one open, and that open does enough
+real work — the pragmas, the migration check, the backup, the chain verification, the
+presence row — that a handle surviving it is a live handle. The guard is for the other
+shape: a mount that answers `open` and then fails everything, which would otherwise be
+abandoned and reopened on every frame with a `db.reopened` entry each time. After the
+second drop the operator is told and left in charge, because a register that will not
+stay open is not something to keep reopening at them.
+
+**A share this session connected is not handled here**: it is handed to phase 9's
+path, which knows the location, the identity and the credential rule. Doing both would
+disconnect a mount out from under it.
+
+The round trip is audited on the register that came back, as `db.reopened`, carrying
+the path and what actually failed. The gap has no entry, and cannot.
 
 ## Audit events
 
@@ -310,6 +367,21 @@ directory holding an open file cannot be moved. Then
   writes `db.share.reconnected`, and leaves the chain verifying across the gap;
 - a share whose identity is a **named account** is left waiting for the password
   instead of being retried.
+
+### Phase 11
+
+`src/store/mod.rs`'s own test module covers the classification, which is the half that
+has to be exactly right: `SQLITE_IOERR` and its extended codes are a dead connection;
+`SQLITE_BUSY`, `SQLITE_READONLY` and — the one that matters — `SQLITE_CORRUPT` are
+not.
+
+`tests/behaviour_app_register_connection_lost.rs` covers what is done about it, in the
+three endings it has. The file is genuinely out of reach: the register is let go of
+rather than held open, the operator is told it is **intact**, and the path is already
+in the chooser, because reopening it is the whole fix. The file is where it was: it
+comes back by itself, with its rows, and `db.reopened` names what failed. It drops
+again straight afterwards: it is **not** reopened a second time, and the operator is
+told that too — a different story from the first drop, and the one that says so.
 
 ## Open questions and gates
 

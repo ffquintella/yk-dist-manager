@@ -93,6 +93,12 @@ typing this into the right application?" is worth answering at a glance. It carr
   the only case in which the password would become a *new* register's key. Grading
   a password typed to unlock a register that already has one would be a judgement
   nobody can act on here;
+- a tick to **remember this password** in the workstation's credential store —
+  the macOS Keychain, the Windows Credential Manager, the Secret Service — with the
+  trade written out beside it: a copy of the file taken anywhere else stays as
+  unreadable as it was, and this workstation stops asking anybody signed in here to
+  know the password. Never pre-ticked, saved only once the password has actually
+  opened the register, and taken back off in Settings;
 - after repeated wrong passwords, the **wait** the throttle has earned: a banner
   counting down, and the buttons that submit a password disabled while it runs. The
   banner says it is not a lockout, because there is nobody to lift one.
@@ -230,6 +236,16 @@ identification number, phone and address — plus the list with a count of keys 
 held. The screen says that optional fields appear on the consignment term when filled in
 and omit their line when not. Validation errors appear under the form, in red,
 selectable.
+
+Each row carries **Edit**, which loads that record into the same form: the card's title
+becomes *Edit ‹name›*, the button becomes *Save changes*, and *Cancel* leaves without
+saving. Two things are said on the screen because they are what an edit does differently
+from a re-registration: an optional field left empty here is **cleared** (re-registering an
+address only ever fills one in), and moving the **address** warns how many keys the person
+has already been handed — the signing certificate on those keys carries the old address,
+and correcting the record does not reissue it. An address that already belongs to somebody
+else is refused, naming them. The trail entry (`holder.updated`) names the fields that
+moved, with the e-mail written old and new and no optional value spelled out.
 
 ### Distribution
 
@@ -413,6 +429,18 @@ the sentence about there being no recovery is on screen while the operator types
 removal asks for a confirmation of its own that names what becomes readable. The
 register is backed up first and reopened under the new password afterwards. In a build
 without `encrypted-db` the card says which build would do it instead of hiding.
+
+The same card is where a **saved password** lives and stops living. For an encrypted
+register it either offers to save the password this session opened the file with —
+nothing is retyped, so what gets saved is the one that demonstrably works — or, when one
+is already saved, says so plainly (including that anybody signed in here can now open the
+register without knowing it) and offers *Forget the saved password*, which touches the
+workstation and not the register. The change form carries its own tick, pre-set from
+whatever is true now, so re-keying a register keeps the workstation behaving the way it
+behaved yesterday; either way the entry holding the *old* password does not survive the
+change. The card reads this from state the application refreshes when a register is
+opened, saved, forgotten or re-keyed, and never from the credential store during a paint
+pass.
 
 A **Device transport** card says which transport reads the hardware and lets the
 operator override it. It reports what is *actually* in use rather than only what was

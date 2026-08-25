@@ -25,7 +25,7 @@ pub use lifecycle::{
 // reversibility (`features/testing-strategy.md` phase 9): the escaper is what
 // stands between a person's name as they spell it and the `CN` of a certificate
 // issued to them, so it is worth testing from outside the module that owns it.
-pub use holder::{Holder, escape_rfc4514};
+pub use holder::{Holder, email_change_warning, escape_rfc4514};
 pub use key::{KeyStatus, SerialSource, YubiKeyRecord};
 
 /// Maximum accepted length for any free-text field arriving from the UI.

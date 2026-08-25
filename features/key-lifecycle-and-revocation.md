@@ -93,6 +93,24 @@ the window closing is reported rather than risked as a doomed command, an untouc
 ends the handshake after a minute, and a FIDO2 row that says *refused* offers the whole
 thing again for that applet alone.
 
+**The handshake asks the register before it asks the operator.** `device::reset::perform`
+refuses to write to a key unless its trail is written first (rule 3 below), so a register
+that cannot take the entry saying the power cycle was *asked for* cannot take the entry
+saying the reset *started* either. The handshake therefore does not begin at all in that
+case: the panel says the register is the fault and the key is untouched, and nobody is sent
+to pull anything out.
+
+That is a correction, not a refinement. `begin_power_cycle` did write its entry first, and
+`record` did put `AUDIT FAILURE` in the status line when it failed — and then the next
+statement overwrote the status line with *pull the key out and plug it back in*. On a share
+whose session had been torn down under an open register (`features/smb-share-hosting.md`
+phase 11) that produced the worst version of this operation there is: a two-step key dance,
+followed half a minute later by *the reset could not be recorded, so nothing was written to
+the key* — the right refusal, arriving at the moment the key is in the operator's hand, for
+a fault that was knowable before they touched it. Every call site that arms the handshake
+now uses `YkDistApp::try_record` and stops on a failure, and no arm of the handshake writes
+the status line over one.
+
 ## Design
 
 ### Lost or stolen
@@ -219,6 +237,12 @@ is for".
   handshake; and the presence poll, which reports the one serial it was given, treats an
   empty port as an answer, keeps trying after a busy reader, gives up on a missing
   transport, and stops promptly when dropped.
+- Behaviour: a register that cannot record does not get to ask for the key —
+  `tests/behaviour_app_reset_power_cycle.rs`, which drives `YkDistApp` against a register
+  opened read-only (the one way a test can produce "cannot be written" without a file
+  server). No handshake is started, nothing polls the port, the panel names the register as
+  the fault, and the status line still carries the audit failure instead of the instruction
+  that used to overwrite it one statement later.
 
 ## Open questions and gates
 

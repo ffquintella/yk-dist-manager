@@ -51,6 +51,12 @@ cannot start does not gate a wave, which is what that column means.
   courtesy rather than the control.
 - **Settings → Password protection** sets, changes or removes the password, with
   the meter, the password typed twice, and a confirmation of its own for removal.
+- **Optionally saved in the workstation's own credential store** (phase 8):
+  Keychain Services, the Credential Manager, the Secret Service. Opt-in per
+  register per workstation, never a default, reversible from the same card, and
+  taken out of play entirely by `$YKDM_NO_SAVED_PASSWORD` for a deployment whose
+  policy is "typed, every time". **Pending the ESI's assessment** — see the gate
+  below.
 
 ## Design
 
@@ -103,8 +109,71 @@ the new key, verify it opens and its audit chain verifies, then swap — never
 | 6 | Password strength meter + policy | 0 | **Done** | [`password::assess`](../src/password.rs) — a 12-character floor with advice rather than mandatory character classes, because the threat is an offline attack on a copied file and composition rules push people towards `Password1!`. The meter is [`ui::password_meter`](../src/ui/mod.rs), shown wherever a password is *chosen*; the floor is enforced by `create_new` and `change_password` rather than by the screen |
 | 7 | Optional: unlock with a YubiKey instead of a typed password | — | Todo — **blocked twice over** | HMAC-SHA1 challenge-response (OTP slot 2) as the KDF input. It needs an OTP slot to be *programmed*, which is the one write `features/step-otp-access-code.md` phase 4 and 5 deliberately leave unwritten until there is a key to verify the frame against; and turning a challenge-response into a database key **is** a KDF choice, which is the ESI's to approve (phase 4 above, `AGENTS.md` §8). Neither half is an implementer's decision, so this is the one Wave 1 row that is not merely unverified — and it is marked *optional* in its own title, so nothing depends on it |
 
+| 8 | Save the password in the workstation's credential store | 0 | **Done** | [`crate::vault`](../src/vault.rs) — Keychain Services / Credential Manager / Secret Service behind one trait, injected into `YkDistApp` so no test touches a real login keyring. **Opt-in per register per workstation**, consulted before the startup probe, never used in place of a password somebody typed, and dropped — without counting against the throttle — when it stops opening the register. `$YKDM_NO_SAVED_PASSWORD` switches it off deployment-wide. **Implemented under a stated assumption; the ESI's assessment is pending** (`AGENTS.md` §8) |
+
 Phase 7 is the interesting one: the tool distributes YubiKeys, so using one to
 open its own database is coherent and removes the shared-password problem.
+
+## Where a saved password sits, and what it costs (phase 8)
+
+The password stops being typed and starts being held by the platform, which moves
+the register's confidentiality from *somebody has to know the password* to
+*somebody has to be signed in as this operator on this workstation*. Both halves
+of that sentence matter, and the screen says both:
+
+| Still protected | No longer protected |
+|---|---|
+| A copy of the file — a backup on a share, a sync client's conflict copy, a stolen laptop's *disk* — is as unreadable as it ever was. The saved password never leaves the workstation that saved it | The register on **this** workstation, against anybody who can use this operator's signed-in session |
+
+That is the honest trade, and it is why the option is opt-in, per register, per
+workstation, never pre-ticked, and reversible from the card that offered it. It is
+also why it is a real weakening for a laptop left unlocked and no weakening at all
+for the threat the password exists to answer.
+
+### The rules the wiring keeps
+
+* **It is consulted before the startup probe**, not after: there is no point asking
+  "does this file need a password" about a file whose password is already here.
+* **A typed password wins.** A password in the chooser's field is the operator
+  saying *this one*; quietly using a saved one instead would make a wrong saved
+  password impossible to get past.
+* **It is saved only after the open succeeded**, which is the only moment the
+  application knows it is the right password. A password that did not open the
+  register is not worth keeping.
+* **A refused saved password is not a failed attempt.** Nobody guessed — the
+  application offered a password it had been asked to keep — so the throttle does
+  not count it. Counting it would start every launch one attempt down for the one
+  operator who cannot fix it by typing more carefully.
+* **A refused saved password is dropped, and only then.** An unmounted share,
+  another workstation's lock or a schema from a newer build are not the password
+  being wrong, and forgetting a saved password because a file server was asleep
+  would be quiet data loss. Only `StoreError::is_wrong_password` drops the entry.
+* **A password change never leaves the old one behind.** It is replaced with the
+  new one or removed — an entry holding yesterday's password would be offered,
+  refused and dropped at the next launch, in front of a prompt the operator was
+  told they would not see.
+* **A plain register saves nothing.** There is no secret for a credential store to
+  hold, and an entry would say otherwise.
+* **No credential store is not an error.** A headless Linux session, a locked
+  keyring, `$YKDM_NO_SAVED_PASSWORD`: the register opens the way it always did,
+  with a typed password, and the message says so.
+
+### Why the entry is keyed the way it is
+
+A local register by its **path**, the same key `AppSettings::operators` uses and
+right for the same reason: the credential store is per operator and per
+workstation, so a mount point never has to agree between two machines. A
+share-hosted register by its **location** (`//server/share/…`), because there the
+path *is* the mount point and `/Volumes/ti-1` on the second connection of a session
+is the same register `/Volumes/ti` was on the first. Same distinction that keeps
+`recent_shares` apart from `recent_databases`.
+
+### The one thing not to do with `keyring::Error`
+
+Print it with `Debug`. Its `BadEncoding` and `BadDataFormat` variants carry the raw
+stored bytes — which is the password — and the derived `Debug` prints them; its
+`Display` does not. Every conversion in `crate::vault` goes through
+`VaultError::from_platform`, which uses `Display`, for that one reason.
 
 ## Audit events
 
@@ -114,6 +183,8 @@ open its own database is coherent and removes the shared-password problem.
 | `db.unlock.failed` | Wrong password. `consecutive_failures=N` and nothing else: no password, and not even its length |
 | `db.password.changed` | Phase 2, after a verified swap — and also when a password is *removed*, because that is the same change |
 | `db.encrypted` | Phase 5, a plain file was converted |
+| `db.password.saved` | Phase 8, the password was put in this workstation's credential store. Detail is `store=… register=…` — which store and which register, never the value |
+| `db.password.forgotten` | Phase 8, it was taken back out. Written from Settings, where there is a register to write it to; a *stale* entry dropped at a refused open has the same ordering problem `db.unlock.failed` has, so that one goes to the log |
 
 Note the ordering problem: a failed unlock cannot be written to the database it
 failed to open. Those events go to the log, and to the audit mirror when one is
@@ -158,8 +229,31 @@ land in a file about to be replaced.
   password, and two fields that disagree), because a refusal reached after that
   point would close the register in order to say no.
 
+- Phase 8, at both ends: the store itself in
+  [`src/vault.rs`](../src/vault.rs)'s own tests (keying, replace-rather-than-add,
+  forgetting what was never saved, a workstation with no store, the policy switch,
+  and that no message this module produces has anywhere for a password to travel),
+  and the wiring in
+  [`behaviour_app_saved_password.rs`](../tests/behaviour_app_saved_password.rs) —
+  saved only when asked and only after the open worked, used at the next launch
+  with no prompt and `db.unlocked` written, given back on request without touching
+  the register's own password, a stale entry dropped and explained and *not*
+  counted by the throttle, a password change carrying the saved copy with it and a
+  removal taking it away, and a workstation with no credential store still opening
+  the register by typing. The `not(encrypted-db)` half pins the other side: a plain
+  register has no password to save, so ticking the box saves nothing.
+
 ## Open questions and gates
 
+- **Whether a database password may be kept in the workstation's credential store
+  at all is the ESI's to decide** (`AGENTS.md` §8: architecture security premises).
+  Phase 8 is built and shipped under a stated assumption — that an *opt-in,
+  per-register, per-workstation, auditable and reversible* saved password, which
+  leaves every copy of the file exactly as protected as it was, is an acceptable
+  convenience for a workstation the operator is signed in to. `$YKDM_NO_SAVED_PASSWORD`
+  exists so that the answer "no, not in this deployment" costs a configuration line
+  rather than a release. If the assessment says no by default, the switch becomes
+  the default and the tick goes.
 - **Cipher and KDF parameters must be the set the ESI approves**; do not invent
   them. Until then Phase 4 stays open and the defaults are SQLCipher's. It is
   marked **—** in the Wave column for that reason: a wave does not wait on somebody
@@ -182,7 +276,9 @@ land in a file about to be replaced.
 ## References
 
 - `src/store/mod.rs` (`apply_key`, `is_encryption_error`, `create_new`,
-  `change_password`, `StoreError::is_wrong_password`), `src/password.rs`
+  `change_password`, `StoreError::is_wrong_password`), `src/password.rs`,
+  `src/vault.rs` (`Vault`, `OsVault`, `MemoryVault`, `DisabledVault`,
+  `account_for_path`, `account_for_share`)
 - `src/app.rs` (`handle_db_request`, `change_database_password`,
   `note_unlock_failure`), `src/ui/database.rs`, `src/ui/settings.rs`,
   `src/ui/mod.rs` (`password_meter`)

@@ -42,6 +42,7 @@ Dependency direction is downward only: `ui` → `app` → {`bootstrap`, `templat
 | `report` | `src/report/` | The questions the register answers, and the export bundle | `store`, `domain` | `behaviour_reports` |
 | `scan` | `src/scan/` | A serial from a barcode: image, camera, and the macOS pre-flight guard | — | `camera_guard` |
 | `secret`, `password` | `src/secret.rs`, `src/password.rs` | Generated-then-wiped secrets; DB password strength and unlock throttle | — | `behaviour_app_unlock_throttle`, `unit_accessibility` |
+| `vault` | `src/vault.rs` | The workstation's own credential store (Keychain / Credential Manager / Secret Service), for a database password the operator chose to save | — | in-source, `behaviour_app_saved_password` |
 | `settings` | `src/settings.rs` | Which database to open, and the recent ones | — | `unit_settings` |
 | `logging`, `logbuf`, `status` | `src/` | The one log entry point, the copyable panel, status severity | — | `unit_logging_format`, `unit_accessibility` |
 | `incident`, `san`, `envelope`, `paths`, `versioning`, `browse`, `branding`, `diagnostics` | `src/*.rs` | Small headless helpers | — | `unit_accessibility`, `behaviour_key_lifecycle` |
@@ -285,8 +286,8 @@ make coverage-core     # THE GATE: cargo llvm-cov --all-features --fail-under-li
 make coverage-html     # browsable, when you need to find the gap
 ```
 
-Current: **86.11%** core line coverage (85.23% region), 913 tests on the default
-features and 918 with `--all-features`.
+Current: **87.02%** core line coverage (86.29% region), 529 of them in the
+`--lib` binary.
 
 - `src/ui/`, `src/app.rs` and `src/main.rs` are excluded because painting is not
   unit tested. That exclusion is a **contract, not an amnesty**: logic belongs in

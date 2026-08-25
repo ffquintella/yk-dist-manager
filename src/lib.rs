@@ -19,6 +19,7 @@
 //! | [`san`] | The certificate's rfc822Name: how it is produced, and how to check it |
 //! | [`password`] | The database password: how strong, and how slowly retried |
 //! | [`secret`] | The secrets a bootstrap sets: generated, shown once, wiped |
+//! | [`vault`] | The workstation's own credential store, for a saved database password |
 //! | [`term`] | Consignment terms: multilingual templates and rendering |
 //! | [`report`] | What the register knows, answered as a table and exported |
 //! | [`batch`] | A box of keys bootstrapped in one sitting |
@@ -62,6 +63,7 @@ pub mod store;
 pub mod template;
 pub mod term;
 pub mod ui;
+pub mod vault;
 pub mod versioning;
 
 pub use app::YkDistApp;

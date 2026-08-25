@@ -8,6 +8,11 @@
 //! **It never contains a database password.** Passwords are typed at unlock and
 //! held only for the duration of the open call; storing one here would make the
 //! encryption pointless, since the file sits next to the database.
+//!
+//! An operator who does not want to retype one has [`crate::vault`] instead — the
+//! workstation's own credential store, which is protected by their login session
+//! and does *not* sit next to the register. That is the whole difference, and it is
+//! why the option lives there and not here.
 
 use std::path::{Path, PathBuf};
 

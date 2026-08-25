@@ -104,7 +104,7 @@ Minimum set, kept in sync with the feature files:
 |---|---|
 | `app.opened` | app startup |
 | `key.added`, `key.refreshed`, `key.status_changed`, `key.note_changed`, `key.removed` | inventory |
-| `holder.registered` | holders |
+| `holder.registered`, `holder.updated` | holders — `holder.updated` names the fields a correction moved (the e-mail old and new; no optional value) |
 | `key.distributed`, `key.returned` | distribution |
 | `bootstrap.dry_run` | wizard |
 | `bootstrap.started`, `bootstrap.step.done`, `bootstrap.step.failed`, `bootstrap.finished` | executor (Wave 1) |

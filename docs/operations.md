@@ -208,6 +208,35 @@ The recent list and the operator identity live in `settings.json` in the per-use
 directory (`$YKDM_SETTINGS` overrides it). **It never holds the database password** — it
 sits next to the database, so storing one there would defeat encrypting it.
 
+### Not retyping the database password
+
+If retyping it at every launch is the wrong trade for a particular workstation, the
+password can be kept in that workstation's own credential store instead — Keychain
+Services on macOS, the Credential Manager on Windows, the Secret Service (GNOME Keyring,
+KWallet) on Linux. Tick **Remember this password in …** under the password field in the
+chooser, or use **Settings → Password protection**, which can also save the password of
+the register that is already open without you retyping it. The same card takes it back
+off, and so does the platform's own viewer — the entry is filed under
+`yk-dist-manager` with the register's path (or its share location) as the account name.
+
+Be clear about what that changes. On **that** workstation the register becomes openable by
+anybody who can use your signed-in session, without knowing the password. Every *copy* of
+the file — a backup on the share, a sync client's conflict copy, the disk of a laptop that
+walks off — stays exactly as protected as it was, because the saved password never leaves
+the machine that saved it. Saving and forgetting are both in the audit trail
+(`db.password.saved`, `db.password.forgotten`), naming the store and the register and never
+the password.
+
+If the password stops opening the register — somebody re-keyed it from another workstation
+— the saved copy is dropped and the status line says so. That does **not** count as a wrong
+password at the prompt, so it costs you no throttle delay.
+
+To take the option away entirely on a workstation, or across a deployment, set
+`YKDM_NO_SAVED_PASSWORD` to any non-empty value. The application then behaves exactly as it
+does where no credential store exists: nothing is read, nothing is written, and the
+password is typed every time. It does **not** delete what an earlier session saved — use
+the platform's viewer for that.
+
 ## Choosing where the database lives
 
 ```bash
@@ -582,6 +611,31 @@ the chooser as usual. The reconnection is recorded in the audit trail
 (`db.share.reconnected`) on the register that came back; the gap itself has no entry,
 because there was no register to write one to.
 
+### When the share is still mounted and nothing works anyway
+
+The check above is *is the file still there*, which is the right question for a share
+that went away. It is the wrong question for a share the operating system mounted and
+kept mounted while the connection behind it died — a workstation that slept, a link
+that flapped, a file server that restarted. The mount is there, the path resolves, and
+every attempt to write returns **`disk I/O error`**.
+
+You will notice it as things quietly not sticking: a key you read that never appears in
+Inventory, a hand-over that will not record, or a factory reset that refuses with *the
+reset could not be recorded, so nothing was written to the key*. **Nothing is lost and
+nothing was half-written** — the register refuses to change anything it cannot record,
+which is the whole point of that refusal.
+
+The application now notices this within a frame or two and fixes it itself: it lets go
+of the register and opens the file again, and the status line says the connection was
+reset and the register has been reopened. **Anything that failed while it was out has
+to be done again** — the failed attempt wrote nothing, so there is nothing to undo.
+
+If the second open fails too, you are told the register is intact and where it is, with
+its path already in the chooser: reopen it when the share is answering. On an encrypted
+register you may have to type the password again.
+
+The round trip is recorded as `db.reopened` on the register that came back.
+
 ## Runbook: two keys are plugged in
 
 The Inventory and Bootstrap screens watch for keys while they are open, so plugging one in
@@ -702,6 +756,12 @@ revoke the certificate that was on it; that is still a manual step with the issu
    - If nothing is unplugged for a minute the handshake is abandoned, so a reset left
      half-started does not keep polling the port. Nothing was written; *Ask for the key
      again* restarts it.
+   - If the register cannot be written to, **you are not asked for the key at all**: the
+     panel says so and stops, because a reset that cannot be recorded is a reset that will
+     not be sent. That is almost always a register on a share whose connection has died —
+     see *[when the share is still mounted and nothing works
+     anyway](#when-the-share-is-still-mounted-and-nothing-works-anyway)*. Nothing was
+     written to the key; try again once the register is back.
 5. Read the result table. Each applet says *reset*, *nothing to do*, or *refused* with the
    transport's own words, and the applets are read again afterwards so the panel shows the
    key as it now is.

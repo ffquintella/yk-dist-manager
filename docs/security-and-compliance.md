@@ -94,6 +94,30 @@ a panic message.
   attempts, and deliberately never locks: there is no administrator to lift a lockout on
   a register a whole unit shares, so one would be a denial of service anybody holding the
   file could trigger.
+- **It can, at the operator's explicit request, be kept in the workstation's own credential
+  store** — Keychain Services on macOS, the Credential Manager on Windows, the Secret
+  Service on the other \*nix (`crate::vault`,
+  `../features/db-password-and-encryption.md` phase 8). This is the one place the tool
+  keeps a secret past the call it was typed for, so the terms are narrow and stated on the
+  screen that offers it: **opt-in, never pre-ticked, one register at a time, one
+  workstation at a time**, saved only after the password has actually opened the register,
+  audited when it is saved (`db.password.saved`) and when it is taken back out
+  (`db.password.forgotten`) with the register named and the value never recorded, and
+  removable from the same card or from the platform's own viewer.
+
+  What it changes and what it does not: the register on **that** workstation becomes
+  openable by anybody who can use that operator's signed-in session, and every *copy* of
+  the file — a backup on a share, a sync client's conflict copy, the disk of a stolen
+  laptop — stays exactly as protected as it was, because the saved password never leaves
+  the machine that saved it. A deployment that does not want the trade available at all
+  sets `YKDM_NO_SAVED_PASSWORD`, and the application then behaves as it does on a
+  workstation with no credential store: the option is offered nowhere and the password is
+  typed every time.
+
+  **Whether this is acceptable is the ESI's call, not the implementer's** (`AGENTS.md`
+  §8 — architecture security premises). It is built and shipped under the assumption
+  written into the feature file, and `YKDM_NO_SAVED_PASSWORD` is what makes "no, not in
+  this deployment" a configuration line rather than a release.
 
 ### Custody — decided
 
@@ -190,9 +214,11 @@ Both are direct arguments for turning the database password on
 (`../features/db-password-and-encryption.md`). A unit filing signed terms in an
 unencrypted database on an open share should understand what it has built.
 
-No phone, address, ID document, photo, or any special-category data. The full inventory is
-in [data-model.md](data-model.md) §Personal data summary, which is also the input to the
-organisation's data documentation artefact.
+No photo, no date of birth, no bank details, and no special-category data. The optional
+phone, address and identification number above are the outer edge of what this register
+holds about a person, each collected for the one purpose stated in its row. The full
+inventory is in [data-model.md](data-model.md) §Personal data summary, which is also the
+input to the organisation's data documentation artefact.
 
 ### Rules
 
@@ -202,6 +228,11 @@ organisation's data documentation artefact.
   stripped, so a name like `../../etc/passwd.pdf` cannot escape.
 - A **new category** of personal data needs the DPO's assessment. That is not the
   implementer's call.
+- A holder record is **correctable in place** (`../features/holder-registry.md` phase 8) —
+  rectification, which the LGPD gives the data subject a right to. The correction keeps the
+  record's id, so it does not fork into a second person, and it is audited as
+  `holder.updated` naming the **fields** that moved and never an optional value. What was
+  already signed for is not rewritten: a hand-over keeps the name it was signed under.
 - Every input is length-bounded (`domain::MAX_TEXT`, `MAX_NOTE`) per NRM §5.3.5.
 - Exports contain personal data and leave the application's protection: every export is
   audited, and the operator is told.

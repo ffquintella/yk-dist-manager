@@ -130,6 +130,18 @@ pub enum StoreError {
     },
     #[error("the template was refused: {0}")]
     Template(#[from] crate::template::TemplateError),
+    /// An edit tried to move a holder onto an address that is already somebody
+    /// else's (`features/holder-registry.md` phase 8).
+    ///
+    /// Its own variant rather than a raw constraint violation, because the two
+    /// readings differ: SQLite says a unique index was violated, and the
+    /// operator needs to hear *that address identifies another person on the
+    /// register*, which is a correction to make rather than a fault to report.
+    #[error(
+        "{email} is already registered to {holder} — an address identifies one person, so it \
+         cannot be moved. Nothing was saved"
+    )]
+    EmailTaken { email: String, holder: String },
     #[error("record not found: {0}")]
     NotFound(String),
     #[error("no database file at {0} — choose an existing one, or create a new one")]
@@ -210,6 +222,33 @@ impl From<rusqlite::Error> for StoreError {
             }
             _ => StoreError::Sqlite(error),
         }
+    }
+}
+
+impl StoreError {
+    /// The connection under this register stopped answering.
+    ///
+    /// SQLite reports a failed read, write or sync as `SQLITE_IOERR`, and the message
+    /// it carries — *disk I/O error* — is true and useless: the disk is almost never
+    /// the problem and the register is almost always intact. What has actually
+    /// happened, on the shares this tool is meant to be run from, is that the session
+    /// behind a descriptor this process already holds was torn down: a workstation
+    /// that slept, a link that flapped, a file server that restarted. The mount is
+    /// still there and the path still resolves, so nothing looks wrong; but every
+    /// further operation on *that connection* fails the same way, while a freshly
+    /// opened one works.
+    ///
+    /// Which is why this is worth telling apart from every other refusal in this
+    /// enum. The others are answered by waiting, by asking somebody, or by fixing
+    /// what the operator did. This one is answered by opening the file again, and by
+    /// nothing else — see
+    /// [`YkDistApp::handle_register_connection_lost`](crate::YkDistApp::handle_register_connection_lost).
+    pub fn is_io_failure(&self) -> bool {
+        matches!(
+            self,
+            StoreError::Sqlite(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == rusqlite::ErrorCode::SystemIoFailure
+        )
     }
 }
 
@@ -1562,6 +1601,73 @@ impl Store {
             ],
         )?;
         Ok(())
+    }
+
+    /// Correct a holder record that is already on the register.
+    ///
+    /// Distinct from [`Self::insert_holder`]'s upsert on purpose, in two ways
+    /// that both follow from *the operator is looking at this record*:
+    ///
+    /// - It matches on **`id`**, not on the e-mail, so the address itself is
+    ///   editable. A typo in the address is the one field the upsert cannot fix,
+    ///   because the wrong value is what it matches on — it would register a
+    ///   second person and leave the first behind.
+    /// - An optional field that was cleared is **written empty**. The upsert only
+    ///   ever fills one in, because a re-registration that omitted a field did
+    ///   not mean to erase it; an edit that emptied it did.
+    ///
+    /// `created_at` and `active` are not touched here: the first is history, and
+    /// the second is the deactivation flow (phase 4), not a detail on a form.
+    pub fn update_holder(&self, holder: &Holder) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE holders SET full_name = ?2, email = ?3, unit = ?4, registration = ?5,
+                                identification_number = ?6, phone = ?7, address = ?8
+             WHERE id = ?1",
+            params![
+                holder.id.to_string(),
+                holder.full_name,
+                holder.email,
+                holder.unit,
+                holder.registration,
+                holder.identification_number,
+                holder.phone,
+                holder.address,
+            ],
+        );
+        match changed {
+            // The unique index on `email` is the check; asking first and writing
+            // second would leave a window where another connection registers the
+            // same address in between.
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                Err(StoreError::EmailTaken {
+                    email: holder.email.clone(),
+                    holder: self
+                        .holder_by_email(&holder.email)?
+                        .map(|other| other.full_name)
+                        .unwrap_or_else(|| "another record".to_owned()),
+                })
+            }
+            Err(e) => Err(e.into()),
+            Ok(0) => Err(StoreError::NotFound(format!("holder {}", holder.id))),
+            Ok(_) => Ok(()),
+        }
+    }
+
+    /// The holder registered at an address, if any. The e-mail is unique, so this
+    /// is at most one person.
+    pub fn holder_by_email(&self, email: &str) -> Result<Option<Holder>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, full_name, email, unit, registration, active, created_at,
+                    identification_number, phone, address
+             FROM holders WHERE email = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![email], row_to_holder)?;
+        match rows.next() {
+            Some(row) => Ok(Some(row??)),
+            None => Ok(None),
+        }
     }
 
     pub fn holders(&self) -> Result<Vec<Holder>> {
@@ -4102,3 +4208,37 @@ CREATE TABLE IF NOT EXISTS batch_keys (
 
 CREATE INDEX IF NOT EXISTS idx_batch_keys_serial ON batch_keys(key_serial);
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sqlite(code: std::os::raw::c_int) -> StoreError {
+        StoreError::from(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(code),
+            None,
+        ))
+    }
+
+    /// The one refusal whose answer is "open the file again", told apart from the
+    /// ones whose answer is to wait, to ask somebody, or to fix what was typed.
+    #[test]
+    fn a_dead_connection_is_told_apart_from_every_other_refusal() {
+        assert!(sqlite(rusqlite::ffi::SQLITE_IOERR).is_io_failure());
+        // The extended codes are the ones that actually arrive: SQLite reports
+        // *which* operation failed, and every one of them means the same thing here.
+        assert!(sqlite(rusqlite::ffi::SQLITE_IOERR_WRITE).is_io_failure());
+        assert!(sqlite(rusqlite::ffi::SQLITE_IOERR_READ).is_io_failure());
+        assert!(sqlite(rusqlite::ffi::SQLITE_IOERR_FSYNC).is_io_failure());
+
+        // A busy register is somebody else writing, and is waited for.
+        assert!(!sqlite(rusqlite::ffi::SQLITE_BUSY).is_io_failure());
+        // A read-only one is a mount or a lock, and is not fixed by reopening.
+        assert!(!sqlite(rusqlite::ffi::SQLITE_READONLY).is_io_failure());
+        // Corruption is not a connection that went away, and reopening would only
+        // hide it. This one has to reach the operator as itself.
+        assert!(!sqlite(rusqlite::ffi::SQLITE_CORRUPT).is_io_failure());
+        assert!(!StoreError::Busy.is_io_failure());
+        assert!(!StoreError::ReadOnly.is_io_failure());
+    }
+}

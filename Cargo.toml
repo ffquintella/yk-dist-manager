@@ -1,6 +1,6 @@
 [package]
 name = "yk-dist-manager"
-version = "0.16.3"
+version = "0.17.0"
 edition = "2024"
 description = "YubiKey distribution and bootstrap manager (egui desktop app)"
 license = "MIT"
@@ -106,6 +106,20 @@ image = { version = "0.25", optional = true, default-features = false, features 
 ] }
 nokhwa = { version = "0.10", optional = true, features = ["input-native"] }
 egui-elegance = "0.15"
+
+# The workstation's own secure store, so an operator can choose not to retype the
+# database password at every launch (`features/db-password-and-encryption.md`
+# phase 8): Keychain Services on macOS, the Credential Manager on Windows, the
+# Secret Service (GNOME Keyring, KWallet) on the other *nix. The `v1` default
+# feature is exactly those three and nothing else.
+#
+# **Not optional**, unlike `rfd` or the camera, and for a reason that is about the
+# secret rather than about the build: this is the one dependency whose absence
+# would leave a password *behind*. A build that could not reach the credential
+# store could not offer "forget the saved password" either, so a workstation whose
+# operator changed their mind would have to be cleaned out with the platform's own
+# tool. Saving is opt-in; being able to clear what was saved is not.
+keyring = "4"
 
 # Connecting an SMB share so the database can live on one (`store::smb`). Both are
 # native OS APIs rather than `net use` / `mount_smbfs`, for one reason: they take the

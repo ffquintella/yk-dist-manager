@@ -4,7 +4,7 @@ use yk_dist_manager::device::DeviceInfo;
 use yk_dist_manager::domain::holder::escape_rfc4514;
 use yk_dist_manager::domain::{
     Holder, KeyStatus, MAX_TEXT, StepKind, StepStatus, ValidationError, YubiKeyRecord,
-    validate_email,
+    email_change_warning, validate_email,
 };
 
 fn device() -> DeviceInfo {
@@ -110,6 +110,125 @@ fn oversized_input_is_refused() {
         Holder::new(&long, "ana@example.org", "ESI", "").unwrap_err(),
         ValidationError::TooLong { .. }
     ));
+}
+
+#[test]
+fn an_edit_corrects_the_record_without_becoming_a_second_person() {
+    let before = Holder::new("Ana Silva", "ana.silva@example.org", "ESI", "1")
+        .unwrap()
+        .with_optional("123.456.789-00", "+55 21 0000-0000", "Rua A, 1")
+        .unwrap();
+
+    let after = before
+        .with_details("Ana Silva Souza", "Ana.Souza@Example.org", "DCI", "2")
+        .unwrap();
+
+    // The identity of the record survives: every hand-over points at this id.
+    assert_eq!(after.id, before.id);
+    assert_eq!(after.created_at, before.created_at);
+    assert_eq!(after.full_name, "Ana Silva Souza");
+    assert_eq!(
+        after.email, "ana.souza@example.org",
+        "normalised, as on entry"
+    );
+    assert_eq!(after.unit, "DCI");
+    assert_eq!(after.registration, "2");
+    // Optional fields are left alone until `with_optional` is chained on.
+    assert_eq!(after.identification_number, before.identification_number);
+    assert_eq!(after.phone, before.phone);
+    assert_eq!(after.address, before.address);
+}
+
+#[test]
+fn an_edit_can_clear_an_optional_field() {
+    let before = Holder::new("Ana Silva", "ana.silva@example.org", "ESI", "1")
+        .unwrap()
+        .with_optional("123.456.789-00", "+55 21 0000-0000", "Rua A, 1")
+        .unwrap();
+
+    let after = before
+        .with_details("Ana Silva", "ana.silva@example.org", "ESI", "")
+        .unwrap()
+        .with_optional("", "", "")
+        .unwrap();
+
+    assert_eq!(after.registration, "");
+    assert_eq!(after.identification_number, "");
+    assert_eq!(after.phone, "");
+    assert_eq!(after.address, "");
+    assert!(!after.has_identification());
+}
+
+#[test]
+fn an_edit_is_validated_like_a_registration() {
+    let holder = Holder::new("Ana Silva", "ana.silva@example.org", "ESI", "").unwrap();
+
+    assert!(matches!(
+        holder
+            .with_details("", "ana.silva@example.org", "ESI", "")
+            .unwrap_err(),
+        ValidationError::Missing(_)
+    ));
+    assert!(matches!(
+        holder
+            .with_details("Ana", "not-an-address", "ESI", "")
+            .unwrap_err(),
+        ValidationError::Email(_)
+    ));
+    assert!(matches!(
+        holder
+            .with_details("Ana", "ana@example.org", "ESI", &"a".repeat(MAX_TEXT + 1))
+            .unwrap_err(),
+        ValidationError::TooLong { .. }
+    ));
+}
+
+#[test]
+fn the_trail_names_the_fields_an_edit_changed() {
+    let before = Holder::new("Ana Silva", "ana.silva@example.org", "ESI", "1").unwrap();
+
+    assert_eq!(
+        before.describe_changes_from(&before),
+        "",
+        "an edit that changed nothing has nothing to record"
+    );
+
+    let after = before
+        .with_details("Ana Souza", "ana.souza@example.org", "DCI", "1")
+        .unwrap()
+        .with_optional("123.456.789-00", "", "")
+        .unwrap();
+    let detail = after.describe_changes_from(&before);
+    assert_eq!(
+        detail,
+        "name, e-mail ana.silva@example.org -> ana.souza@example.org, unit, \
+         identification number"
+    );
+    assert!(
+        !detail.contains("123.456.789-00"),
+        "the trail records that the identification number changed, not its value: {detail}"
+    );
+}
+
+#[test]
+fn moving_an_address_warns_only_when_a_key_carries_the_old_one() {
+    assert_eq!(email_change_warning("ana@example.org", 0, 0), None);
+
+    let one = email_change_warning("ana@example.org", 1, 1).expect("a warning");
+    assert!(
+        one.contains("ana@example.org") && one.contains("1 key"),
+        "{one}"
+    );
+    assert!(
+        one.contains("does not reissue"),
+        "the operator is told what is still to do: {one}"
+    );
+
+    let many = email_change_warning("ana@example.org", 3, 1).expect("a warning");
+    assert!(
+        many.contains("3 keys") && many.contains("1 still out"),
+        "{many}"
+    );
 }
 
 #[test]

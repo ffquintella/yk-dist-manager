@@ -18,7 +18,72 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-08-25
+
 ### Added
+
+- **A saved holder record can be corrected** — `features/holder-registry.md` phase 8,
+  `src/ui/holders.rs`, `src/app.rs`, `src/store/mod.rs`, `src/domain/holder.rs`.
+
+  Each row on the Holders screen carries **Edit**, which loads that record into the same
+  form: the title becomes *Edit ‹name›*, the button becomes *Save changes*, and *Cancel*
+  leaves it alone. Until now the only way to change a record was to register the same
+  address again, which cannot fix the one field that most often needs it — the mistyped
+  **address** is what that upsert matches on, so correcting it registered a *second* person
+  and left the first behind.
+
+  The correction is matched by **id**, so it stays the same person: every hand-over,
+  bootstrap run and term points at that id, and `created_at` is kept. Two things an edit
+  does differently from a re-registration are said on the screen rather than left to be
+  discovered — an optional field left empty here is **cleared** (a re-registration only ever
+  fills one in), and moving the **address** warns how many keys the person has already been
+  handed and how many are still out, because the signing certificate on those keys carries
+  the old address and correcting the register does not reissue it. Moving onto an address
+  that is already somebody else's is refused, naming them.
+
+  Audited as `holder.updated`, whose detail names the **fields that moved** — the e-mail
+  written old and new, since that is the value the certificate was issued against, and no
+  optional value spelled out, because an identification number belongs in the record and
+  not in the trail. A save that changed nothing writes nothing and claims nothing. A
+  hand-over's stored `holder_display` is not rewritten: what was handed over on the day,
+  under the name it was signed under, is not edited by a later correction.
+
+- **The database password can be kept in the workstation's own credential store** —
+  `features/db-password-and-encryption.md` phase 8, `src/vault.rs`.
+
+  Keychain Services on macOS, the Credential Manager on Windows, the Secret Service
+  (GNOME Keyring, KWallet) on the other \*nix. A register whose password is saved simply
+  opens at the next launch, with no prompt.
+
+  The terms are narrow, and they are on the screen that offers it rather than in a manual.
+  It is **opt-in and never pre-ticked**, one register at a time and one workstation at a
+  time; the password is saved only *after* it has actually opened the register, which is
+  the only moment the application knows it is the right one; and it is reversible from
+  **Settings → Password protection**, which also offers to save the password of the
+  register that is already open without retyping it. Saving and forgetting are both state
+  changes, so both are audited — `db.password.saved` and `db.password.forgotten`, naming
+  the store and the register and never the value.
+
+  What the trade actually is, since a saved password is a real change to who can read the
+  register: on **that** workstation, anybody who can use that operator's signed-in session
+  can now open it without knowing the password. Every *copy* of the file — a backup on a
+  share, a sync client's conflict copy, the disk of a stolen laptop — is exactly as
+  protected as it was, because the saved password never leaves the machine that saved it.
+
+  The behaviour around failure is where the care went. A saved password is consulted
+  *before* the startup probe and never in place of one somebody typed. A saved password
+  that no longer opens the register is **not** counted against the unlock throttle — nobody
+  guessed; the application offered a password it had been asked to keep — and it is dropped
+  with the reason on screen, rather than left to fail again at every launch. It is dropped
+  only when the *password* was refused: an unmounted share or another workstation's lock
+  leaves it alone. A password change carries the saved copy with it or removes it, so an
+  entry holding yesterday's password never survives. A plain register saves nothing, there
+  being no secret to keep. And a workstation with no credential store — a headless session,
+  a locked keyring — is not an error: the register opens the way it always did, by typing.
+
+  A deployment whose policy is "typed, every time" sets `YKDM_NO_SAVED_PASSWORD`, and the
+  application behaves exactly as it does where no credential store exists.
+
 
 - **The terms a box of keys owes, in one action** — `features/bulk-enrollment.md` phase 7 and
   `features/receipts-and-terms.md` phase 7, the last unfinished phase of bulk enrolment.
@@ -55,6 +120,72 @@ Maintenance instructions (see AGENTS.md §5):
   version and the batch — plus one `batch.terms` for the set. A batch is not an excuse for a
   coarser trail: "fifty terms were generated" cannot answer which holder's term came from
   which template version.
+
+### Fixed
+
+- **The compliance document said the register holds no phone or address, which it has held
+  since v0.2.x** — `docs/security-and-compliance.md` §3. The "What is held, and why" table
+  a few paragraphs above already listed the optional `holders` columns added in schema v3
+  (`features/holder-registry.md` phase 2b), so the closing sentence contradicted its own
+  section. It now says what is true — no photo, no date of birth, no bank details, no
+  special-category data — and names the optional fields as the outer edge of what is held.
+  No category was added or removed; `docs/data-model.md` §Personal data summary already
+  agreed with the schema.
+
+- **A holder's registration id is length-bounded like every other input** — it was trimmed
+  but never measured, so it was the one field on the form without the maximum AGENTS.md §2
+  requires. The form capped what could be typed; nothing capped what could be constructed.
+
+- **A register on a share whose connection died took the factory reset down with it** —
+  `features/smb-share-hosting.md` phase 11 and `features/key-lifecycle-and-revocation.md`
+  phase 5a.
+
+  Reported from a workstation with the register on an SMB share: the reset panel asked for
+  the key to be pulled out and plugged back in, and the moment it came back the screen fell
+  back to the confirmation with *the reset could not be recorded, so nothing was written to
+  the key: database error: disk I/O error*. Nothing was written to the key, which is the
+  audit rule working. What was wrong is everything around it.
+
+  Two faults, one behind the other.
+
+  **The register had been unwritable the whole time, and said so for no frames at all.**
+  `begin_power_cycle` writes its own `power_cycle.requested` entry before the operator is
+  asked to do anything; that entry failed, `record` put `AUDIT FAILURE` in the status line,
+  and the next statement overwrote the status line with *pull the key out and plug it back
+  in*. So the operator did the two-step key dance and was told half a minute later, with the
+  key in their hand, about a fault that was knowable before they touched it. Arming a reset
+  now goes through `YkDistApp::try_record` and stops when the entry does not land: a
+  register that cannot record the reset does not get to ask for the key. The same applies to
+  a retry, and no arm of the handshake writes the status line over an audit failure any
+  more.
+
+  **And nothing noticed that the connection, rather than the operation, was dead.** A share
+  the operating system mounted stays mounted and keeps resolving while the SMB session
+  behind the descriptors this process already holds is torn down — a workstation that slept,
+  a link that flapped, a file server that restarted. Every operation on that connection
+  returns `SQLITE_IOERR` while a freshly opened one works, and phase 9's five-second
+  `is_file` check says yes to all of it. The result was an inventory that stayed empty
+  because nothing could be saved, a hand-over that would not record, and no way back short
+  of quitting the application.
+
+  `SQLITE_IOERR` is now told apart from every other refusal (`StoreError::is_io_failure`) on
+  the tick that already reads the register every frame and writes to it every minute. The
+  register is let go of rather than closed politely — the polite close writes `db.closed`
+  over the connection that is exactly what stopped answering — and then opened again once,
+  immediately, because a connection that has already been re-established is the common case.
+  `db.reopened` records the round trip on the register that came back, carrying what
+  actually failed. If the second open fails too, the operator is told the register is intact
+  and where it is, with the path already in the chooser.
+
+  `SQLITE_CORRUPT` is deliberately not classified this way: reopening would hide it.
+
+### Security
+
+- **Whether a database password may be kept in a credential store at all is the ESI's
+  decision** (`AGENTS.md` §8). The saved database password above is built and shipped under
+  the assumption
+  recorded in `features/db-password-and-encryption.md`, and `YKDM_NO_SAVED_PASSWORD` exists
+  so that "no, not in this deployment" costs a configuration line rather than a release.
 
 ## [0.16.3] - 2026-08-17
 
