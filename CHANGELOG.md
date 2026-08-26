@@ -18,6 +18,27 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+### Fixed
+
+- **A bootstrap no longer needs `ykman` to read the OTP slots** —
+  `src/device/composite.rs`. A run on a workstation without `ykman` on `PATH` died three
+  steps in, on `otp-access-code`, with `otp.state failed: \`ykman\` was not found` — and it
+  died on a **read**, after the FIDO2 steps had already written a PIN and a minimum-length
+  policy to the key. Eight steps were never reached, and the key was left in the state the
+  run's own warning describes: not ready to hand over.
+
+  Nothing was missing. [`device::native_otp::state`](src/device/native_otp.rs) has answered
+  "which slots are programmed" over CCID since `native-device-transport.md` phase 4a, and
+  both other callers already use it — [`device::applets::read`](src/device/applets.rs) for
+  the pre-flight and [`device::reset`](src/device/reset.rs) for the factory reset.
+  `NativeBackend`'s `OtpWriter` impl was the third call site and the one left behind: it
+  routed to the subprocess unconditionally, so the executor was the last thing in the app
+  that could not read an applet the rest of the app reads natively.
+
+  What still goes through the labelled fallback is the OTP **write** — setting an access
+  code — by the deliberate decision in `step-otp-access-code.md` phase 4, which is about
+  the configuration frame and not about this read.
+
 ## [0.17.2] - 2026-08-25
 
 ### Fixed

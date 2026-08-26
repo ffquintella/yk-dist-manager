@@ -237,20 +237,30 @@ impl PivWriter for NativeBackend {
     }
 }
 
-/// OTP goes through **`ykman`**, and is the one applet that does.
+/// OTP is the one applet whose **write** goes through `ykman`. Its **read** does
+/// not, and used to.
 ///
-/// Not an oversight and not laziness: no crate in this dependency graph exposes
-/// the Yubico OTP configuration frame, so the native path means hand-rolling the
-/// protocol — and `features/step-otp-access-code.md` phase 4 keeps that
-/// deliberately unwritten until there is a key to verify it against, because the
-/// failure mode of a wrong frame is a slot write-protected by a code nobody holds.
+/// The write is not an oversight and not laziness: no crate in this dependency
+/// graph exposes the Yubico OTP configuration frame, so the native path means
+/// hand-rolling the protocol — and `features/step-otp-access-code.md` phase 4
+/// keeps that deliberately unwritten until there is a key to verify it against,
+/// because the failure mode of a wrong frame is a slot write-protected by a code
+/// nobody holds. It is honest on screen too: the planner marks the OTP steps'
+/// native op as unavailable, so the plan the operator confirms already reads
+/// `ykman (fallback)` against them.
 ///
-/// So this routes to the subprocess, which is what
-/// `features/step-otp-access-code.md` phase 2 asks for, and it is honest on screen:
-/// the planner marks the OTP steps' native op as unavailable, so the plan the
-/// operator confirms already reads `ykman (fallback)` against them.
+/// The read is a different operation over a different wire, and
+/// [`super::native_otp`] has answered it over CCID since
+/// `features/native-device-transport.md` phase 4a. This routed to the subprocess
+/// anyway, which is how a bootstrap on a workstation with no `ykman` died at
+/// `otp.state` — three steps in, on a *read*, having already set a FIDO2 PIN.
+/// [`super::applets::read`] and [`super::reset`] both route natively first; this
+/// is the third call site, and was the one left behind.
 impl OtpWriter for NativeBackend {
     fn otp_state(&mut self, serial: u32) -> Result<OtpState> {
+        #[cfg(feature = "native-otp")]
+        return super::native_otp::state(serial);
+        #[cfg(not(feature = "native-otp"))]
         super::ykman::otp_state(&super::YkmanBackend::default(), serial).map_err(|e| {
             WriteError::Failed {
                 operation: "otp.state",
@@ -307,6 +317,41 @@ mod tests {
             "got {error:?}"
         );
         assert!(error.detail().contains("native-otp"), "{}", error.detail());
+    }
+
+    #[cfg(feature = "native-otp")]
+    #[test]
+    fn reading_the_otp_slots_never_needs_a_subprocess_on_a_build_that_has_ccid() {
+        // The regression this guards: a bootstrap on a workstation with no `ykman`
+        // failed at `otp.state` — a *read* — after the FIDO2 steps had already
+        // written to the key, leaving eight steps unreached. `native_otp::state`
+        // had existed for weeks; this call site simply did not use it.
+        //
+        // No key is attached here, so the read fails — and *which* failure is the
+        // assertion, because it names the wire. `otp.state` is the operation only
+        // the subprocess wrapper reports; the native read is `otp.info`. That holds
+        // whether or not this machine happens to have `ykman` on `PATH`, which
+        // matters: the run that exposed this was a Finder-launched `.app`, and a
+        // macOS bundle does not inherit the shell's `PATH` at all.
+        let mut backend = NativeBackend::for_key(20_423_633);
+        if let Err(error) = backend.otp_state(20_423_633) {
+            assert!(
+                !matches!(
+                    error,
+                    WriteError::Failed {
+                        operation: "otp.state",
+                        ..
+                    }
+                ),
+                "the OTP read went through the subprocess: {}",
+                error.detail()
+            );
+            assert!(
+                !error.detail().contains("ykman"),
+                "an operator without `ykman` must not be told to install one: {}",
+                error.detail()
+            );
+        }
     }
 
     #[test]
