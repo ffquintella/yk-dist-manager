@@ -39,6 +39,17 @@ Maintenance instructions (see AGENTS.md §5):
   code — by the deliberate decision in `step-otp-access-code.md` phase 4, which is about
   the configuration frame and not about this read.
 
+- **The plan no longer promises `ykman` for two steps that run natively** —
+  `src/template/plan.rs`. `fido2-min-pin-length` and `fido2-force-pin-change` were marked
+  as covered by no crate, so the preview the operator confirms showed `ykman (fallback)`
+  against them — while `device::native_fido` performed both and the run reported
+  `[native]`. The open question that flag recorded (whether the crate covers CTAP 2.1
+  `authenticatorConfig`) was answered when those calls were written and hardware-verified.
+  A preview that disagrees with the run is the one thing the plan exists to prevent.
+
+  Firmware below 5.7 still refuses both steps — that is a firmware limit, not a transport
+  one, and the note already says the consignment term carries the instruction instead.
+
 ## [0.17.2] - 2026-08-25
 
 ### Fixed

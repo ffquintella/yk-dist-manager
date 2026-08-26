@@ -201,18 +201,25 @@ pub fn native_op(kind: StepKind) -> Option<NativeOp> {
         ),
         StepKind::Fido2MinPinLength => NativeOp::new(
             "ctap-hid-fido2",
-            "authenticatorConfig(setMinPINLength)",
+            "FidoKeyHid::set_min_pin_length",
             "native-fido",
-            // CTAP 2.1 authenticatorConfig coverage still to be confirmed
-            // against the crate; `ykman` carries this step meanwhile.
-            false,
+            // The crate's CTAP 2.1 authenticatorConfig coverage was the open
+            // question here, and it is settled: `native_fido` calls it, and the
+            // executor has run this step natively on a real key. Saying `false`
+            // put `ykman (fallback)` in the plan the operator confirms against a
+            // step that then reported `[native]` — a preview that disagreed with
+            // the run.
+            true,
         ),
         StepKind::Fido2ForcePinChange => NativeOp::new(
             "ctap-hid-fido2",
-            "authenticatorConfig(forcePINChange)",
+            "FidoKeyHid::force_change_pin",
             "native-fido",
-            // Same unconfirmed CTAP 2.1 config coverage as setMinPINLength.
-            false,
+            // Same settled CTAP 2.1 config coverage as set_min_pin_length. On
+            // firmware below 5.7 the step is refused as unsupported and the
+            // consignment term carries the instruction — a firmware limit, not a
+            // transport one, so it does not make this a `ykman` step.
+            true,
         ),
         StepKind::Fido2Credential => NativeOp::new(
             "ctap-hid-fido2",

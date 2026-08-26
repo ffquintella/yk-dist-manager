@@ -256,6 +256,27 @@ fn credential_registration_is_native_because_ykman_cannot_do_it() {
 }
 
 #[test]
+fn the_fido2_config_steps_are_planned_native_because_that_is_what_runs() {
+    // Given the plan for the standard procedure
+    let commands = plan(&BootstrapTemplate::org_standard(), &ctx()).unwrap();
+
+    // When the two CTAP 2.1 authenticatorConfig steps are read out of it
+    for kind in [StepKind::Fido2MinPinLength, StepKind::Fido2ForcePinChange] {
+        let command = commands.iter().find(|c| c.kind == kind).unwrap();
+
+        // Then the preview names the transport the executor actually uses. These
+        // read `ykman (fallback)` while `native_fido` was already performing them,
+        // so the plan the operator confirmed disagreed with the run's own detail.
+        assert_eq!(command.transport(), Transport::Native, "{kind:?}");
+        assert_eq!(
+            command.native.as_ref().unwrap().crate_name,
+            "ctap-hid-fido2",
+            "{kind:?}"
+        );
+    }
+}
+
+#[test]
 fn otp_steps_still_fall_back_to_ykman() {
     let commands = plan(&BootstrapTemplate::org_standard(), &ctx()).unwrap();
     let otp = commands
