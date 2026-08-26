@@ -147,6 +147,9 @@ pub enum RunStatus {
     Completed,
     /// At least one required step failed.
     Failed,
+    /// Closed by a person rather than by the executor: a run that will never be
+    /// finished, taken off the *Unfinished runs* list without erasing it. See
+    /// [`BootstrapRun::abandon`].
     Aborted,
 }
 
@@ -244,6 +247,36 @@ impl BootstrapRun {
         if self.status != RunStatus::Running {
             self.finished_at = Some(Utc::now());
         }
+    }
+
+    /// Close a run nobody is going to finish, without erasing what it did.
+    ///
+    /// The operator's way out of a run that is still open on the register and
+    /// never will be: the certificate was never issued, the key went back in the
+    /// box, the procedure was started twice by mistake. Until this existed such a
+    /// run stayed on the *Unfinished runs* list for good, and a list that cannot
+    /// be cleared is one an operator stops reading.
+    ///
+    /// It is **not** a delete. The steps that ran, ran — on real hardware — and a
+    /// register that lets that record be removed is one whose history is a matter
+    /// of opinion (`AGENTS.md` §3). What changes is the run's status and nothing
+    /// else: `Aborted` says a person closed it, which is a different fact from
+    /// `Failed` (the executor stopped) and from `Completed`, and the steps keep the
+    /// state they actually reached rather than being rewritten as skipped.
+    ///
+    /// Refused on a run that already finished — there is nothing there to abandon,
+    /// and letting it through would let a `Completed` run be reopened as something
+    /// else.
+    pub fn abandon(&mut self) -> Result<(), String> {
+        if self.status == RunStatus::Completed {
+            return Err("this run completed — a finished run is not abandoned".to_owned());
+        }
+        if self.status == RunStatus::Aborted {
+            return Err("this run was already abandoned".to_owned());
+        }
+        self.status = RunStatus::Aborted;
+        self.finished_at = Some(Utc::now());
+        Ok(())
     }
 
     /// One-line summary for the distribution record and reports.

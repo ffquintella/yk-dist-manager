@@ -316,6 +316,12 @@ Rules:
 - Parser fixtures are recorded real output (`tests/fixtures/`), with the tool
   version noted in the test module docs.
 - No test asserts on a secret value, because no secret should exist to assert on.
+- A test that builds a `YkDistApp` **redirects `$YKDM_SETTINGS` and
+  `$YKDM_DATA_DIR`** to a temporary home first. Opening a register remembers it, so
+  without the redirection the suite rewrites the recent-database list and
+  `last_database` of whoever ran it — a real workstation was left opening onto a
+  deleted `/var/folders` path. The variables are process-global: one home per test
+  binary, set once. `tests/unit_settings.rs` fails the build if a test file skips it.
 
 ### Coverage: keep it above 80%
 
@@ -328,8 +334,9 @@ make coverage-core     # THE GATE: cargo llvm-cov --all-features --fail-under-li
 make coverage-html     # browsable, when you need to find the gap
 ```
 
-Current: **85.68%** core line coverage (86.24% region), measured 2026-08-26 on
-1075 tests, 546 of them in the `--lib` binary.
+Current: **85.75%** core line coverage (86.24% region), measured 2026-08-26 by
+`make coverage-core` on the full `--all-features` suite, 549 of those tests in the
+`--lib` binary.
 
 The figure stood at 87.02% until the factory reset stopped needing `ykman`
 (`dfa1f80`): [`device::ctaphid`](src/device/ctaphid.rs) and

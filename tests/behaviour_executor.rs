@@ -753,6 +753,58 @@ fn scenario_an_unfinished_run_from_an_earlier_session_can_be_picked_up() {
 }
 
 #[test]
+fn scenario_an_unfinished_run_nobody_will_finish_is_closed_without_being_erased() {
+    // `features/gui-bootstrap-wizard.md` phase 5, the other half of picking one up.
+    // The certificate is never coming — the request was cancelled, the key went back
+    // in the box — and until this existed the run sat on *Unfinished runs* for the
+    // life of the register, next to the ones that really are outstanding.
+    let template = template();
+    let commands = commands(&template);
+    let request = request(&template, &commands);
+    let mut key = MockWriter::factory_fresh(SERIAL);
+    let mut recording = Recording::default();
+
+    // Given a run that stopped part-way, with steps that did reach the key
+    let confirmation = Confirmation::given(SERIAL, commands.len());
+    let mut run = {
+        let mut executor = Executor::new(Transports { backend: &mut key });
+        executor
+            .run(&request, &confirmation, &mut recording)
+            .unwrap()
+    };
+    let before = run.tally();
+    assert!(before.0 > 0, "some steps applied");
+    assert_eq!(
+        yk_dist_manager::bootstrap::resumable(std::slice::from_ref(&run)).len(),
+        1,
+        "it is offered while it is open"
+    );
+
+    // When the operator closes it
+    run.abandon().expect("an open run can be closed");
+
+    // Then the record is untouched apart from saying so: the steps that reached the
+    // key keep the state they reached, and nothing is rewritten as skipped
+    assert_eq!(run.status, RunStatus::Aborted);
+    assert!(run.finished_at.is_some(), "it is closed, so it has an end");
+    assert_eq!(run.tally(), before, "no step outcome was rewritten");
+
+    // And it is no longer offered as unfinished business
+    assert!(
+        yk_dist_manager::bootstrap::resumable(std::slice::from_ref(&run)).is_empty(),
+        "a run somebody closed is not work still outstanding"
+    );
+
+    // Closing it twice is refused rather than silently reapplied, and so is closing
+    // a run that finished — there is nothing there to abandon
+    assert!(run.abandon().is_err(), "it is already closed");
+    let mut finished = run.clone();
+    finished.status = RunStatus::Completed;
+    let refusal = finished.abandon().expect_err("a finished run is not open");
+    assert!(refusal.contains("completed"), "{refusal}");
+}
+
+#[test]
 fn scenario_a_run_cannot_be_resumed_against_a_procedure_that_has_since_changed() {
     // The refusal that keeps a resume safe. The executor indexes the run's recorded
     // steps against a freshly built plan, so a plan that no longer lines up would

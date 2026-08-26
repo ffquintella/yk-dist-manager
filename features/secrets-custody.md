@@ -148,7 +148,7 @@ distributing by courier or post.
 | 2 | Typed custody vocabulary on the run | Done | `CustodyModel` + `ChangeEnforcement`; stored in the existing `custody` column, so no migration. A dedicated column arrives with schema v2 if reporting needs one |
 | 3 | Secret input: prompt, generate, show-once, zeroise, redacted `Debug` | **Done** | [`src/secret.rs`](../src/secret.rs) — `zeroize` + the OS CSPRNG, `ShowOnce` wiped on dismissal and on drop |
 | 4 | `forcePINChange` in the FIDO2 step | **Done** | the executor calls it and audits the enforcement, and the CTAP transport behind it is hardware-verified on a 5.7.4 key (`step-fido2-pin.md` phase 6). Below 5.7 the firmware cannot enforce it and the pre-flight says so: the signed term becomes the mechanism |
-| 5 | Sealed-envelope slip rendering | **Done** | [`src/envelope.rs`](../src/envelope.rs) — never stored, bytes zeroised, refuses a dismissed panel |
+| 5 | Sealed-envelope slip rendering | **Done** | [`src/envelope.rs`](../src/envelope.rs) — never stored, bytes zeroised, refuses a dismissed panel. **Reachable since**: *Save the sealed slip…* on the show-once panel (`YkDistApp::save_transport_slip`, `features/gui-bootstrap-wizard.md` phase 9). `SlipRequest::for_run` builds the request from the run rather than from the wizard's fields, because the run is the record of what was applied to *that* key; the firmware-enforced claim is made only for a FIDO2-only run that marked `forcePINChange`, since PIV has no such flag at any level. Audited as `secret.slip.saved`, **before** the bytes are written |
 | 6 | Optional external escrow (BastionVault KV), reference-only in the database | Todo | never the value here |
 | 7 | Custody report: which keys hold which model, and where the change was only *instructed* | Todo | `features/reports-and-export.md` |
 | 8 | Resolve the PUK and OTP-access-code sub-decisions | **Done (2026-08-11)** | both answered by the owner and recorded in `roadmap.md`: the **PUK** travels in the sealed envelope and nothing is retained, and the **OTP access code** does too — which reversed the generate-and-discard default this was built with, so a protected slot can be reprogrammed later without an applet reset. `SecretKind::goes_to_the_holder` is where the answer lives, and the management key is now the only secret that does not travel, because it is protected onto the key itself. Phase 7's custody *report* is separate and still Todo |
@@ -161,6 +161,7 @@ distributing by courier or post.
 | `secret.custody.recorded` | `run=<id> custody=transport-pin+forced-change` (or the escrow reference) |
 | `secret.change_enforcement` | `step=fido2-pin enforcement=enforced-by-firmware\|instructed-on-handover` |
 | `secret.shown` | The show-once panel was displayed and dismissed |
+| `secret.slip.saved` | `carried=fido2-pin,piv-pin,piv-puk format=pdf bytes=2914 path=/…/transport-pin-20423633.pdf` — which secrets left the tool and where they went, never a value |
 | `secret.escrowed` | `reference=bastionvault:kv/yubikeys/20423633` |
 
 ## Tests
@@ -175,6 +176,12 @@ distributing by courier or post.
   `the_standard_template_forces_the_holder_to_change_the_transport_pin`,
   `the_fido_only_template_keeps_the_forced_change`,
   `a_dry_run_records_that_no_secret_was_set`.
+- Phase 5's slip, in the GUI: `scenario_a_posted_key_gets_a_sealed_slip_and_the_trail_says_so`
+  (`tests/behaviour_app_transport_slip.rs`) — the document carries every secret the holder
+  is given and not the management key, the trail names what was carried and no value, and a
+  dismissed panel yields no second slip and no entry claiming one. In-source:
+  `a_request_built_from_a_run_carries_what_was_applied_to_that_key`,
+  `only_a_fido2_only_run_that_marked_the_force_change_claims_the_firmware_enforces_it`.
 - Phase 3 adds: a generated secret's `Debug` output contains no digits of the value; a
   secret's buffer is zeroised after use; nothing containing the value reaches the
   audit or log sinks (assert by capturing both sinks during a mock run).

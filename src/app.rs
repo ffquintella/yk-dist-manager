@@ -983,12 +983,24 @@ pub struct Wizard {
     /// express it. Pinning is how (`features/gui-bootstrap-wizard.md` phase 5);
     /// cleared when the wizard is reset, so it cannot leak into the next run.
     pub pinned_template: Option<BootstrapTemplate>,
+    /// Where the last sealed-envelope slip went, and what to do with it.
+    ///
+    /// Only ever a path and a warning — the slip's contents are never held here.
+    /// Cleared with the panel, so it cannot outlive the secrets it describes.
+    pub slip_notice: Option<String>,
     /// The PIV PIN, typed for a resume only.
     ///
     /// A `String` in the wizard and a [`crate::secret::Secret`] the moment it is
     /// used: it has to live in a text field to be typed at all. Cleared as soon as
     /// the run that needed it has been driven, and never recorded.
     pub resume_pin: String,
+    /// The unfinished run the operator has asked to close, while the confirmation
+    /// is on screen (`features/gui-bootstrap-wizard.md` phase 5).
+    ///
+    /// Two clicks rather than one, like a template removal: the run is a record of
+    /// what reached a key, and the card says what closing it does and does not do
+    /// before anything is written.
+    pub pending_abandon: Option<uuid::Uuid>,
 }
 
 impl std::fmt::Debug for Wizard {
@@ -1381,10 +1393,7 @@ impl YkDistApp {
                 self.create_database(&path, password);
             }
             DbRequest::Close => self.close_database(),
-            DbRequest::Forget(path) => {
-                self.settings.forget(&path);
-                self.settings.save_quietly();
-            }
+            DbRequest::Forget(path) => self.forget_database(&path),
             DbRequest::TakeOverLock(path) => {
                 let password = self.take_password();
                 self.take_over_lock(&path, password);
@@ -1400,6 +1409,37 @@ impl YkDistApp {
             DbRequest::SaveCurrentPassword => self.save_current_password(),
             DbRequest::ForgetSavedPassword => self.forget_saved_password(),
         }
+    }
+
+    /// Drop a database from the recent list, and stop pointing at it.
+    ///
+    /// Removing the row is only half of forgetting. When nothing is open, the
+    /// path field and the "not reachable" banner are also naming that database —
+    /// they are what the startup attempt left behind — and leaving them there
+    /// reads as the button not having worked, which is exactly what an operator
+    /// clearing out an unreachable share sees. So the chooser moves on to the
+    /// next remembered register, or to this workstation's default when the list
+    /// is now empty.
+    ///
+    /// Only when no register is open: with one open, `config` is the register the
+    /// operator is working in, and forgetting a *different* path must not touch it.
+    pub fn forget_database(&mut self, path: &Path) {
+        self.settings.forget(path);
+        self.settings.save_quietly();
+
+        if self.store.is_some() || self.config.path != path {
+            return;
+        }
+        let next = self
+            .settings
+            .recent_databases
+            .first()
+            .cloned()
+            .unwrap_or_else(Store::default_path);
+        self.db_form.path = next.display().to_string();
+        self.db_form.error = None;
+        self.open_error = None;
+        self.config = self.store_config(&next);
     }
 
     /// Fill the share card from a remembered share.
@@ -6258,6 +6298,7 @@ impl YkDistApp {
         }
 
         self.wizard.serial = run.key_serial.to_string();
+        self.wizard.pending_abandon = None;
         self.wizard.holder_index = run
             .holder_id
             .and_then(|id| self.holders.iter().position(|holder| holder.id == id))
@@ -6290,6 +6331,103 @@ impl YkDistApp {
             "picked up an unfinished run on serial {} — load the certificate and finish it",
             self.wizard.serial
         );
+    }
+
+    /// Ask to close an unfinished run — the confirmation, which writes nothing.
+    pub fn ask_abandon_run(&mut self, run_id: uuid::Uuid) {
+        self.wizard.error = None;
+        self.wizard.pending_abandon = Some(run_id);
+    }
+
+    /// Leave the run where it is.
+    pub fn cancel_abandon_run(&mut self) {
+        self.wizard.pending_abandon = None;
+    }
+
+    /// Close an unfinished run so it stops being offered
+    /// (`features/gui-bootstrap-wizard.md` phase 5).
+    ///
+    /// The other half of picking one up. A run whose certificate was never issued,
+    /// or that a second attempt on the same key superseded, is open forever
+    /// otherwise — and *Unfinished runs* is a list an operator has to be able to
+    /// trust is the work actually outstanding, or they stop reading it.
+    ///
+    /// It **keeps** the run. [`BootstrapRun::abandon`] moves the status to
+    /// `Aborted` and touches nothing else, so the steps that reached the key stay
+    /// exactly as they were recorded: what leaves is the offer to resume, not the
+    /// history (`AGENTS.md` §3).
+    ///
+    /// The trail is written **first** and the register only if it landed. A run
+    /// closed with no entry saying who closed it is the state this refuses to
+    /// reach; the reverse order would produce it on any audit failure.
+    pub fn abandon_run(&mut self, run_id: uuid::Uuid) {
+        self.wizard.error = None;
+        let Some(mut run) = self.runs.iter().find(|run| run.id == run_id).cloned() else {
+            self.wizard.pending_abandon = None;
+            self.wizard.error = Some("that run is no longer on the register".into());
+            return;
+        };
+        if let Err(refusal) = run.abandon() {
+            self.wizard.pending_abandon = None;
+            self.wizard.error = Some(refusal);
+            return;
+        }
+
+        let (done, failed, skipped, pending) = run.tally();
+        let detail = format!(
+            "abandoned {} v{} started {} — done={done} failed={failed} skipped={skipped} \
+             pending={pending}; the run is kept, only the offer to resume is withdrawn",
+            run.template_id,
+            run.template_version,
+            run.started_at.format("%Y-%m-%d %H:%M"),
+        );
+        if self
+            .try_record(
+                "bootstrap.abandoned",
+                &format!("serial:{}", run.key_serial),
+                &detail,
+            )
+            .is_err()
+        {
+            // `try_record` has already put the failure in the status line; the run
+            // is left open, which is the honest state when nothing could be written.
+            self.wizard.pending_abandon = None;
+            self.wizard.error =
+                Some("the trail could not be written, so the run was left open".into());
+            return;
+        }
+
+        let Some(store) = &self.store else { return };
+        match store.insert_run(&run) {
+            Ok(()) => {
+                self.wizard.pending_abandon = None;
+                self.status = format!(
+                    "run on serial {} closed — it stays on the register, marked abandoned",
+                    run.key_serial
+                );
+                tracing::info!(
+                    event = "bootstrap.abandoned",
+                    serial = run.key_serial,
+                    template = run.template_id.as_str()
+                );
+                // The wizard may have been holding exactly the run that was closed.
+                if self
+                    .wizard
+                    .run
+                    .as_ref()
+                    .is_some_and(|held| held.id == run.id)
+                {
+                    self.reset_wizard();
+                }
+                self.refresh();
+            }
+            Err(e) => {
+                tracing::error!(event = "bootstrap.abandon.failed", reason = %e);
+                self.wizard.pending_abandon = None;
+                self.wizard.error = Some(format!("the run could not be closed: {e}"));
+                self.status = format!("refused: {e}");
+            }
+        }
     }
 
     /// Build the (dry-run) plan for the wizard's current selection.
@@ -6666,6 +6804,162 @@ impl YkDistApp {
             self.record("secret.shown", &format!("serial:{serial}"), &detail);
         }
         self.wizard.secrets = None;
+        self.wizard.slip_notice = None;
+    }
+
+    // ------------------------------------------------ the sealed-envelope slip
+    //
+    // The show-once panel is enough for a key handed across a desk: the operator
+    // reads the PIN out and dismisses it. For a key that is posted or couriered
+    // something has to travel with it, sealed, and that is
+    // [`crate::envelope`] — the one artefact this tool produces that carries a
+    // secret on purpose (`features/secrets-custody.md` phase 5, and the
+    // hand-over channel it makes a required part of the procedure).
+
+    /// Ask where the slip goes, then write it.
+    pub fn save_transport_slip(&mut self) {
+        let serial = self
+            .wizard
+            .run
+            .as_ref()
+            .map(|run| run.key_serial.to_string())
+            .unwrap_or_else(|| self.wizard.serial.trim().to_owned());
+        let suggested = format!("transport-pin-{serial}.pdf");
+        if let Some(path) = self.choose_slip_path(&suggested) {
+            self.write_transport_slip(&path);
+        }
+    }
+
+    /// Render the slip for the secrets on screen and write it to `path`.
+    ///
+    /// Split from [`Self::save_transport_slip`] because the file chooser is the
+    /// untestable half and this is the operation.
+    ///
+    /// **The trail is written before the bytes are.** Every other export here
+    /// audits after the write, and for a report or a certification request that is
+    /// right — the entry describes a file that exists. This one contains a live
+    /// PIN, so the question to answer first is whether producing it can be
+    /// recorded at all: on a register that has gone unreachable, writing the PIN
+    /// anyway would leave an unrecorded credential on disk, which is the audit
+    /// finding `AGENTS.md` §3 exists to prevent. So the entry describes the slip
+    /// that was rendered and where it was told to go, and a write that then fails
+    /// leaves a trail that over-states the exposure rather than one that hides it.
+    pub fn write_transport_slip(&mut self, path: &Path) -> bool {
+        self.wizard.error = None;
+        self.wizard.slip_notice = None;
+
+        let Some(run) = self.wizard.run.clone() else {
+            self.refuse_slip("there is no run on screen to make a slip for".to_owned());
+            return false;
+        };
+        // Rendered before anything else, and held in a `Zeroizing` buffer: these
+        // bytes carry the PIN in plain text, so nothing may keep them once this
+        // method returns.
+        let (rendered, carried) = match self.render_transport_slip(&run) {
+            Ok(slip) => slip,
+            Err(said) => {
+                self.refuse_slip(said);
+                return false;
+            }
+        };
+
+        let detail = format!(
+            "carried={} format=pdf bytes={} path={}",
+            carried.join(","),
+            rendered.len(),
+            path.display()
+        );
+        if let Err(e) = self.try_record(
+            "secret.slip.saved",
+            &format!("serial:{}", run.key_serial),
+            &detail,
+        ) {
+            self.refuse_slip(format!(
+                "the slip was not written, because producing one could not be recorded: {e}"
+            ));
+            return false;
+        }
+
+        if let Err(e) = std::fs::write(path, &*rendered) {
+            let message = format!("could not write {}: {e}", path.display());
+            tracing::error!(event = "secret.slip.write.failed", reason = %e);
+            self.refuse_slip(message);
+            return false;
+        }
+
+        self.status = format!("transport slip written to {}", path.display());
+        self.wizard.slip_notice = Some(format!(
+            "written to {} — {}",
+            path.display(),
+            crate::envelope::DISPOSAL_WARNING
+        ));
+        true
+    }
+
+    /// The slip for the secrets currently on screen, and which of them it carries.
+    ///
+    /// `&self` on purpose: rendering reads the panel, the inventory and the holder
+    /// list at once, and every message it can fail with is returned rather than
+    /// written to the state — so the caller owns both the refusal and the borrow.
+    fn render_transport_slip(
+        &self,
+        run: &crate::domain::BootstrapRun,
+    ) -> Result<(zeroize::Zeroizing<Vec<u8>>, Vec<&'static str>), String> {
+        let Some(panel) = self.wizard.secrets.as_ref() else {
+            return Err(
+                "the secrets have been dismissed — nothing keeps a copy, so there is \
+                        nothing left to put on a slip"
+                    .to_owned(),
+            );
+        };
+        let request = crate::envelope::SlipRequest::for_run(
+            run,
+            self.keys.iter().find(|key| key.serial == run.key_serial),
+            run.holder_id
+                .and_then(|id| self.holders.iter().find(|holder| holder.id == id)),
+            &self.org,
+            &chrono::Local::now().format("%Y-%m-%d").to_string(),
+        );
+        let bytes = crate::envelope::render(&request, panel).map_err(|e| e.to_string())?;
+        let carried = panel.for_the_holder().map(|s| s.kind().slug()).collect();
+        Ok((bytes, carried))
+    }
+
+    /// Say why no slip was produced, in both places the operator is looking.
+    ///
+    /// The button is at the bottom of a long screen and the wizard's error banner
+    /// is at the top of it, so a refusal that only set one of the two can be
+    /// missed entirely — and a click that appears to do nothing reads as a saved
+    /// slip.
+    fn refuse_slip(&mut self, reason: String) {
+        self.status = reason.clone();
+        self.wizard.error = Some(reason);
+    }
+
+    /// Where the slip is written.
+    ///
+    /// Deliberately not [`Self::save_bytes`]: that helper falls back to writing
+    /// next to the database when the build has no file chooser, and the database is
+    /// routinely on a network share — the one place
+    /// [`crate::envelope::DISPOSAL_WARNING`] says a slip must never go. A build
+    /// with no chooser therefore refuses rather than picking a path with a PIN in
+    /// its file.
+    #[cfg(feature = "file-dialog")]
+    fn choose_slip_path(&mut self, suggested: &str) -> Option<PathBuf> {
+        rfd::FileDialog::new()
+            .set_title("Save the sealed-envelope slip")
+            .set_file_name(suggested)
+            .save_file()
+    }
+
+    #[cfg(not(feature = "file-dialog"))]
+    fn choose_slip_path(&mut self, _suggested: &str) -> Option<PathBuf> {
+        self.wizard.error = Some(
+            "this build has no file chooser (`--features file-dialog`), and a slip is not \
+             written to a path nobody picked — read the secrets off the panel instead"
+                .to_owned(),
+        );
+        None
     }
 
     /// Carry a finished run straight to a hand-over
@@ -6728,6 +7022,7 @@ impl YkDistApp {
     pub fn reset_wizard(&mut self) {
         self.dismiss_secrets();
         self.wizard.stage = crate::app::WizardStage::Selecting;
+        self.wizard.pending_abandon = None;
         self.wizard.findings.clear();
         self.wizard.run = None;
         self.wizard.plan.clear();

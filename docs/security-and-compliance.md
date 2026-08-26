@@ -134,7 +134,16 @@ kept on the key itself (PIN-guarded), so it is the one generated secret that nev
 Consequences to be honest about:
 
 - A transport secret must travel to the holder out of band (in person, or a sealed printed
-  envelope). That channel is part of the procedure, not an afterthought.
+  envelope). That channel is part of the procedure, not an afterthought — the printed half
+  is [`src/envelope.rs`](../src/envelope.rs), saved from the show-once panel and audited as
+  `secret.slip.saved` before the bytes reach the disk.
+- **A saved slip is a secret on disk until the operator deletes it.** That is the one
+  residual exposure in this model and it is stated rather than hidden: the tool writes only
+  to a path the operator picks (never a temporary directory, and never the default location
+  beside a database that may be on a share), shows the disposal warning beside the button
+  that asks for the path, and prints on the slip itself that it must be destroyed once the
+  PIN has been changed. Nothing keeps a copy, so there is no second slip after the panel is
+  dismissed.
 - Where enforcement is procedural, a transport PIN can survive if the holder ignores the
   instruction. The run records `instructed-on-handover`, so this is auditable rather than
   invisible.

@@ -617,13 +617,20 @@ pub fn leaves_key_in_unknown_state(error: &WriteError) -> bool {
 /// knows nothing about it. Until now a resume could only continue a run still held
 /// in memory from the same session, which is the *short* half of the wait.
 ///
-/// A run qualifies when it is not `Completed` and at least one step is not `Done`
-/// — that is, when there is something left to attempt. Newest first, because the
-/// operator is almost always coming back to the last one.
+/// A run qualifies when it is neither `Completed` nor `Aborted` and at least one
+/// step is not `Done` — that is, when there is something left to attempt and
+/// somebody still intends to attempt it. Newest first, because the operator is
+/// almost always coming back to the last one.
+///
+/// `Aborted` is the operator saying the second half of that: a run they have
+/// closed by hand ([`BootstrapRun::abandon`]) is still on the register, with every
+/// step it ran intact, and is simply no longer offered. Without that, the only
+/// thing that ever left this list was a run somebody finished, so a certificate
+/// that never came back sat here for the life of the register.
 pub fn resumable(runs: &[BootstrapRun]) -> Vec<&BootstrapRun> {
     let mut open: Vec<&BootstrapRun> = runs
         .iter()
-        .filter(|run| run.status != RunStatus::Completed)
+        .filter(|run| !matches!(run.status, RunStatus::Completed | RunStatus::Aborted))
         .filter(|run| run.steps.iter().any(|step| step.status != StepStatus::Done))
         .collect();
     open.sort_by_key(|run| std::cmp::Reverse(run.started_at));

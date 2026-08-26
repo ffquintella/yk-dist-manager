@@ -313,6 +313,27 @@ than implying capability it does not have.
 The template list offers the **newest version of each template in use**; *Manage
 templates…* opens the Templates screen on whichever one is selected.
 
+**Unfinished runs on this register** lists what a resume could still finish, with two
+things to do per row. *Pick up* rebuilds the run's plan from the version it recorded and
+leaves every completed step alone. *Abandon* closes a run nobody will finish — it asks
+first, and the confirmation says what it does: the run and every step outcome stay on
+the register, marked `Aborted`, and only the offer to resume goes. Nothing is deleted,
+and no pending step is applied to a key by closing the run that would have applied it.
+
+**Write these down now — shown once** is the one moment a secret is readable by a person.
+The values are wiped when the panel is dismissed and when it drops, and there is no
+"show again". For a key handed across a desk that panel is the whole hand-over; for a key
+that is **posted**, *Save the sealed slip…* writes the one-page PDF that travels with it
+([`src/envelope.rs`](../src/envelope.rs)) — the serial, the holder, the procedure, the
+secrets the holder carries, and what they must do with them. Not the management key: it is
+PIN-protected onto the key itself, so nothing travels.
+
+The disposal warning sits **beside** that button rather than after the click, because the
+decision it asks for — where a file containing a live PIN may be written — is made in the
+file chooser. Nothing is stored: the register never sees the slip, the rendered bytes are
+zeroised, a dismissed panel refuses to produce one, and a build without a file chooser
+refuses too rather than writing next to a database that is routinely on a share.
+
 ### Templates
 
 Where the bootstrap procedure itself is edited. Same argument as the Terms screen: the

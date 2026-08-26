@@ -18,6 +18,92 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+## [0.17.4] - 2026-08-26
+
+### Added
+
+- **The sealed-envelope slip can be saved from the show-once panel** — *Save the
+  sealed slip…*, beside *I have written them down* on the Bootstrap screen
+  (`src/ui/bootstrap.rs`, `YkDistApp::save_transport_slip`). The renderer has been
+  there since the custody model was decided ([`src/envelope.rs`](src/envelope.rs),
+  `features/secrets-custody.md` phase 5) and was reachable from nowhere, so a key
+  that had to be **posted** left the operator copying a transport PIN off the panel
+  by hand onto whatever paper was nearest — which is the one thing model B's
+  hand-over channel was specified to avoid.
+
+  It is a one-page PDF built from the run on screen: the serial, the holder, the
+  procedure that prepared the key, the secrets the holder actually carries, and what
+  they must do with them. The management key is not on it — it is PIN-protected onto
+  the key itself, so nothing travels. The claim that the *firmware* will force the
+  PIN change is made only for a FIDO2-only run that marked `forcePINChange`; a slip
+  carrying a PIV PIN says plainly that nothing but the holder will change it, because
+  PIV has no such flag at any firmware level.
+
+  Three rules the slip is shaped by, all now visible in the GUI: it is **never
+  stored** (nothing is written to the register, and the bytes are zeroised after the
+  write), it is only obtainable **while the panel holds the secrets** (dismissing is
+  still final — there is no second look), and the operator is shown
+  `envelope::DISPOSAL_WARNING` *beside the button* rather than after the click,
+  because where a file with a live PIN may be written is decided in the chooser. A
+  build without a file chooser refuses rather than falling back to writing next to
+  the database, which is routinely a share.
+
+  Producing one is audited as `secret.slip.saved` — which secrets were carried, the
+  format, the size and the path, never a value — and the trail is written **before**
+  the bytes reach the disk: on a register that has gone unreachable, a PIN saved with
+  no entry naming it is precisely the finding `AGENTS.md` §3 exists to prevent.
+
+- **An unfinished run can be closed** — the *Abandon* button beside *Pick up* on
+  *Unfinished runs on this register* (`src/ui/bootstrap.rs`,
+  `YkDistApp::abandon_run`). Until now the only thing that ever took a run off that
+  list was somebody finishing it, so a run whose certificate was cancelled, or that a
+  second attempt on the same key superseded, stayed there for the life of the register
+  beside the work that really is outstanding — and a list that cannot be cleared is one
+  an operator stops reading.
+
+  It is **not** a delete, and the confirmation says so before anything happens. The run,
+  its steps and their recorded outcomes stay on the register exactly as they were: the
+  steps that reached the key keep the state they reached, and the ones that never ran
+  stay pending rather than being rewritten as skipped. What changes is
+  [`RunStatus::Aborted`](src/domain/bootstrap.rs) — a person closed this, which is a
+  different fact from `Failed` (the executor stopped) — so
+  [`bootstrap::resumable`](src/bootstrap/mod.rs) stops offering it. A record of what was
+  applied to real hardware is not the register's to erase (`AGENTS.md` §3).
+
+  The trail is written first and the register only if it landed: a run closed with no
+  entry saying who closed it is the state this refuses to reach, so an audit failure
+  leaves the run open. The new event is `bootstrap.abandoned`, carrying the procedure,
+  the version, when the run started and the tally it was closed at.
+
+### Fixed
+
+- **"Forget" on a recent database now holds, and the chooser stops naming what was
+  forgotten** — [`tests/behaviour_app_batch_terms.rs`](tests/behaviour_app_batch_terms.rs),
+  [`YkDistApp::forget_database`](src/app.rs). Two faults with one symptom, reported from a
+  workstation whose chooser opened onto *"/var/folders/…/stock-terms.sqlite3 is not
+  reachable"* with three temporary databases listed above it, and where forgetting them did
+  not stick.
+
+  The first is the one that made forgetting useless: `behaviour_app_batch_terms` built a
+  `YkDistApp` **without redirecting `$YKDM_SETTINGS`/`$YKDM_DATA_DIR`**, alone among the
+  eighteen test files that drive the application. Opening a register remembers it
+  (`AppSettings::remember`), so every `cargo test` run wrote that binary's two temporary
+  databases into the recent list — and into `last_database` — of the settings file of
+  whoever ran the suite. The next launch of the application therefore reached for a path
+  under `/var/folders` that had been deleted when the test finished, and the entries the
+  operator cleared came back with the next run. The test now redirects both variables into
+  a temporary home shared by its two tests, and
+  [`tests/unit_settings.rs`](tests/unit_settings.rs) fails if any test file in this
+  repository builds a `YkDistApp` without doing the same — the damage happens in another
+  process, so the check is on the source rather than at run time.
+
+  The second is what made a genuine forget *look* like it had done nothing. Removing the
+  row left the path field and the red "not reachable" banner still naming that database,
+  because both come from the failed startup attempt and neither was touched. Forgetting the
+  register the chooser is stuck on now moves the chooser to the next remembered one, or to
+  this workstation's default when the list is empty, and clears the banner. Only when no
+  register is open: with one open, forgetting some *other* path must not disturb it.
+
 ## [0.17.3] - 2026-08-26
 
 ### Fixed
@@ -2600,7 +2686,8 @@ become rows.
 - Uploaded filenames are treated as data: any directory component is stripped, so a
   name like `../../etc/passwd.pdf` cannot escape.
 
-[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/releases/v0.16.3...HEAD
+[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/releases/v0.17.4...HEAD
+[0.17.4]: https://github.com/ffquintella/yk-dist-manager/compare/releases/v0.17.3...releases/v0.17.4
 [0.16.3]: https://github.com/ffquintella/yk-dist-manager/compare/releases/v0.16.2...releases/v0.16.3
 [0.16.2]: https://github.com/ffquintella/yk-dist-manager/compare/releases/v0.16.1...releases/v0.16.2
 [0.16.1]: https://github.com/ffquintella/yk-dist-manager/compare/releases/v0.16.0...releases/v0.16.1

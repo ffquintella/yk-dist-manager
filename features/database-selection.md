@@ -58,6 +58,27 @@ A share that is not mounted is a network problem, not a decision to stop using t
 database. Recent entries are shown with an availability marker and a *forget*
 action; nothing is silently dropped.
 
+### Forgetting also moves the chooser off what was forgotten
+
+Removing the row is only half of it. When the application opened onto the chooser
+because `last_database` could not be reached, the path field and the "not reachable"
+banner are naming that same database — and they are the two things on screen that
+tell the operator whether the click did anything. So *forget* on the register the
+chooser is pointed at moves it to the next remembered one (or this workstation's
+default, when the list is now empty) and clears the banner
+([`YkDistApp::forget_database`](../src/app.rs)). Only with no register open: with one
+open, forgetting a *different* path must not disturb what is being worked in.
+
+### A test must never write the operator's settings file
+
+`YkDistApp` remembers the register it opens. A test that builds one without
+redirecting `$YKDM_SETTINGS` and `$YKDM_DATA_DIR` therefore writes its temporary
+database into the recent list — and into `last_database` — of whoever ran
+`cargo test`, which is how a real workstation came to open onto a `/var/folders`
+path that no longer existed, with the entries reappearing every time they were
+cleared. Every test that drives the application redirects both, and
+`tests/unit_settings.rs` fails if one does not.
+
 ### Passwords
 
 Typed at the chooser, passed to the open call, cleared from the form immediately
@@ -105,6 +126,14 @@ the log, which is one more reason the mirror in `features/audit-trail.md` matter
   duplicates is normalised.
 - `availability_is_reported_per_entry_without_dropping_anything`.
 - `the_recent_list_never_exceeds_its_cap_or_repeats_an_entry`.
+- `no_test_binary_writes_the_operators_own_settings_file` — a source check over
+  `tests/`, because the damage happens in another process.
+
+`tests/behaviour_app_forget_database.rs`:
+
+- `scenario_forgetting_an_unreachable_register_moves_the_chooser_off_it` — the row,
+  `last_database`, the banner and the path field, and that it holds in the file a
+  restart reads.
 
 ## Open questions and gates
 

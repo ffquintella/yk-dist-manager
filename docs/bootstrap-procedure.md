@@ -30,6 +30,15 @@ secret: the holder replaces it on first use, and this tool retains nothing.
 The transport secrets must reach the holder out of band: in person, or a sealed printed
 envelope. Never the e-mail the key's own certificate protects.
 
+The printed half is a button: *Save the sealed slip…* on the show-once panel writes the
+one-page PDF that travels with the key ([`../src/envelope.rs`](../src/envelope.rs)) — the
+serial, the holder, the procedure, the secrets they carry, and what they must do with them.
+It is only available **while the panel still holds the secrets**, because nothing keeps a
+copy; the operator picks where it goes; producing one is audited as `secret.slip.saved`
+before the bytes are written; and the slip itself says to destroy it once the PIN has been
+changed. A saved slip is a credential on disk until the operator deletes it, which is why
+the disposal warning sits beside the button rather than after the click.
+
 Each run records the model (`transport-pin+forced-change`) and, per step, whether the
 change was `enforced-by-firmware` or `instructed-on-handover` — so an audit can tell the
 two apart, and a report can list the keys where it was only instructed. Details and the two

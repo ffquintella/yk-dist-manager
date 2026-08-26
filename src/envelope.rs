@@ -38,6 +38,7 @@
 
 use zeroize::Zeroizing;
 
+use crate::domain::{BootstrapRun, Holder, StepKind, StepStatus, YubiKeyRecord};
 use crate::pdf::{self, TextDocument};
 use crate::secret::{Secret, ShowOnce};
 
@@ -72,6 +73,75 @@ pub struct SlipRequest {
     /// Where a lost key is reported. From Settings; omitted if the unit has not
     /// set one, rather than printing a placeholder nobody can act on.
     pub report_loss_to: String,
+}
+
+impl SlipRequest {
+    /// Everything the slip needs that the finished run and the register already
+    /// know.
+    ///
+    /// Built from the run rather than from the wizard's form fields, because the
+    /// run is the record of what was actually applied to *this* key — and a slip
+    /// that disagrees with the run is a slip nobody can reconcile afterwards.
+    ///
+    /// `key` and `holder` are optional because both are looked up by identity and
+    /// either can be missing from the cache; a slip with no model or no unit is
+    /// still usable, and refusing to print one over a blank line would strand the
+    /// only copy of the PIN in a panel the operator has to dismiss.
+    ///
+    /// [`SlipRequest::report_loss_to`] is left empty: no setting holds that
+    /// address yet, and the slip prints a generic instruction rather than a
+    /// placeholder when it is blank. Fill it in with `..` at the call site once
+    /// there is somewhere to read it from.
+    pub fn for_run(
+        run: &BootstrapRun,
+        key: Option<&YubiKeyRecord>,
+        holder: Option<&Holder>,
+        organisation: &str,
+        issued_on: &str,
+    ) -> Self {
+        Self {
+            serial: run.key_serial,
+            model: key.map(|k| k.model.clone()).unwrap_or_default(),
+            holder_name: holder.map(|h| h.full_name.clone()).unwrap_or_default(),
+            holder_email: holder.map(|h| h.email.clone()).unwrap_or_default(),
+            unit: holder.map(|h| h.unit.clone()).unwrap_or_default(),
+            organisation: organisation.to_owned(),
+            operator: run.operator.clone(),
+            issued_on: issued_on.to_owned(),
+            template_id: run.template_id.clone(),
+            template_version: run.template_version.clone(),
+            change_enforced_by_firmware: enforced_by_firmware(run),
+            report_loss_to: String::new(),
+        }
+    }
+}
+
+/// Did the *key* take responsibility for the PIN change, or is this slip the only
+/// mechanism?
+///
+/// Deliberately conservative, and it errs in one direction on purpose: `false`
+/// prints the emphatic wording, which is never wrong to print, while a wrong
+/// `true` tells a holder the key will stop them keeping the transport PIN when
+/// nothing will.
+///
+/// So it is `true` only for a run that marked `forcePINChange` **and** set no PIV
+/// PIN. PIV has no force-change flag at any firmware level, so a slip carrying a
+/// PIV PIN is a slip whose instruction is the mechanism, however capable the FIDO2
+/// applet on the same key was.
+fn enforced_by_firmware(run: &BootstrapRun) -> bool {
+    let mut forced = false;
+    let mut piv_pin = false;
+    for step in &run.steps {
+        if step.status != StepStatus::Done {
+            continue;
+        }
+        match step.kind {
+            StepKind::Fido2ForcePinChange => forced = true,
+            StepKind::PivPinPuk => piv_pin = true,
+            _ => {}
+        }
+    }
+    forced && !piv_pin
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -227,6 +297,7 @@ fn rule() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::{SerialSource, StepOutcome};
     use crate::secret::{Secret, SecretKind};
 
     fn request() -> SlipRequest {
@@ -424,5 +495,82 @@ mod tests {
     fn the_disposal_warning_says_what_the_operator_has_to_do() {
         assert!(DISPOSAL_WARNING.contains("delete"));
         assert!(DISPOSAL_WARNING.contains("plain text"));
+    }
+
+    /// A run with the steps this test needs, all applied.
+    fn run_with(kinds: &[StepKind]) -> BootstrapRun {
+        let steps = kinds
+            .iter()
+            .map(|kind| StepOutcome {
+                step_id: kind.slug().to_owned(),
+                kind: *kind,
+                status: StepStatus::Done,
+                started_at: None,
+                finished_at: None,
+                detail: String::new(),
+            })
+            .collect();
+        BootstrapRun::new(20_423_633, None, "org-standard", "2", "felipe", steps)
+    }
+
+    #[test]
+    fn a_request_built_from_a_run_carries_what_was_applied_to_that_key() {
+        let holder = Holder::new("Ana Silva", "ana.silva@example.org", "ESI", "1").unwrap();
+        let key = YubiKeyRecord::from_serial(20_423_633, SerialSource::ManualEntry);
+        let run = run_with(&[StepKind::Fido2Pin]);
+
+        let request =
+            SlipRequest::for_run(&run, Some(&key), Some(&holder), "Example Org", "2026-08-26");
+
+        assert_eq!(request.serial, run.key_serial);
+        assert_eq!(request.holder_name, "Ana Silva");
+        assert_eq!(request.unit, "ESI");
+        assert_eq!(
+            request.operator, "felipe",
+            "the run says who issued the key"
+        );
+        assert_eq!(request.template_id, "org-standard");
+        assert_eq!(request.template_version, "2");
+        assert!(
+            request.report_loss_to.is_empty(),
+            "nothing holds that address yet, and the slip prints the generic \
+             instruction rather than a placeholder"
+        );
+    }
+
+    #[test]
+    fn a_missing_holder_or_key_still_produces_a_printable_slip() {
+        // The alternative is refusing to print, which would strand the only copy
+        // of the PIN in a panel the operator has to dismiss.
+        let run = run_with(&[StepKind::Fido2Pin]);
+        let request = SlipRequest::for_run(&run, None, None, "Example Org", "2026-08-26");
+        let text = render_text(&request, &panel()).unwrap();
+        assert!(text.contains("20423633"));
+    }
+
+    #[test]
+    fn only_a_fido2_only_run_that_marked_the_force_change_claims_the_firmware_enforces_it() {
+        // The claim is the one thing on this slip a holder cannot check, so it is
+        // made only where it is certainly true.
+        assert!(enforced_by_firmware(&run_with(&[
+            StepKind::Fido2Pin,
+            StepKind::Fido2ForcePinChange
+        ])));
+
+        // A PIV PIN on the same slip: PIV has no force-change flag at any
+        // firmware level, so the instruction is the mechanism.
+        assert!(!enforced_by_firmware(&run_with(&[
+            StepKind::Fido2Pin,
+            StepKind::Fido2ForcePinChange,
+            StepKind::PivPinPuk
+        ])));
+
+        // No mark, no claim.
+        assert!(!enforced_by_firmware(&run_with(&[StepKind::Fido2Pin])));
+
+        // A step that did not complete is not a mechanism either.
+        let mut half = run_with(&[StepKind::Fido2Pin, StepKind::Fido2ForcePinChange]);
+        half.steps[1].status = StepStatus::Failed;
+        assert!(!enforced_by_firmware(&half));
     }
 }

@@ -147,3 +147,41 @@ fn the_retention_setting_says_that_nothing_is_deleted_yet() {
         "the clock starts when a record goes cold, not when it was written: {described}"
     );
 }
+
+#[test]
+fn no_test_binary_writes_the_operators_own_settings_file() {
+    // The failure this guards, seen on a real workstation: a test built a
+    // `YkDistApp` without redirecting `$YKDM_SETTINGS`/`$YKDM_DATA_DIR`, and
+    // opening its temporary register wrote that path into the recent list — and
+    // into `last_database` — of whoever ran `cargo test`. The next launch of the
+    // application opened onto "not reachable", naming a directory under
+    // `/var/folders` that had been deleted when the test finished, and clicking
+    // "forget" did not hold, because the next test run wrote the entries back.
+    //
+    // A source check rather than a runtime one: the damage is done in another
+    // binary, in another process, and by then there is nothing left to assert on.
+    let tests = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let mut offenders: Vec<String> = Vec::new();
+
+    for entry in std::fs::read_dir(&tests).expect("the tests directory is readable") {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).expect("a test file is readable");
+        let builds_an_app =
+            source.contains("YkDistApp::new") || source.contains("YkDistApp::with_vault");
+        let redirects = source.contains("YKDM_SETTINGS") && source.contains("YKDM_DATA_DIR");
+        if builds_an_app && !redirects {
+            offenders.push(path.file_name().unwrap().to_string_lossy().into_owned());
+        }
+    }
+    offenders.sort();
+
+    assert!(
+        offenders.is_empty(),
+        "these tests build a YkDistApp without redirecting the settings file, so running them \
+         rewrites the recent-database list of whoever runs the suite — set YKDM_DATA_DIR and \
+         YKDM_SETTINGS to a temporary directory first: {offenders:?}"
+    );
+}

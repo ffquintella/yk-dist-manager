@@ -7,6 +7,11 @@
 //! template, the file lands on disk, the trail carries one `term.generated` per
 //! holder rather than one line for the box, and a stock batch is refused with a
 //! sentence that says where to go instead.
+//!
+//! Both tests here drive `YkDistApp`, which reads `$YKDM_SETTINGS` and
+//! `$YKDM_DATA_DIR` — see [`isolated_home`] for why every one of them must.
+
+use std::path::Path;
 
 use yk_dist_manager::YkDistApp;
 use yk_dist_manager::batch::{Batch, Outcome, Presented, pairing::Pair};
@@ -16,6 +21,34 @@ use yk_dist_manager::store::{Store, StoreConfig};
 const FIRST: u32 = 20_423_631;
 const SECOND: u32 = 20_423_632;
 const THIRD: u32 = 20_423_633;
+
+/// A settings home this binary owns, redirected once for the whole process.
+///
+/// `YkDistApp` remembers the register it opens, so a test that builds one without
+/// this writes into the settings file of whoever ran `cargo test`: the temp
+/// databases from these two tests ended up in a real operator's recent list, and
+/// `last_database` pointed the next launch at a path under `/var/folders` that no
+/// longer existed. Forgetting the entries by hand did not help, because the next
+/// test run put them straight back.
+///
+/// One home for both tests, set inside the `OnceLock`: the variables are
+/// process-global, so a per-test home would be a race between two threads over
+/// which one the settings file follows.
+fn isolated_home() -> &'static Path {
+    static HOME: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| {
+        let home = tempfile::tempdir().expect("a temporary home");
+        // SAFETY: written exactly once per process, under the `OnceLock`, and
+        // every test in this binary calls this before anything reads the
+        // environment — a second caller blocks here until the write is done.
+        unsafe {
+            std::env::set_var("YKDM_DATA_DIR", home.path());
+            std::env::set_var("YKDM_SETTINGS", home.path().join("settings.json"));
+        }
+        home
+    })
+    .path()
+}
 
 fn events(app: &YkDistApp, event: &str) -> Vec<String> {
     app.store
@@ -31,6 +64,7 @@ fn events(app: &YkDistApp, event: &str) -> Vec<String> {
 
 #[test]
 fn scenario_an_assigned_batch_writes_one_term_per_finished_key() {
+    isolated_home();
     let dir = tempfile::tempdir().unwrap();
     let database = dir.path().join("batch-terms.sqlite3");
     let into = dir.path().join("out");
@@ -154,6 +188,7 @@ fn scenario_an_assigned_batch_writes_one_term_per_finished_key() {
 
 #[test]
 fn scenario_a_stock_batch_is_refused_and_told_where_to_go_instead() {
+    isolated_home();
     let dir = tempfile::tempdir().unwrap();
     let database = dir.path().join("stock-terms.sqlite3");
     let into = dir.path().join("out");

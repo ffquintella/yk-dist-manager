@@ -77,6 +77,10 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
         WizardStage::Selecting => {
             batch_panel(app, ui);
             unfinished_runs(app, ui);
+            // Painted beside the list rather than inside it: the run being closed
+            // leaves that list the moment it is, and a card that lived inside the
+            // list would disappear with it mid-click.
+            abandonment(app, ui);
             plan_table(app, ui);
         }
         WizardStage::Confirming => confirmation(app, ui),
@@ -301,23 +305,96 @@ fn unfinished_runs(app: &mut YkDistApp, ui: &mut egui::Ui) {
         return;
     }
 
+    let mut adopt: Option<uuid::Uuid> = None;
+    let mut abandon: Option<uuid::Uuid> = None;
+
     super::titled_card(ui, "Unfinished runs on this register", |ui| {
         ui.label(
             "A run whose certificate had not come back yet, or that stopped part-way. Picking one \
              up rebuilds its plan from the version it recorded and leaves every completed step \
-             alone.",
+             alone. One that will never be finished is closed with Abandon, which takes it off \
+             this list and keeps it on the register.",
         );
         ui.add_space(8.0);
         for (id, label) in open {
             ui.horizontal_wrapped(|ui| {
                 if ui.add(Button::new("Pick up")).clicked() {
-                    app.adopt_run(id);
+                    adopt = Some(id);
+                }
+                if super::row_button_danger(ui, "Abandon")
+                    .on_hover_text("close this run — it asks first, and nothing is deleted")
+                    .clicked()
+                {
+                    abandon = Some(id);
                 }
                 ui.label(label);
             });
         }
     });
     ui.add_space(18.0);
+
+    if let Some(id) = adopt {
+        app.adopt_run(id);
+    }
+    if let Some(id) = abandon {
+        app.ask_abandon_run(id);
+    }
+}
+
+/// The confirmation for closing an unfinished run: what goes, and what stays.
+///
+/// A separate card rather than a click on the row, for the reason a template
+/// removal has one: the run is the register's record of what reached a key, and
+/// the operator should read what closing it does before it happens — particularly
+/// because the honest answer is "less than you think", and knowing that is what
+/// makes the button safe to press.
+fn abandonment(app: &mut YkDistApp, ui: &mut egui::Ui) {
+    let Some(id) = app.wizard.pending_abandon else {
+        return;
+    };
+    let Some(run) = app.runs.iter().find(|run| run.id == id) else {
+        app.cancel_abandon_run();
+        return;
+    };
+    let (done, failed, skipped, pending) = run.tally();
+    let serial = run.key_serial;
+    let (template, version) = (run.template_id.clone(), run.template_version.clone());
+    let mut confirm = false;
+    let mut cancel = false;
+
+    super::titled_card(ui, format!("Abandon the run on serial {serial}?"), |ui| {
+        super::notice(
+            ui,
+            CalloutTone::Warning,
+            &format!(
+                "{template} v{version}: {done} done, {failed} failed, {skipped} skipped, \
+                 {pending} never attempted. Nothing is deleted — the run stays on the register \
+                 with every step as it was recorded, and the {pending} step(s) still pending are \
+                 not applied to the key by closing it. What changes is that it stops being \
+                 offered as unfinished business, and the trail says who closed it.",
+            ),
+        );
+        ui.add_space(10.0);
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .add(Button::new("Abandon it").accent(Accent::Red))
+                .clicked()
+            {
+                confirm = true;
+            }
+            if ui.add(Button::new("Keep it open").outline()).clicked() {
+                cancel = true;
+            }
+        });
+    });
+    ui.add_space(18.0);
+
+    if confirm {
+        app.abandon_run(id);
+    }
+    if cancel {
+        app.cancel_abandon_run();
+    }
 }
 
 /// What will be written, and the one confirmation that authorises it.
@@ -599,11 +676,37 @@ fn run_view(app: &mut YkDistApp, ui: &mut egui::Ui) {
                 }
             }
             ui.add_space(12.0);
-            if ui
-                .add(Button::new("I have written them down — dismiss"))
-                .clicked()
-            {
-                app.dismiss_secrets();
+
+            // The sealed-envelope slip. For a key handed across a desk the panel
+            // above is the whole hand-over; for one that is posted, something has
+            // to travel with it, and this is it. The warning is next to the button
+            // rather than after the click, because the decision it asks for — where
+            // a file with a live PIN in it may be written — is made in the chooser.
+            ui.label(
+                "Posting or couriering this key? Print a sealed slip to travel with it. \
+                 Nothing is stored: the slip is rendered from what is on screen now.",
+            );
+            ui.add_space(6.0);
+            super::notice(ui, CalloutTone::Warning, crate::envelope::DISPOSAL_WARNING);
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add(Button::new("Save the sealed slip…"))
+                    .on_hover_text("A one-page PDF carrying these secrets, ready to print and seal")
+                    .clicked()
+                {
+                    app.save_transport_slip();
+                }
+                if ui
+                    .add(Button::new("I have written them down — dismiss"))
+                    .clicked()
+                {
+                    app.dismiss_secrets();
+                }
+            });
+            if let Some(notice) = app.wizard.slip_notice.clone() {
+                ui.add_space(8.0);
+                super::notice(ui, CalloutTone::Warning, &notice);
             }
         });
     }
