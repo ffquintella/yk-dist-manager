@@ -18,6 +18,8 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+## [0.17.3] - 2026-08-26
+
 ### Fixed
 
 - **A bootstrap no longer needs `ykman` to read the OTP slots** —

@@ -328,8 +328,17 @@ make coverage-core     # THE GATE: cargo llvm-cov --all-features --fail-under-li
 make coverage-html     # browsable, when you need to find the gap
 ```
 
-Current: **87.02%** core line coverage (86.29% region), 529 of them in the
-`--lib` binary.
+Current: **85.68%** core line coverage (86.24% region), measured 2026-08-26 on
+1075 tests, 546 of them in the `--lib` binary.
+
+The figure stood at 87.02% until the factory reset stopped needing `ykman`
+(`dfa1f80`): [`device::ctaphid`](src/device/ctaphid.rs) and
+[`device::native_otp`](src/device/native_otp.rs) added several hundred lines of
+card and HID *exchange*, which no test can reach without a key attached, and that
+commit did not restate the number. Line coverage falling while the tool gained a
+transport is the expected shape — the pure halves of both modules are covered
+byte for byte — but it is the kind of drift that only stays honest if it is
+written down, so restate this when it moves.
 
 - `src/ui/`, `src/app.rs` and `src/main.rs` are excluded because painting is not
   unit tested. That exclusion is a **contract, not an amnesty**: logic belongs in
