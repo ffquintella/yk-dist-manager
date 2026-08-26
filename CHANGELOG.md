@@ -65,6 +65,16 @@ Maintenance instructions (see AGENTS.md §5):
   `>= (5, 7)` comparison independently. That method now calls the free function, so there
   is one gate and the claim is true.
 
+- **The full test suite is opt-in, not part of the loop** — `AGENTS.md`. Level 3 asked for
+  `cargo test`, `cargo test --all-features` and `make coverage-core` on every change. That
+  is 43 test binaries against one build directory, upwards of ten minutes of wall clock,
+  almost all of it re-proving code the change never touched. Level 3 is now `fmt` + `clippy`
+  — the two gates CI fails first, neither of which runs a test — and the suite runs when the
+  operator asks, when releasing, or when the change is **wide**: a schema change, a trait or
+  public signature with many callers, a module move, a dependency or feature-flag change.
+  Level 3 also now asks that the report say which level actually ran, because a targeted run
+  reported as a full one is the failure mode this trades against.
+
 ## [0.17.2] - 2026-08-25
 
 ### Fixed

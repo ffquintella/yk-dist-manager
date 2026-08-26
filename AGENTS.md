@@ -82,7 +82,7 @@ Level 1  cargo check --lib            seconds — is it even valid?
       ↓
 Level 2  the closest test binary      cargo test --lib / --test <one>
       ↓
-Level 3  once, when the change is finished
+Level 3  fmt + clippy, always; the full suite only when Level 3 says so
 ```
 
 Investigation parallelises — read two modules at once, search two paths at once.
@@ -126,14 +126,47 @@ binary per file in `tests/`; naming them is the whole saving.
 ### Level 3 — before calling the change done
 
 ```bash
-cargo test                                                 # 43 binaries, default features
+cargo fmt --all                                            # free
 cargo clippy --all-targets --all-features -- -D warnings   # must be warning-free
-cargo test --all-features                                  # adds the five encrypted-db files
-make coverage-core                                         # THE GATE: core lines ≥ 80%
 ```
 
+Those two are **always** Level 3: they are the gates CI fails first, and neither
+runs a test.
+
+**The full suite is not part of the default loop.** It links 43 test binaries on
+one build directory and costs upwards of ten minutes of wall clock on this
+repository — most of it re-proving code the change never touched.
+
+```bash
+cargo test                     # 43 binaries, default features
+cargo test --all-features      # adds the five encrypted-db files
+make coverage-core             # THE GATE: core lines ≥ 80%
+```
+
+Run those three when **one** of these is true, and otherwise finish at Level 2
+with the binaries the map names for the component you changed:
+
+- the operator asked for a full run, a release, or `make release-check`;
+- the change is **wide** — a schema change or migration, a public signature or
+  trait many callers use, a module moved or split, a dependency or feature-flag
+  change, anything touching `store`, `audit` or `app.rs` broadly;
+- Level 2 came back green on a component whose **callers you cannot enumerate**,
+  which is the case a targeted run is blind to;
+- coverage may have moved (§4 asks for the number when it does).
+
+Say which you ran. "Level 2 on `unit_store` and `behaviour_storage`, full suite
+not run" is a complete and honest report; implying a green full suite that never
+ran is not.
+
+**Do Level 2 before the `--all-features` clippy, not after.** Those are two
+different feature sets and therefore two different sets of artefacts: the clippy
+run leaves the build directory fingerprinted for `--all-features`, so the next
+default-features `cargo test` rebuilds the world — the alternation the *Keep the
+cache* section below warns about, met the moment fmt/clippy are always-on. Level 2
+first, then fmt + clippy last, and nothing has to be built twice.
+
 `make release-check` is exactly `fmt` + `lint` + `test-all` + `coverage-core`.
-Run it once, at the end.
+It is the release command — run it once, at the end, when releasing.
 
 **`rustup update stable` first, if you are about to tag.** CI resolves
 `dtolnay/rust-toolchain@stable` when it runs, so `cargo clippy -- -D warnings`
@@ -305,8 +338,10 @@ Current: **87.02%** core line coverage (86.29% region), 529 of them in the
 - A change that drops core coverage below 80% is not ready.
 - Report the number in the commit description when it moves.
 
-Before any commit, Level 3 above: `cargo fmt --all`, `cargo clippy --all-targets
---all-features`, `cargo test --all-features`.
+Before any commit: `cargo fmt --all` and `cargo clippy --all-targets
+--all-features -- -D warnings`, always — plus the Level 2 binaries the map names
+for what you changed. `cargo test --all-features` and `make coverage-core` are
+for the cases Level 3 lists, not for every commit.
 
 ---
 
