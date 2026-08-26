@@ -1,9 +1,10 @@
 //! Unit tests for the `ykman` output parsers, against output recorded from
 //! ykman 5.9.2 (`tests/fixtures/`).
 
-use yk_dist_manager::device::ykman::{
-    parse_info, parse_otp_info, parse_serials, supports_min_pin_length,
-};
+use yk_dist_manager::device::ykman::{parse_info, parse_otp_info, parse_serials};
+// The firmware gate is a fact about the key, not about this transport, so it
+// lives in `domain::key` — see the note where it used to be, in `device::ykman`.
+use yk_dist_manager::domain::supports_min_pin_length;
 
 fn fixture(name: &str) -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

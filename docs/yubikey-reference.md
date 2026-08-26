@@ -128,8 +128,10 @@ precede the sub-command, and `piv access change-puk` uses `-p` for the current P
 | 100 discoverable credentials (was 25) | 5.7 |
 | Ed25519 / X25519 in PIV | 5.7 |
 
-`domain::YubiKeyRecord::supports_fido_min_pin_length()` and
-`device::ykman::supports_min_pin_length()` implement the 5.7 gate; the reference key here
+`domain::key::supports_ctap21_config()` is the 5.7 gate, and
+`domain::YubiKeyRecord::supports_fido_min_pin_length()` calls it — one comparison, not two.
+It sat in `device::ykman` until 2026-08-26, which made `domain` depend on `device` for a
+fact about a key and left a second copy of `>= (5, 7)` on the record. The reference key here
 is 5.4.3, so those steps are skipped on it — which is exactly the case the tests cover.
 
 ## Factory defaults — none may survive a bootstrap

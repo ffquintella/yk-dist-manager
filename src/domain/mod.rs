@@ -26,7 +26,9 @@ pub use lifecycle::{
 // stands between a person's name as they spell it and the `CN` of a certificate
 // issued to them, so it is worth testing from outside the module that owns it.
 pub use holder::{Holder, email_change_warning, escape_rfc4514};
-pub use key::{KeyStatus, SerialSource, YubiKeyRecord};
+pub use key::{
+    KeyStatus, SerialSource, YubiKeyRecord, supports_ctap21_config, supports_min_pin_length,
+};
 
 /// Maximum accepted length for any free-text field arriving from the UI.
 ///

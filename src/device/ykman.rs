@@ -493,19 +493,8 @@ fn parse_app_row(line: &str) -> Option<(String, String)> {
     }
 }
 
-/// Whether the firmware implements the CTAP 2.1 `authenticatorConfig` commands
-/// (`setMinPINLength`, `forcePINChange`, `alwaysUv`) — YubiKey 5.7 and newer.
-///
-/// One gate, used by every step that depends on it, so a firmware fact is not
-/// re-derived in three places. See `docs/yubikey-reference.md`.
-pub fn supports_ctap21_config(firmware: &str) -> bool {
-    let mut it = firmware.split('.');
-    let major: u32 = it.next().and_then(|v| v.parse().ok()).unwrap_or(0);
-    let minor: u32 = it.next().and_then(|v| v.parse().ok()).unwrap_or(0);
-    (major, minor) >= (5, 7)
-}
-
-/// Firmware gate for the minimum-PIN-length policy.
-pub fn supports_min_pin_length(firmware: &str) -> bool {
-    supports_ctap21_config(firmware)
-}
+// The CTAP 2.1 / 5.7 firmware gates used to live here. A firmware version is a
+// fact about the key rather than about a transport, and `domain::custody` was
+// reaching up into this module for it — so they moved to
+// [`crate::domain::key::supports_ctap21_config`], where the record's own copy of
+// the same gate now also comes from.

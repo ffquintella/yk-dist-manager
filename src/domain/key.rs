@@ -223,7 +223,7 @@ impl YubiKeyRecord {
 
     /// Whether the firmware supports the 5.7-era FIDO configuration commands.
     pub fn supports_fido_min_pin_length(&self) -> bool {
-        matches!(self.firmware_triple(), Some((major, minor, _)) if (major, minor) >= (5, 7))
+        supports_min_pin_length(&self.firmware)
     }
 
     /// Audit detail for the removal of this record: what the register is losing.
@@ -279,4 +279,29 @@ pub fn note_audit_detail(before: &str, after: &str) -> String {
         _ => "changed",
     };
     format!("note={what} chars={after} was_chars={before}")
+}
+
+/// Whether a firmware version implements the CTAP 2.1 `authenticatorConfig`
+/// commands (`setMinPINLength`, `forcePINChange`, `alwaysUv`) — YubiKey 5.7 and
+/// newer. See `docs/yubikey-reference.md`.
+///
+/// A firmware version is a fact about the **key**, so the gate belongs here and
+/// not in a transport module. It used to live in `device::ykman`, which meant
+/// [`crate::domain::custody`] reached up into `device` for it — against the
+/// one-way dependency direction in AGENTS.md — and made a fact that has nothing
+/// to do with a subprocess look like something the subprocess provided. The
+/// comment there claimed to be the single gate "so a firmware fact is not
+/// re-derived in three places", while
+/// [`YubiKeyRecord::supports_fido_min_pin_length`] derived it again a few lines
+/// above. Now that method calls this, and there is one.
+pub fn supports_ctap21_config(firmware: &str) -> bool {
+    let mut it = firmware.split('.');
+    let major: u32 = it.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let minor: u32 = it.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+    (major, minor) >= (5, 7)
+}
+
+/// Firmware gate for the minimum-PIN-length policy.
+pub fn supports_min_pin_length(firmware: &str) -> bool {
+    supports_ctap21_config(firmware)
 }

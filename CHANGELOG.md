@@ -50,6 +50,21 @@ Maintenance instructions (see AGENTS.md §5):
   Firmware below 5.7 still refuses both steps — that is a firmware limit, not a transport
   one, and the note already says the consignment term carries the instruction instead.
 
+### Changed
+
+- **The CTAP 2.1 firmware gate moved out of the `ykman` module** — `src/domain/key.rs`,
+  `src/domain/custody.rs`, `src/device/ykman.rs`. `supports_ctap21_config` and
+  `supports_min_pin_length` are facts about a **key**, not about a transport, and living in
+  `device::ykman` had two consequences: `domain::custody` reached up into `device` for
+  them, against the one-way dependency direction in `AGENTS.md`, and the last `ykman` name
+  in the custody logic was not a subprocess call at all. Both are now
+  `domain::key` free functions.
+
+  Their doc comment claimed to be the single gate "so a firmware fact is not re-derived in
+  three places", while `YubiKeyRecord::supports_fido_min_pin_length` re-derived the same
+  `>= (5, 7)` comparison independently. That method now calls the free function, so there
+  is one gate and the claim is true.
+
 ## [0.17.2] - 2026-08-25
 
 ### Fixed

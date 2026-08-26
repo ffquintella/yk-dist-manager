@@ -118,7 +118,7 @@ pub enum ChangeEnforcement {
 impl ChangeEnforcement {
     /// For FIDO2, given the key's firmware.
     pub fn for_fido2(firmware: &str) -> Self {
-        if crate::device::ykman::supports_ctap21_config(firmware) {
+        if crate::domain::key::supports_ctap21_config(firmware) {
             ChangeEnforcement::ByFirmware
         } else {
             ChangeEnforcement::ByProcedure
