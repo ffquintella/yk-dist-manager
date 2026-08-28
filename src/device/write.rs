@@ -323,6 +323,48 @@ pub struct KeygenEvidence {
 
 // ----------------------------------------------------------------- the traits
 
+/// A challenge to be answered by an operator's own security key
+/// (`features/operator-auth-and-roles.md` phase 3).
+///
+/// The challenge is fresh randomness from the OS CSPRNG, not a constant and not
+/// a counter: an assertion over a fixed challenge is a reusable answer, which is
+/// the one thing a possession proof must not be.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssertionRequest {
+    /// The relying-party id the credential was registered under.
+    pub relying_party: String,
+    /// The credential this register expects to answer, hex.
+    pub credential_id_hex: String,
+    /// 32 bytes of randomness, hex.
+    pub challenge_hex: String,
+    /// Require the authenticator to verify the **user** — a PIN or a biometric —
+    /// and not merely that a finger touched the contact. Always true for a
+    /// sign-in, because a touch proves somebody is present and not who.
+    pub require_user_verification: bool,
+}
+
+/// What a security key answered with.
+///
+/// Note what is **not** here: no signature verification verdict. This tool does
+/// not hold the credential's public key, so what it can check is that the
+/// authenticator answering is the one registered, that it verified the user, and
+/// that its counter advanced — see `features/operator-auth-and-roles.md`, which
+/// records the missing public-key check as the phase's remaining work rather than
+/// implying it is done.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssertionEvidence {
+    pub credential_id_hex: String,
+    pub relying_party: String,
+    /// The authenticator reported a verified user (CTAP2 `uv` flag).
+    pub user_verified: bool,
+    /// The authenticator reported a present user (CTAP2 `up` flag).
+    pub user_present: bool,
+    /// Signature counter. Zero means this authenticator does not count, which the
+    /// specification permits; anything else going backwards is what a cloned one
+    /// looks like.
+    pub counter: u32,
+}
+
 /// FIDO2 / CTAP2 writes.
 pub trait Fido2Writer {
     /// Read the applet's current state, so a step can decide to skip.
@@ -348,6 +390,20 @@ pub trait Fido2Writer {
         request: &CredentialRequest,
         pin: &Secret,
     ) -> Result<CredentialEvidence>;
+
+    /// Prove possession of a credential, for an operator signing in
+    /// (`features/operator-auth-and-roles.md` phase 3).
+    ///
+    /// On this trait rather than in a module of its own because it is the same
+    /// applet, the same transport and the same PIN handling as everything above
+    /// it — and because putting it here is what lets the whole sign-in be driven
+    /// through [`MockWriter`], with no key attached and none required.
+    fn get_assertion(
+        &mut self,
+        serial: u32,
+        request: &AssertionRequest,
+        pin: &Secret,
+    ) -> Result<AssertionEvidence>;
 }
 
 /// PIV writes.
@@ -501,6 +557,13 @@ pub struct MockWriter {
     /// What each slot holds, so the verification step reads back what was written
     /// rather than what it hoped was written. Keyed by slot, like the card.
     certificates: std::collections::BTreeMap<String, String>,
+    /// How many assertions this mock has produced, which is what it reports as
+    /// the signature counter.
+    ///
+    /// On the mock rather than on [`Fido2State`], because it is not a property of
+    /// the applet that anything reads back off a key — it exists so a test can
+    /// drive the counter-replay check without one.
+    assertions: u32,
 }
 
 impl MockWriter {
@@ -700,6 +763,36 @@ impl Fido2Writer for MockWriter {
             credential_id_hex: format!("{:08x}", serial),
             relying_party: request.relying_party.clone(),
             algorithm: "ES256".into(),
+        })
+    }
+
+    fn get_assertion(
+        &mut self,
+        serial: u32,
+        request: &AssertionRequest,
+        pin: &Secret,
+    ) -> Result<AssertionEvidence> {
+        self.record(
+            "fido2.get_assertion",
+            serial,
+            vec![
+                request.relying_party.clone(),
+                request.credential_id_hex.clone(),
+                format!("uv={}", request.require_user_verification),
+            ],
+            1,
+        )?;
+        let _ = pin;
+        // Each assertion advances the counter, so a test can drive the replay
+        // check without a key: two sign-ins in a row must produce two different
+        // counters, and a test that wants the *replay* can assert on the first.
+        self.assertions += 1;
+        Ok(AssertionEvidence {
+            credential_id_hex: request.credential_id_hex.clone(),
+            relying_party: request.relying_party.clone(),
+            user_verified: request.require_user_verification,
+            user_present: true,
+            counter: self.assertions,
         })
     }
 }

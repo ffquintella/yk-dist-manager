@@ -146,9 +146,11 @@ impl Role {
     ///   append-only by trigger anyway, so "write" here can only mean *append*.
     /// * `open_sessions` — presence is a claim about who is looking, not a change
     ///   to the register.
-    /// * `operator_lockouts` — the failure counter must be writable by a session
-    ///   that has not authenticated, or the lockout cannot count the failures it
-    ///   exists to count.
+    /// * `operator_sign_ins` — everything the sign-in mechanism writes about
+    ///   itself (the failure counter, the last successful sign-in, the FIDO2
+    ///   signature counter) must be writable by a session that has **not**
+    ///   authenticated, because that is the only session there is while somebody
+    ///   is signing in.
     pub fn may_write_table(&self, table: &str) -> bool {
         if always_writable(table) {
             return true;
@@ -169,7 +171,7 @@ impl Role {
 pub const ADMINISTRATOR_ONLY_TABLES: [&str; 3] = ["templates", "term_templates", "operators"];
 
 /// Tables any signed-in session may write, including one that has not signed in.
-pub const ALWAYS_WRITABLE_TABLES: [&str; 3] = ["audit", "open_sessions", "operator_lockouts"];
+pub const ALWAYS_WRITABLE_TABLES: [&str; 3] = ["audit", "open_sessions", "operator_sign_ins"];
 
 fn always_writable(table: &str) -> bool {
     ALWAYS_WRITABLE_TABLES.contains(&table)
@@ -447,7 +449,7 @@ impl Authority {
             // A register with no operators is the register this tool has always
             // been. The control is off, and off means off — not "quietly on".
             Authority::Unenrolled => true,
-            // Enough to record the sign-in attempt and its lockout, and nothing
+            // Enough to record the sign-in attempt and its outcome, and nothing
             // else. In particular not `operators`: enrolling from a signed-out
             // session would be the way round the whole feature.
             Authority::SignedOut => always_writable(table),
@@ -621,7 +623,7 @@ mod tests {
         let authority = Authority::SignedOut;
         assert!(authority.may(Action::Read));
         assert!(!authority.may(Action::ManageInventory));
-        assert!(authority.may_write_table("operator_lockouts"));
+        assert!(authority.may_write_table("operator_sign_ins"));
         assert!(authority.may_write_table("audit"));
         // Enrolling from a signed-out session would be the way round the feature.
         assert!(!authority.may_write_table("operators"));

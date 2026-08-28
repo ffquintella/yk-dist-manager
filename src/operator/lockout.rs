@@ -33,7 +33,7 @@
 //! ## Why the state is in the database
 //!
 //! A counter in memory is reset by closing the window, which makes the lockout a
-//! suggestion. It lives in `operator_lockouts`, which is one of the three tables
+//! suggestion. It lives in `operator_sign_ins`, which is one of the three tables
 //! a session that has **not** signed in may write — it must be, or the mechanism
 //! cannot count the failures it exists to count.
 

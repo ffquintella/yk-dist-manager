@@ -114,6 +114,20 @@ impl Fido2Writer for NativeBackend {
             Err(unavailable("fido2.make_credential", "native-fido"))
         }
     }
+    fn get_assertion(
+        &mut self,
+        serial: u32,
+        request: &super::write::AssertionRequest,
+        pin: &Secret,
+    ) -> Result<super::write::AssertionEvidence> {
+        #[cfg(feature = "native-fido")]
+        return self.fido2.get_assertion(serial, request, pin);
+        #[cfg(not(feature = "native-fido"))]
+        {
+            let _ = (serial, request, pin);
+            Err(unavailable("fido2.get_assertion", "native-fido"))
+        }
+    }
 }
 
 impl PivWriter for NativeBackend {
