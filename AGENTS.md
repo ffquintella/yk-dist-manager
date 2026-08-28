@@ -334,9 +334,15 @@ make coverage-core     # THE GATE: cargo llvm-cov --all-features --fail-under-li
 make coverage-html     # browsable, when you need to find the gap
 ```
 
-Current: **85.75%** core line coverage (86.24% region), measured 2026-08-26 by
-`make coverage-core` on the full `--all-features` suite, 549 of those tests in the
-`--lib` binary.
+Current: **85.72%** core line coverage (86.28% region), measured 2026-08-28 by
+`make coverage-core` on the full `--all-features` suite — 1120 tests across 58
+binaries, 583 of them in the `--lib` binary.
+
+Three hundredths of a point below the 2026-08-26 figure of 85.75%, and the region
+number went *up*: operator authentication and roles added
+[`src/operator/`](src/operator/) and [`src/store/operators.rs`](src/store/operators.rs)
+at 87%, 96% and 80%, which is a little below the core's own average and therefore
+pulls it down by almost nothing. Recorded rather than rounded away.
 
 The figure stood at 87.02% until the factory reset stopped needing `ykman`
 (`dfa1f80`): [`device::ctaphid`](src/device/ctaphid.rs) and
