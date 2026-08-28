@@ -6600,9 +6600,17 @@ impl YkDistApp {
         );
         if refusal {
             let actor = self.operator.clone();
+            // *Which* of the two refusals it was, because they call for different
+            // answers: `role` means somebody needs a different role, and
+            // `reverification` means they only have to present their credential
+            // again. A trail that recorded both as "role" would send every
+            // re-verification prompt to an administrator.
+            let reason = match &e {
+                crate::store::StoreError::NeedsReverification { .. } => "reverification",
+                _ => "role",
+            };
             if let Some(store) = &self.store {
-                let _reason = e.to_string();
-                if let Err(audit) = store.record_refusal(&actor, action, "role") {
+                if let Err(audit) = store.record_refusal(&actor, action, reason) {
                     tracing::error!(
                         event = "audit.append.failed",
                         what = "operator.authorisation.refused",
@@ -8921,6 +8929,25 @@ impl eframe::App for YkDistApp {
         // Notices a file server that has gone away under a share-hosted register,
         // rather than letting the next write be the thing that finds out.
         self.tick_share_health();
+        // Whether whoever signed in is still at the keyboard
+        // (`features/operator-auth-and-roles.md` phase 6). Any input event this
+        // frame is a person; a repaint asked for by the device watch, the lease
+        // or the share probe is not, and must not hold a walked-away session
+        // open. So the touch is conditional and the tick is not.
+        let now = chrono::Utc::now();
+        if ui.ctx().input(|input| !input.events.is_empty()) {
+            self.touch_session(now);
+        }
+        self.tick_session(now);
+        if self.session.session().is_some() {
+            // egui sleeps when idle, and an idle session is precisely the case in
+            // which nothing else asks for a frame: without this the lock would
+            // land on the next mouse move, which is the one moment it is not
+            // wanted. The interval only has to be finer than the thresholds it
+            // watches (5 and 30 minutes), not precise.
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs(15));
+        }
         // A confirmed FIDO2 reset waiting for its key to come back. First, because
         // it may fire the run this frame, and because it decides whether the
         // background watch may run at all.
