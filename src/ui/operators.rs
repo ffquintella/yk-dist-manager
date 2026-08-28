@@ -61,7 +61,7 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
 fn unenrolled(app: &mut YkDistApp, ui: &mut egui::Ui) {
     super::notice(
         ui,
-        CalloutTone::Warn,
+        CalloutTone::Warning,
         "This register has no operators. Every audit entry is signed with this workstation's \
          signed-in user, which is a label and not authentication — the trail is only as strong \
          as physical control of this machine. Nothing is refused, and the register works exactly \
@@ -153,10 +153,7 @@ fn unenrolled(app: &mut YkDistApp, ui: &mut egui::Ui) {
             && !app.operator_panel.first_display_name.trim().is_empty()
             && assessment.is_acceptable();
         if ui
-            .add_enabled(
-                ready,
-                Button::new("Create the first administrator").primary(),
-            )
+            .add(Button::new("Create the first administrator").enabled(ready))
             .on_hover_text("switches authorisation on for this register, permanently")
             .clicked()
         {
@@ -182,7 +179,7 @@ fn sign_in_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
         if let Some(action) = reverifying {
             super::notice(
                 ui,
-                CalloutTone::Warn,
+                CalloutTone::Warning,
                 &format!(
                     "Before you {}: a session records when somebody signed in, not whether they \
                      are still at the workstation. Present your credential again.",
@@ -223,14 +220,14 @@ fn sign_in_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
         ui.add_space(12.0);
         ui.horizontal_wrapped(|ui| {
             if reverifying.is_some() {
-                if ui.add(Button::new("Confirm").primary()).clicked() {
+                if ui.add(Button::new("Confirm")).clicked() {
                     app.complete_reverification();
                 }
                 if ui.add(Button::new("Cancel").outline()).clicked() {
                     app.sign_in.reset();
                 }
             } else {
-                if ui.add(Button::new("Sign in").primary()).clicked() {
+                if ui.add(Button::new("Sign in")).clicked() {
                     let username = locked
                         .is_some()
                         .then(|| {
@@ -381,10 +378,7 @@ fn enrol_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
         let ready = !app.operator_panel.new_username.trim().is_empty()
             && !app.operator_panel.new_display_name.trim().is_empty()
             && assessment.is_acceptable();
-        if ui
-            .add_enabled(ready, Button::new("Enrol").primary())
-            .clicked()
-        {
+        if ui.add(Button::new("Enrol").enabled(ready)).clicked() {
             app.enrol_operator();
         }
     });
