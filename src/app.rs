@@ -2466,11 +2466,13 @@ impl YkDistApp {
             Err(e) => tracing::error!(event = "term.seed.failed", reason = %e),
         }
         self.settings.remember(&config.path);
-        // This register's own operator, when it has one, so the actor on every
-        // audit entry from here on is whoever works in *this* register rather
-        // than whoever last typed a name on this workstation
-        // (`features/database-selection.md` phase 8).
-        self.operator = self.settings.operator_for(&config.path);
+        // The operator is **not** read from settings any more
+        // (`features/operator-auth-and-roles.md` phase 8): it comes from the
+        // session, and `adopt_register_authority` below decides what that is.
+        // `AppSettings::operators` — the per-register name from
+        // `features/database-selection.md` phase 8 — is kept for a register that
+        // has nobody enrolled, where the workstation user is still the honest
+        // answer and is labelled as such.
         self.settings.org = self.org.clone();
         self.settings.save_quietly();
 
@@ -2485,6 +2487,13 @@ impl YkDistApp {
         self.status = store.describe();
         self.config = config;
         self.store = Some(store);
+
+        // Who may use *this* register, which is a property of the file and not of
+        // the workstation (`features/operator-auth-and-roles.md`). Immediately
+        // after the store is adopted and before anything is read through it: a
+        // frame painted between the two would be a frame under the previous
+        // register's authority.
+        self.adopt_register_authority();
 
         // A sync client that could not decide leaves copies behind, and that is
         // the failure this location is dangerous for: two divergent registers.
@@ -2935,10 +2944,20 @@ impl YkDistApp {
         // (`features/database-selection.md` phase 8): the workstation's default is
         // what a register nobody has named an operator for uses, and overwriting
         // it here is how one name leaked onto every other register on the machine.
+        //
+        // Only while the register is unenrolled, though
+        // (`features/operator-auth-and-roles.md` phase 8): with authentication on,
+        // `self.operator` is the *session's* identity, and remembering that as the
+        // register's workstation label would write "(not signed in)" into the
+        // settings file between sign-ins and one operator's username into it
+        // afterwards. In the unenrolled state the two are the same string, which
+        // is the only state in which this write ever meant anything.
         if self.store.is_some() {
-            let path = self.config.path.clone();
-            let operator = self.operator.clone();
-            self.settings.remember_operator(&path, &operator);
+            if !self.is_enrolled() {
+                let path = self.config.path.clone();
+                let operator = self.operator.clone();
+                self.settings.remember_operator(&path, &operator);
+            }
         } else {
             self.settings.operator = self.operator.clone();
         }
@@ -6135,7 +6154,7 @@ impl YkDistApp {
         };
         self.session = if count == 0 {
             crate::operator::SessionState::Unenrolled {
-                workstation_user: self.settings.operator.clone(),
+                workstation_user: self.settings.operator_for(&self.config.path),
             }
         } else {
             crate::operator::SessionState::SignedOut
