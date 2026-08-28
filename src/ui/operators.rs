@@ -227,6 +227,7 @@ fn sign_in_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
         }
 
         ui.add_space(12.0);
+        let is_locked = locked.is_some();
         ui.horizontal_wrapped(|ui| {
             if reverifying.is_some() {
                 if ui.add(Button::new("Confirm")).clicked() {
@@ -237,16 +238,7 @@ fn sign_in_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
                 }
             } else {
                 if ui.add(Button::new("Sign in")).clicked() {
-                    let username = locked
-                        .is_some()
-                        .then(|| {
-                            app.session
-                                .session()
-                                .map(|session| session.username.clone())
-                                .unwrap_or_default()
-                        })
-                        .unwrap_or_else(|| app.sign_in.username.clone());
-                    app.sign_in.username = username;
+                    app.sign_in.username = who_is_signing_in(app, is_locked);
                     app.sign_in_with_password();
                 }
                 if locked.is_some() && ui.add(Button::new("Sign out instead").outline()).clicked() {
@@ -276,16 +268,7 @@ fn sign_in_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
                 .add(Button::new("Sign in with a security key").outline())
                 .clicked()
             {
-                let username = locked
-                    .is_some()
-                    .then(|| {
-                        app.session
-                            .session()
-                            .map(|session| session.username.clone())
-                            .unwrap_or_default()
-                    })
-                    .unwrap_or_else(|| app.sign_in.username.clone());
-                app.sign_in.username = username;
+                app.sign_in.username = who_is_signing_in(app, locked.is_some());
                 app.sign_in_with_attached_key();
             }
         }
@@ -298,6 +281,22 @@ fn sign_in_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
              logged, recorded or kept.",
         );
     });
+}
+
+/// Whose sign-in this is.
+///
+/// A **locked** session already knows the name — re-opening it is the same person
+/// coming back to the desk, not a chance to become somebody else — so the typed
+/// field is only consulted for a fresh sign-in.
+fn who_is_signing_in(app: &YkDistApp, locked: bool) -> String {
+    if locked {
+        app.session
+            .session()
+            .map(|session| session.username.clone())
+            .unwrap_or_default()
+    } else {
+        app.sign_in.username.clone()
+    }
 }
 
 fn session_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
@@ -556,15 +555,15 @@ fn list_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
         );
     });
 
-    if let Some((id, role)) = role_change {
-        if app.require_reverification(crate::operator::Action::ManageOperators) {
-            app.change_operator_role(id, role);
-        }
+    if let Some((id, role)) = role_change
+        && app.require_reverification(crate::operator::Action::ManageOperators)
+    {
+        app.change_operator_role(id, role);
     }
-    if let Some((id, active)) = active_change {
-        if app.require_reverification(crate::operator::Action::ManageOperators) {
-            app.set_operator_active(id, active);
-        }
+    if let Some((id, active)) = active_change
+        && app.require_reverification(crate::operator::Action::ManageOperators)
+    {
+        app.set_operator_active(id, active);
     }
     if let Some(username) = unlock
         && app.require_reverification(crate::operator::Action::ManageOperators)

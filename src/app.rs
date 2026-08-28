@@ -6828,14 +6828,14 @@ impl YkDistApp {
                 crate::store::StoreError::NeedsReverification { .. } => "reverification",
                 _ => "role",
             };
-            if let Some(store) = &self.store {
-                if let Err(audit) = store.record_refusal(&actor, action, reason) {
-                    tracing::error!(
-                        event = "audit.append.failed",
-                        what = "operator.authorisation.refused",
-                        reason = %audit
-                    );
-                }
+            if let Some(store) = &self.store
+                && let Err(audit) = store.record_refusal(&actor, action, reason)
+            {
+                tracing::error!(
+                    event = "audit.append.failed",
+                    what = "operator.authorisation.refused",
+                    reason = %audit
+                );
             }
         }
         tracing::warn!(event = "operator.action.refused", action = action.slug(), reason = %e);
