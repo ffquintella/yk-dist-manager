@@ -444,19 +444,39 @@ the register is in:
   database password: one keeps a copy of the file unreadable, the other says who you are,
   and neither does the other's job.
 * **Signed out, or locked.** The sign-in card. A locked session names whose it is and says
-  nothing was lost; a re-verification prompt names the operation it is gating and why a
-  session is not an answer to it. The refusal for an unknown username is word for word the
-  refusal for a wrong password.
+  nothing was lost. The refusal for an unknown username is word for word the refusal for a
+  wrong password, and **Sign in with a security key** is offered whether or not the account
+  being signed in has one registered — a button that appeared only for an account that did
+  would answer *is there an operator called ana, and has she got a key* to anybody at the
+  keyboard, which is the question those identical refusals exist to avoid. With a key, the
+  password field is the **key's PIN** and the card says so.
 * **Signed in.** *This session* — who, which role, what that role means in one sentence,
   how long it has been idle, when it locks and ends, and how long a re-verification has
   left — with **Lock** and **Sign out**. An administrator additionally gets *Enrol an
-  operator* and the list, where a role can be changed and an operator enabled or disabled.
-  Never deleted: that would orphan every audit entry they wrote.
+  operator* and the list, where a role can be changed, an operator enabled or disabled, a
+  lockout cleared, and a security key registered or replaced. Never deleted: that would
+  orphan every audit entry they wrote.
+
+  Registering a key asks for its **serial** as well as its PIN, which is the same
+  confirmation the factory reset asks for and for the same reason: a credential written to
+  the wrong key is one an operator cannot sign in with and cannot easily find.
+
+  A **re-verification prompt** appears here too, above the list, whenever a sensitive
+  operation on *any* screen has asked for the credential again — the refusal brings the
+  operator to this screen, because a status line pointing at a screen they have to find is
+  not a prompt. It names the operation it is gating and why a session is not an answer
+  to it.
 
 Everything on this screen is hidden from a role that may not use it. That is a courtesy
 and not the control — `Store` refuses every one of these writes on its own, by a SQLite
-authorizer on the connection and by `Store::require`, so a button painted by mistake still
-cannot change the register.
+authorizer on the connection, by `Store::require` for what is not a table write and by
+`Store::require_fresh_credential` for the credential a statement cannot express, so a
+button painted by mistake still cannot change the register.
+
+The idle clock runs from the frame loop, so a session locks on a workstation nobody is
+touching rather than on the next mouse move. A signed-in session therefore asks for a
+repaint every 15 seconds; activity is counted from input events only, so a repaint the
+device watch or the sync lease asked for does not hold a walked-away session open.
 
 ### Settings
 

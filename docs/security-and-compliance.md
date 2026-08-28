@@ -197,9 +197,27 @@ authorisation, so there are two layers below it:
    code path reached a write it had no business reaching.
 2. **`Store::require`**, for what is not a table write at all: resetting an applet writes
    to hardware, changing the database password re-keys a file, an export takes personal
-   data out of the register.
+   data out of the register. Called *before* the write in each case — a reset refused once
+   the applet is gone is not a refusal — and for the re-key called in `app` rather than in
+   `Store::change_password`, because that method takes the store by value and a refusal
+   raised inside it would close the register as the price of saying no.
+3. **`Store::require_fresh_credential`**, for a write the authorizer already covers by
+   table: a procedure, a term. It checks the **re-verification only** and leaves the role
+   refusal to SQLite, deliberately — SQLite refuses the statement whether or not the line
+   is there, it is the layer a mutation written next year inherits without anybody
+   remembering, and a live credential is the one thing a statement cannot express.
+   `tests/unit_store_operators.rs` pins both halves: that a distributor's template write
+   comes back `NotAuthorised` from the database, and that an administrator's comes back
+   `NeedsReverification` from the check.
 
 The screen additionally hides what a role cannot do. That is a courtesy, not the control.
+
+**Verified 2026-08-28.** These layers were written before anything called them: at the
+point the feature was first marked done, `Store::require` had six call sites and all six
+were operator management, so a procedure edit, an applet reset, a re-key and an export all
+went through with a session of any age behind them. The two-layer design was sound and the
+wiring was absent. Read a claim of enforcement as a claim about call sites, not about
+functions.
 
 ### The first-run answer, and why it is not a migration
 
@@ -260,8 +278,15 @@ A session locks after 5 idle minutes and ends after 30 (`operator.logout` with
 applet, changing the database password, managing operators, taking an export — asks for the
 credential again regardless of the session, because *when did somebody authenticate* and
 *are they still here* are different questions on a shared hand-over desk. The
-re-verification is good for two minutes, is discarded by a lock, and is enforced in
-`Store::require` rather than at the button.
+re-verification is good for two minutes, is discarded by a lock, and is enforced at the
+write rather than at the button.
+
+The idle clock is run from the application's frame loop, and a signed-in session asks for
+a repaint every 15 seconds — egui sleeps when nothing is happening, and an idle session is
+exactly the case in which nothing else asks for a frame, so without that the lock would
+land on the next mouse move: the one moment it is not wanted. Activity is counted from
+input events only; a repaint asked for by the device watch, the sync lease or the share
+probe is not a person at the keyboard and must not hold a walked-away session open.
 
 ### MFA with the tool's own product
 
@@ -271,11 +296,27 @@ somebody is present and not who. The register checks that the authenticator answ
 the one registered for that operator, that it reported UV, and that its signature counter
 advanced (a counter going backwards is what a cloned authenticator looks like).
 
-Two limits, stated rather than implied:
+Registering that credential is the administrator's act, on the Operators screen, gated on
+the same re-verification as every other operator change and audited as
+`operator.credential.changed … method=fido2`. The resident credential is made on the key
+with user verification required; this register keeps its public id, relying party and
+serial, and the private key never leaves the authenticator, which is the property the
+whole method rests on.
 
-- **Not hardware-verified.** The exchange is written against `ctap-hid-fido2` 3.5 and
+The sign-in button is offered whether or not the account being signed in has a key
+registered. That is a decision: showing it only for an account that has one would answer
+*is there an operator called ana, and has she got a key* to anybody at the keyboard, which
+is the question every refusal on that screen is worded to avoid.
+
+Three limits, stated rather than implied:
+
+- **Not hardware-verified.** Both exchanges — `authenticatorMakeCredential` to register and
+  `authenticatorGetAssertion` to sign in — are written against `ctap-hid-fido2` 3.5 and
   exercised end to end through `device::write::MockWriter`; no key was attached. The same
   label PIV carries.
+- **Re-verification is by password even for an operator who signed in with a key.** The
+  prompt is there and the refusal is enforced; the second factor for a key-holder is
+  currently the same credential rather than a fresh touch.
 - **The assertion signature is not verified.** That needs the credential's COSE public key,
   which the transport does not currently surface, and a P-256 verifier this build does not
   carry. What is proved today is possession of an authenticator that answers for that
@@ -523,9 +564,12 @@ everything that does not depend on it, and say plainly what is pending. That is 
    instance. Mirror designed, not built. *ESI sign-off required.*
 2. **Operator authentication** — **mostly closed.** Roles, local Argon2id credentials, FIDO2
    sign-in, sessions, re-verification and an operator management screen are built and enforced
-   in `Store` ([§2a](#2a-operator-authentication-and-roles)). Three residues: a register nobody
+   in `Store` ([§2a](#2a-operator-authentication-and-roles)). Four residues: a register nobody
    has enrolled into is still in the old state *by deliberate design*, the FIDO2 assertion
-   *signature* is not verified, and the FIDO2 path is not hardware-verified. The Argon2id
+   *signature* is not verified, the FIDO2 path is not hardware-verified, and
+   `Action::ChangeSecuritySettings` has no call site because the settings it names live in a
+   file on the workstation rather than a table in the register — whether a workstation-level
+   setting is a *register* authorisation question is itself an **ESI** premise. The Argon2id
    parameters and the lockout's applicability are **ESI** ratifications, not implementer's
    choices.
 3. **AD integration** — required by the norm, not built. *Feature specified.*

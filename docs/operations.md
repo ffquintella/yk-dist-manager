@@ -150,8 +150,12 @@ name in the top bar. *Copy the report* puts it on the clipboard, which is the qu
 way to answer "which build, on what machine?" without asking somebody to open a
 terminal.
 
-Set the operator name and organisation in **Settings**. Check that the status bar shows the
-database path and whether it is local or on a share.
+Set the organisation in **Settings** — it reaches the certificate subject and the FIDO2
+relying-party id, so it is not cosmetic. The operator is **shown there, never typed**: it
+comes from the session, and on a register nobody has enrolled into it is the workstation's
+signed-in user, labelled on screen as a label rather than an identity. See *Runbook: turn
+operator authentication on* below. Check that the status bar shows the database path and
+whether it is local or on a share.
 
 ### Which transport is reading the hardware
 
@@ -244,8 +248,25 @@ the tool must not assume the same person returned.
 An administrator can register a FIDO2 credential on an operator's own YubiKey, and that
 operator then signs in by presenting it with their PIN. The key must **verify the user** —
 a PIN or a biometric, not merely a touch — because a touch proves somebody is present and
-not who. This path is built and has **not been verified against real hardware**; the
-password remains the break-glass route.
+not who.
+
+To register one: **Operators** → the operator's row → *Register a security key*. Attach
+**their** key, type its **serial** and its PIN, and press *Register it*. The serial is
+asked for rather than read off whichever key is attached, for the same reason the factory
+reset asks you to type it: a credential written to the wrong key is one that operator
+cannot sign in with and cannot easily find. It is recorded as
+`operator.credential.changed … method=fido2`, and the register keeps only the credential's
+public id — the private key never leaves the key. *Replace security key* is the same
+action for a key that has been lost or swapped.
+
+To sign in with one: type the username, put the **key's PIN** in the password field, and
+press *Sign in with a security key*. That button is there whether or not the account has a
+key registered, deliberately — one that appeared only for accounts that did would tell
+anybody at the keyboard which operators exist and which of them carry a key.
+
+This path is built and has **not been verified against real hardware** — neither half of
+it. The password remains the break-glass route, and it is also still what a
+re-verification asks for, even for an operator who signed in with a key.
 
 ## Choosing, creating and switching databases
 
@@ -266,7 +287,7 @@ Once open, **Settings → Switch database…** closes the current one and brings
 back. The last database used is reopened at the next start, unless `$YKDM_DB` says
 otherwise.
 
-The recent list and the operator identity live in `settings.json` in the per-user data
+The recent list lives in `settings.json` in the per-user data
 directory (`$YKDM_SETTINGS` overrides it). **It never holds the database password** — it
 sits next to the database, so storing one there would defeat encrypting it.
 

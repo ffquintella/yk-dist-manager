@@ -45,9 +45,16 @@ Maintenance instructions (see AGENTS.md §5):
   methods that write, and the reason a mutation added next year is covered without
   anybody remembering to cover it — and `Store::require` for what is not a table
   write at all: an applet reset writes to hardware, a password change re-keys a
-  file, an export takes personal data out of the register. The screen additionally
-  hides what a role cannot do, as a courtesy; a button painted by mistake still
-  cannot change anything.
+  file, an export takes personal data out of the register. Each of those is called
+  *before* the write, because a reset refused once the applet is gone is not a
+  refusal; the re-key is guarded in `app` rather than inside
+  `Store::change_password`, which takes the store by value and would otherwise
+  close the register as the price of saying no. A third entry point,
+  `Store::require_fresh_credential`, covers a procedure or a term — a table the
+  authorizer already guards by name, where the *role* refusal is deliberately left
+  to SQLite and only the live credential, which no statement can express, is
+  checked explicitly. The screen additionally hides what a role cannot do, as a
+  courtesy; a button painted by mistake still cannot change anything.
 
   **An existing register does not become unopenable, and that shaped the design.**
   A migration cannot create an administrator without inventing a credential for
@@ -87,17 +94,37 @@ Maintenance instructions (see AGENTS.md §5):
   after 30 — and anything destructive or irreversible asks for the credential again
   regardless, because *when did somebody authenticate* and *are they still here* are
   different questions. That re-verification is good for two minutes and is enforced
-  in `Store::require`, not at the button.
+  at the write, not at the button. The idle clock runs from the frame loop, and a
+  signed-in session asks for a repaint every 15 seconds — egui sleeps when nothing
+  is happening, and an idle session is exactly the case in which nothing else asks
+  for a frame, so without it the lock would land on the next mouse move: the one
+  moment it is not wanted. Activity is counted from input events only, so a repaint
+  the device watch or the sync lease asked for does not hold a walked-away session
+  open. A refusal for a lapsed re-verification brings the operator to the screen
+  that carries the prompt, rather than leaving a status line pointing at a screen
+  they have to find, and is recorded as `reason=reverification` rather than
+  `reason=role` — the two call for different answers.
 
   **FIDO2 sign-in is built and not hardware-verified.** `Fido2Writer::get_assertion`
   puts it on the same trait as the bootstrap's writes, which is what lets the whole
-  sign-in be driven through `MockBackend` with no key attached and none required.
+  sign-in be driven through `MockWriter` with no key attached and none required.
   The register checks that the authenticator answering is the one registered, that
   it reported *user verification* rather than merely a touch — a touch proves
   somebody is present, not who — and that its signature counter advanced. It does
   **not** verify the assertion signature, which needs the credential's public key
   and a P-256 verifier this build does not carry; that gap is named in the feature
   file rather than implied away.
+
+  Both halves are reachable from the screen. An administrator registers a key for
+  an operator from the Operators list, typing its **serial** as well as its PIN —
+  the same confirmation the factory reset asks for, because a credential written to
+  the wrong key is one that operator cannot sign in with and cannot easily find —
+  and the register keeps only the credential's public id, relying party and serial.
+  *Sign in with a security key* is offered whether or not the account being signed
+  in has one registered, deliberately: a button that appeared only for accounts that
+  did would tell anybody at the keyboard which operators exist and which of them
+  carry a key, which is the question the identical refusals for a wrong password and
+  an unknown username exist to avoid.
 
   **AD authentication (phase 4) is deliberately not built.** `AGENTS.md` §8 makes
   integration with a corporate system an ESI decision, and guessing at a mechanism
@@ -110,6 +137,15 @@ Maintenance instructions (see AGENTS.md §5):
   session that had not yet signed in.
 
   New dependency `argon2`, and the `hooks` feature of the existing `rusqlite`.
+
+  Tests: `tests/unit_store_operators.rs` takes the store, tells it which role it is
+  acting as and tries the write, so a refusal that can be got round by calling the
+  method could be got round by a button. `tests/behaviour_operator_auth.rs` drives
+  a real `YkDistApp` through the eight scenarios that only exist once one is
+  holding the store — and the first of them is the one that must never be weakened:
+  a register migrated to v9 with an empty `operators` table refuses **nothing**,
+  not a template edit, not an applet reset, not a re-key, not an export. Every
+  scenario asserts that the whole trail contains no password and no PIN.
 
 ### Fixed
 

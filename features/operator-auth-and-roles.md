@@ -20,24 +20,60 @@ sensitive operation by any reading.
 
 ## Current state
 
-**Phases 1, 2, 3, 5, 6, 7 and 8 are built. Phase 4 (AD) is not, and is not the
-implementer's to build** — `AGENTS.md` §8 makes every corporate-system integration the
-ESI's decision, and this spec already says the mechanism needs their approval.
+**Phases 1, 2, 3, 5, 6, 7 and 8 are built, called from the application, and
+covered by tests. Phase 4 (AD) is not, and is not the implementer's** —
+`AGENTS.md` §8 makes every corporate-system integration the ESI's decision, and
+this spec already says the mechanism needs their approval.
 
-`YkDistApp::operator` is no longer a public, editable field: it is private, derived from
-the session, and the Settings text input is gone. Roles are enforced by `Store` — a SQLite
-authorizer on the connection plus `Store::require` for what is not a table write — so a UI
-bug cannot bypass authorisation. Schema **v9** adds `operators` and `operator_sign_ins`.
+`YkDistApp::operator` is no longer a public, editable field: it is private,
+derived from the session, and the Settings text input is gone. Roles are enforced
+by `Store` — a SQLite authorizer on the connection plus `Store::require` for what
+is not a table write — so a UI bug cannot bypass authorisation. Schema **v9** adds
+`operators` and `operator_sign_ins`.
 
-**A register written before this release is unaffected until somebody switches the control
-on.** An empty `operators` table is `Authority::Unenrolled`, in which nothing is refused;
-the first administrator is created by a deliberate, audited first-run path on the Operators
-screen. See *The first-run answer* below.
+**A register written before this release is unaffected until somebody switches the
+control on.** An empty `operators` table is `Authority::Unenrolled`, in which
+nothing is refused; the first administrator is created by a deliberate, audited
+first-run path on the Operators screen. See *The first-run answer* below, and
+`scenario_a_register_migrated_to_v9_refuses_nothing` in
+`tests/behaviour_operator_auth.rs`, which is the test that must never be
+weakened.
 
-**Phase 3 is built, not hardware-verified.** The CTAP2 `authenticatorGetAssertion` exchange
-is written against `ctap-hid-fido2` 3.5 and exercised end to end through
-`device::write::MockWriter`; no key was attached to the workstation it was written on. This
-is the same label PIV already carries in this repository.
+**Phase 3 is built, not hardware-verified.** The CTAP2 exchanges — both
+`authenticatorMakeCredential` for registering an operator's key and
+`authenticatorGetAssertion` for signing in with it — are written against
+`ctap-hid-fido2` 3.5 and exercised end to end through `device::write::MockWriter`;
+no key was attached to the workstation they were written on. This is the same
+label PIV already carries in this repository. The assertion *signature* is still
+not checked — see the gap below, verified against the code on 2026-08-28.
+
+### What the second pass found and fixed (2026-08-28)
+
+Everything above was claimed before it was true, and four of the claims were
+wrong. Recorded here rather than quietly corrected, because a phase table that
+has been wrong once is worth reading sceptically:
+
+1. **The branch did not compile.** `src/ui/operators.rs` was written against an
+   `egui-elegance` 0.15 API that does not exist (`CalloutTone::Warn`,
+   `Button::primary()`). Six errors, in `HEAD` itself.
+2. **The idle clock was never run.** `tick_session` and `touch_session` existed
+   and no frame called either, so `last_activity` never advanced and no session
+   ever locked or timed out. Phase 6 was a pair of constants nothing read.
+3. **`Store::require` had six call sites, all six in operator management.**
+   Editing a procedure or a term, factory-resetting an applet, changing the
+   database password and taking an export all went through with a session of any
+   age behind them — and for the reset and the re-key no authorizer can see them
+   at all, so an auditor could have factory-reset a key. Phase 5's claim that it
+   was "enforced in `Store::require`, not only at the button" was false for
+   everything except the operator list.
+4. **Phase 3 had no way in.** `sign_in_with_key` had no caller and
+   `register_operator_credential` had nothing to feed it, so no operator could
+   ever have held a credential and the sign-in was unreachable code.
+
+Two smaller ones: `operator.authorisation.refused` recorded `reason=role` for
+every refusal including a re-verification, and `require_reverification` set a
+field that only the *signed-out* branch of the Operators screen painted, so a
+signed-in operator got a status line and no prompt to answer it.
 
 ## Design
 
@@ -86,10 +122,10 @@ Option 1 for daily use with option 2 for identity, if both are available, is the
 |---|---|---|---|
 | 1 | Roles in the data model + enforcement points | **Done** | `operator::Role`/`Action`; enforced by a SQLite authorizer on the connection **and** `Store::require`, never only in the UI |
 | 2 | Local operator accounts with Argon2id + progressive lockout | **Done** | break-glass path; parameters are documented defaults **pending ESI ratification** |
-| 3 | FIDO2 authentication with the operator's own YubiKey | **Built, not hardware-verified** | `Fido2Writer::get_assertion`; driven through `MockBackend`, no key attached. The assertion *signature* is not checked — see the gap below |
+| 3 | FIDO2 authentication with the operator's own YubiKey | **Built, not hardware-verified** | Both halves reachable: `register_key_for_operator` makes the credential, `sign_in_with_key` proves possession. Driven through `MockWriter`, no key attached. The assertion *signature* is not checked — see the gap below |
 | 4 | AD authentication and group→role mapping | Todo | **ESI's, not the implementer's** (`AGENTS.md` §8). Deliberately not guessed at |
-| 5 | Re-verification for sensitive operations | **Done** | 2-minute window; enforced in `Store::require`, not only at the button |
-| 6 | Session lock, timeout, explicit logout | **Done** | locks at 5 min idle, ends at 30 |
+| 5 | Re-verification for sensitive operations | **Done** | 2-minute window. Enforced at the write: `Store::require` for the applet reset, the re-key and the three export paths; `Store::require_fresh_credential` for a procedure or a term, which leaves the *role* refusal to the authorizer that already covers those tables |
+| 6 | Session lock, timeout, explicit logout | **Done** | locks at 5 min idle, ends at 30, and the clock is run from the frame loop — an idle session asks for a repaint every 15 s, because egui sleeps when idle |
 | 7 | Operator management screen (admins only), fully audited | **Done** | plus the first-run administrator path |
 | 8 | Remove the editable operator field | **Done** | `YkDistApp::operator` is private and derived; the Settings input is gone |
 
@@ -137,22 +173,37 @@ audited **always**; they are all here.
 
 ## Tests
 
-All five the spec asked for are written, plus what the change owed:
+All five the spec asked for are written, plus what the change owed. The two
+layers are tested apart: `unit_store_operators` never builds a `YkDistApp`, and
+`behaviour_operator_auth` only ever goes through one.
 
 | Test | Where |
 |---|---|
-| A distributor cannot edit a template; an auditor cannot write anything — **at the store layer** | `tests/unit_store_operators.rs` |
+| A distributor cannot edit a template; an auditor cannot write anything — **at the store layer**, refused by SQLite | `tests/unit_store_operators.rs`, `tests/behaviour_operator_auth.rs` |
 | Progressive lockout timings, exactly as specified | `src/operator/lockout.rs` |
 | A failed login is audited with no password material in the entry | `tests/unit_store_operators.rs`, `tests/behaviour_operator_auth.rs` |
 | A sensitive operation without re-verification is refused | `tests/unit_store_operators.rs`, `tests/behaviour_operator_auth.rs` |
 | Argon2id at the agreed parameters, and nothing of the password in the stored value | `src/operator/credential.rs` |
 | An unenrolled register refuses nothing, and the first-run path closes after one use | `tests/unit_store_operators.rs`, `tests/behaviour_operator_auth.rs` |
 | The last administrator can be neither demoted nor disabled | `tests/unit_store_operators.rs` |
-| An unknown username is refused in the same words as a wrong password | `tests/unit_store_operators.rs` |
+| An unknown username is refused in the same words as a wrong password | `tests/unit_store_operators.rs`, `tests/behaviour_operator_auth.rs` |
 | Failures against a username that does not exist are counted too | `tests/unit_store_operators.rs` |
-| The audit actor becomes the authenticated identity | `tests/behaviour_operator_auth.rs` |
+| The audit actor becomes the authenticated identity, and reverts to a name no person owns on sign-out | `tests/behaviour_operator_auth.rs` |
 | A session locks on idle and ends on timeout | `src/operator/session.rs`, `tests/behaviour_operator_auth.rs` |
-| Signing in with a key goes through `MockBackend`, with no key attached | `tests/behaviour_operator_auth.rs` |
+| Signing in with a key goes through `MockWriter`, with no key attached | `tests/behaviour_operator_auth.rs` |
+
+Added by the second pass, because each of these is a check that existed and was
+not called:
+
+| Test | Where |
+|---|---|
+| A procedure and a term ask for the credential again **at the write itself** | `tests/unit_store_operators.rs` |
+| Retiring, reinstating and deleting a version are as sensitive as writing one | `tests/unit_store_operators.rs` |
+| The role refusal on a template still comes from the database, so the authorizer stays exercised | `tests/unit_store_operators.rs` |
+| Opening a register still seeds its built-in procedures — the seeds run before anybody signs in | `tests/unit_store_operators.rs` |
+| An export is refused, prompts, and goes through once the credential is given — and the refusal is recorded as `reason=reverification` rather than `reason=role` | `tests/behaviour_operator_auth.rs` |
+| A registered key's counter that does not advance is refused as a clone | `tests/behaviour_operator_auth.rs` |
+| The whole trail contains no password and no PIN, in every scenario | `tests/behaviour_operator_auth.rs` |
 
 ## Open questions and gates
 
@@ -202,7 +253,10 @@ does not depend on them is built.
 
 ### Known gaps in what *is* built
 
-- **The FIDO2 assertion signature is not verified.** The register checks that the
+- **The FIDO2 assertion signature is not verified.** *Confirmed still true on
+  2026-08-28 by reading `Store::sign_in_with_credential`: the four checks there are
+  the credential id, the relying party, `user_verified` and the counter, and
+  `AssertedCredential` carries no signature field at all.* The register checks that the
   authenticator answering is the one registered for that operator, that it reported user
   verification (a PIN or a biometric, not merely a touch), and that its signature counter
   advanced. It does **not** verify the signature itself, because that needs the
@@ -215,9 +269,29 @@ does not depend on them is built.
 - **Re-verification is by password even for an operator who signed in with a key.** The
   prompt is there and the refusal is enforced; the second factor for a key-holder is
   currently the same credential rather than a fresh touch.
-- **Phase 3 is not hardware-verified**, as stated above.
+- **Phase 3 is not hardware-verified**, as stated above — and now for two
+  exchanges rather than one, since registering a credential is as unverified as
+  asserting with it.
+- **A key is addressed by a typed serial when it is registered.** The screen asks
+  for the serial rather than reading whichever key is attached, which is the same
+  confirmation the factory reset asks for and is deliberate: a credential written
+  to the wrong key is one an operator cannot sign in with and cannot easily find.
+  It does mean the Operators screen runs no device watch, so an operator has to
+  read the serial off the key or off the Inventory screen.
+- **`Action::ChangeSecuritySettings` has no call site.** The action exists, the
+  role matrix answers for it and `Store::require` would refuse it, and nothing in
+  `src/app.rs` asks. The settings it names — the transport, the audit mirror, the
+  trusted signing keys — are written through `AppSettings`, which is a file on the
+  workstation rather than a table in the register, so the store is not on the path
+  at all. Closing it properly means deciding whether a workstation-level setting
+  is a *register* authorisation question, which is an architecture premise
+  (`AGENTS.md` §8) rather than a missing line.
 
 ## References
 
-- `src/app.rs` (`operator`), `src/ui/settings.rs`
-- `docs/security-and-compliance.md`, `features/db-password-and-encryption.md`
+- `src/operator/` (the model), `src/store/operators.rs` (the refusals),
+  `src/ui/operators.rs` (the screen), `src/app.rs` (`operator`, `may`,
+  `tick_session`), `src/ui/settings.rs` (where the typed field used to be)
+- `tests/unit_store_operators.rs`, `tests/behaviour_operator_auth.rs`
+- `docs/security-and-compliance.md`, `docs/gui.md`, `docs/operations.md`,
+  `features/db-password-and-encryption.md`
