@@ -164,6 +164,133 @@ is not a fix.
 
 ---
 
+## 2a. Operator authentication and roles
+
+`../features/operator-auth-and-roles.md`. Added at schema v9. NRM's requirements here are
+a single authentication and authorisation point, **authorisation by profile or group
+rather than per user**, MFA on sensitive operations, and integration with the corporate
+directory. Three of the four are met.
+
+### Roles
+
+| Role | Can | Cannot |
+|---|---|---|
+| Administrator | Everything, including procedures, applet resets, the database password and the operator list | — |
+| Distributor | Read the inventory, register holders, run a bootstrap, record hand-overs and returns, export | Edit a procedure or a term, reset an applet, change a security setting, manage operators |
+| Auditor | Read everything, verify the chain, export reports | Change anything |
+
+Authorisation is by **role**, never per user. Role membership is itself an audited change
+(`operator.role.changed`, carrying both roles and who made it).
+
+### Where the refusal lives
+
+Not in `src/ui/`. The specification is explicit that a UI bug must not be able to bypass
+authorisation, so there are two layers below it:
+
+1. **A SQLite authorizer on the connection.** Installed once when the register is opened,
+   reading one atomic per prepared statement. A role that may not write `templates` is
+   refused by the database *while the statement is being prepared*. This is the same
+   reasoning that made read-only mode a connection flag rather than a guard in each of the
+   forty-odd methods that write: a guard per method can be forgotten by the next mutation
+   added, and a connection that is not allowed to write cannot be. It surfaces as its own
+   `StoreError::NotAuthorised`, which is a defect report as well as a refusal — it means a
+   code path reached a write it had no business reaching.
+2. **`Store::require`**, for what is not a table write at all: resetting an applet writes
+   to hardware, changing the database password re-keys a file, an export takes personal
+   data out of the register.
+
+The screen additionally hides what a role cannot do. That is a courtesy, not the control.
+
+### The first-run answer, and why it is not a migration
+
+A register written before v9 has no operators. It is therefore `Unenrolled`, in which
+**nothing is refused** and the tool behaves exactly as it did — with a banner saying that
+the actor on every audit entry is this workstation's signed-in user and is a label. A
+migration could not have created an administrator without inventing a credential for one,
+and a migration that demanded one before opening would have made every existing register
+unopenable until somebody read a release note. Locking an operator out of their own
+register is a worse outcome than the control being absent.
+
+Authorisation is switched on by a deliberate, audited act at the keyboard: creating the
+first administrator, recorded as `operator.enrolled … first=true`, after which the path
+closes. This is the same shape as the database password and the template-signature policy
+— off until a deployment turns it on, and honest on screen about being off. The last
+administrator can be neither demoted nor disabled.
+
+### The credential
+
+No password material reaches a log, an audit entry, a database column, an error message, a
+UI label or a panic. `operators.password_phc` holds an **Argon2id** PHC string — algorithm,
+parameters, salt, derived key — which is not the password and cannot be turned back into
+one. A failed sign-in records the reason and the attempt count and nothing else, not even a
+length; a successful one records the method and the role. "No such account" and "wrong
+password" are refused **in the same words**, so the screen cannot answer *is there an
+account called ana*.
+
+**The Argon2id parameters are documented defaults pending ESI ratification, not approved
+parameters** — `AGENTS.md` §8 and §7 below make KDF parameters the ESI's, exactly as the
+SQLCipher ones are. Built at `m=19456 KiB, t=2, p=1, 16-byte salt, 32-byte key`, the
+**OWASP Password Storage Cheat Sheet**'s stated minimum for Argon2id. RFC 9106's first
+recommendation (`m=2 GiB, t=1, p=4`) was rejected for this deployment because two
+gibibytes per sign-in is not a cost a unit's laptop can pay without the application
+appearing to hang, and a parameter set the first operator lowers is worse than one chosen
+for the machine; RFC 9106's second (`m=64 MiB, t=3, p=4`) is the obvious upgrade if the
+ESI wants one. The parameters travel inside the stored string, so raising them costs a
+constant and a re-hash rather than a migration, and the screen that asks for a password
+says "pending ESI ratification" where an operator can read it.
+
+### Lockout
+
+The norm's progressive lockout, timing for timing: 3 failures → 1 minute, +2 → 15 minutes,
++2 → 1 hour. It counts against the username that was **typed**, including usernames that
+do not exist — counting only real accounts would turn the lockout into an oracle for who
+is on the register. An administrator can lift one, audited; the database password's
+throttle deliberately never locks precisely because there is nobody to lift it there.
+
+**Whether this policy maps onto a desktop application at all is an open ESI question.** It
+is written for a web login where the primary control is the source IP and a lockout costs
+an attacker a botnet. Here there is one workstation, physically in the unit, and the person
+being slowed down is very often the operator who mistyped. Implemented exactly as specified
+rather than improvised.
+
+### Sessions and re-verification
+
+A session locks after 5 idle minutes and ends after 30 (`operator.logout` with
+`reason=timeout`). Anything destructive or irreversible — editing a procedure, resetting an
+applet, changing the database password, managing operators, taking an export — asks for the
+credential again regardless of the session, because *when did somebody authenticate* and
+*are they still here* are different questions on a shared hand-over desk. The
+re-verification is good for two minutes, is discarded by a lock, and is enforced in
+`Store::require` rather than at the button.
+
+### MFA with the tool's own product
+
+An operator can sign in with a FIDO2 credential on their own YubiKey, over CTAP2, requiring
+**user verification** — a PIN or a biometric, not merely a touch, because a touch proves
+somebody is present and not who. The register checks that the authenticator answering is
+the one registered for that operator, that it reported UV, and that its signature counter
+advanced (a counter going backwards is what a cloned authenticator looks like).
+
+Two limits, stated rather than implied:
+
+- **Not hardware-verified.** The exchange is written against `ctap-hid-fido2` 3.5 and
+  exercised end to end through `device::write::MockWriter`; no key was attached. The same
+  label PIV carries.
+- **The assertion signature is not verified.** That needs the credential's COSE public key,
+  which the transport does not currently surface, and a P-256 verifier this build does not
+  carry. What is proved today is possession of an authenticator that answers for that
+  credential id with UV, on this workstation — the spec's own words, and less than a
+  WebAuthn relying party does.
+
+### Not built
+
+**AD authentication and group→role mapping.** Declared gap 3, unchanged. `AGENTS.md` §8
+makes integration with a corporate system the ESI's decision, so guessing at a mechanism
+would be inventing an architecture security premise. What is needed from the ESI: the
+mechanism, the directory, and the group→role mapping.
+
+---
+
 ## 3. Personal data (LGPD)
 
 ### What is held, and why
@@ -177,6 +304,8 @@ is not a fix.
 | **Identification number** | Named on the consignment term (CPF or the local equivalent) | `holders` (optional) |
 | **Phone**, **address** | Contacting a holder; posting a key | `holders` (optional) |
 | Operator name | Accountability for a hand-over and every audit entry | `distributions`, `bootstrap_runs`, `audit` |
+| **Operator username, display name and role**, and the Argon2id hash of their sign-in password where they have one | Authenticating the person whose name is on every audit entry, and limiting what they may do (NRM: a single authentication and authorisation point, by role). No new *category* — it is the operator-name row above, now identified rather than typed | `operators` |
+| **Operator sign-in state**: last successful sign-in, consecutive failures, lockout expiry, FIDO2 signature counter | The norm's login auditing and its progressive lockout. Keyed on the username **typed**, so it also holds usernames nobody owns | `operator_sign_ins` |
 | Operator name + workstation name | Who currently has a cloud-hosted database open, so a second operator is refused by name rather than allowed to fork the register | `<database>.lock` (a file, not a table — see [`../features/cloud-sync-hosting.md`](../features/cloud-sync-hosting.md)) |
 | **Signed term (document)** | The evidence that a key was signed for | `documents.content` |
 | **Loss report** — who reported a key lost or stolen, whose key it was, and the circumstances | The record a possible credential compromise is handled from, and reported to the ESI on (NRM §5.4.4) | `key_incidents` |
@@ -264,7 +393,7 @@ records, **guaranteed by database restrictions**; and inserts kept cheap.
 | Cheap inserts | **Met** — one `INSERT`, single index (the primary key), no triggers on the insert path |
 | Audit never silently fails | **Met** — logged at `error` and shown as `AUDIT FAILURE:` in the status bar |
 | Separate instance | **Gap** — see below |
-| Login / account events audited | **Gap** — there is no operator authentication yet |
+| Login / account events audited | **Met** — `operator.login`, `operator.login.failed`, `operator.enrolled`, `operator.role.changed`, `operator.enabled`/`operator.disabled`, `operator.credential.changed`, plus `operator.authorisation.refused`. Only on a register whose operators have been enrolled; see [§2a](#2a-operator-authentication-and-roles) |
 | Mechanisms documented | **Met** — [`../features/audit-trail.md`](../features/audit-trail.md) |
 
 ### Declared gap 1 — segregation
@@ -275,12 +404,21 @@ append-only mirror on separate storage
 ([`../features/audit-trail.md`](../features/audit-trail.md) Phase 2). **This needs ESI
 sign-off**; it is not a decision to make quietly.
 
-### Declared gap 2 — operator identity
+### Declared gap 2 — operator identity (**mostly closed**)
 
-`app.operator` comes from `$USER` and is editable. It is a label, not authentication, so
-today's `actor` field is only as strong as physical control of the workstation.
-[`../features/operator-auth-and-roles.md`](../features/operator-auth-and-roles.md) closes
-it; until then the gap is declared rather than glossed over.
+`app.operator` used to come from `$USER` and was editable in Settings. It is now private,
+derived from an authenticated session, and the text field is gone — see
+[§2a](#2a-operator-authentication-and-roles).
+
+What remains of the gap is stated rather than glossed over, and it is two things:
+
+1. **A register that has not been enrolled into is still in the old state.** An empty
+   `operators` table means no authentication, by deliberate design (a migration that
+   locked an operator out of their own register would be worse than the control being
+   absent), and the screen says so. A deployment that requires the control has to create
+   the first administrator; that is a decision, not a release.
+2. **The directory integration is not built** — see declared gap 3, which is unchanged
+   and is the ESI's.
 
 ### Retention
 
@@ -363,6 +501,8 @@ Beyond the norm, because this tool writes to security hardware:
 | Security verification before production, every version | **ESI** |
 | Every integration mechanism (AD, CA, BastionVault) | **ESI** |
 | Cipher and KDF parameters for the encrypted database | **ESI** |
+| **Argon2id parameters for an operator's sign-in password** | **ESI** |
+| **Whether the norm's progressive lockout, written for web login with IP as the control, maps onto a desktop workstation** | **ESI** |
 | The key that signs a bootstrap procedure, and what protects it | **ESI** |
 | Whether Ed25519 is the signature algorithm for procedures | **ESI** |
 | Audit and log retention | **ESI** |
@@ -381,7 +521,13 @@ everything that does not depend on it, and say plainly what is pending. That is 
 
 1. **Audit segregation** — one file with trigger-enforced immutability instead of a separate
    instance. Mirror designed, not built. *ESI sign-off required.*
-2. **Operator authentication** — none; `$USER` is a label. *Feature specified.*
+2. **Operator authentication** — **mostly closed.** Roles, local Argon2id credentials, FIDO2
+   sign-in, sessions, re-verification and an operator management screen are built and enforced
+   in `Store` ([§2a](#2a-operator-authentication-and-roles)). Three residues: a register nobody
+   has enrolled into is still in the old state *by deliberate design*, the FIDO2 assertion
+   *signature* is not verified, and the FIDO2 path is not hardware-verified. The Argon2id
+   parameters and the lockout's applicability are **ESI** ratifications, not implementer's
+   choices.
 3. **AD integration** — required by the norm, not built. *Feature specified.*
 4. **Log file sink** — stderr only today.
 5. **G-002 v2.0 (July 2026)** — could carry more specific requirements (OWASP ASVS, NIST
@@ -410,9 +556,12 @@ everything that does not depend on it, and say plainly what is pending. That is 
    (`../features/ca-integration.md` phases 3–5), which is an **ESI** decision about
    integrating with a corporate PKI. Meanwhile the claim is checkable: the trail names who
    recorded it and the CA's own reference.
-9. **A recorded remediation needs no second pair of eyes**, because there are no roles yet
-   (gap 2). Any operator with the register open can claim a certificate was revoked. *ESI to
-   say whether that needs an approver* (`../features/key-lifecycle-and-revocation.md`).
+9. **A recorded remediation needs no second pair of eyes.** Roles now exist, so the question
+   has changed rather than gone away: any *distributor* with the register open can still claim
+   a certificate was revoked. Recording a remediation is deliberately not a sensitive operation
+   — it is the daily work, and gating it behind an administrator would stop the unit working —
+   so an approver would be a new mechanism rather than a role check. *ESI to say whether one is
+   needed* (`../features/key-lifecycle-and-revocation.md`).
 10. **Enforcement of the PIN change is sometimes procedural** — `forcePINChange` needs
    firmware 5.7+, and PIV has no equivalent at all. Under custody model B those keys rely on
    the hand-over term's instruction. The run records which applied, so the exposure is

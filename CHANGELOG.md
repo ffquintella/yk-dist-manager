@@ -18,6 +18,99 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+### Added
+
+- **Operator authentication and roles** ([`features/operator-auth-and-roles.md`](features/operator-auth-and-roles.md),
+  phases 1, 2, 3, 5, 6, 7 and 8). Until now the `actor` on every audit entry came
+  from `$USER` and was an editable text field in Settings. That is a label, and an
+  audit trail whose author is editable is only as strong as the assumption that
+  whoever is at the workstation is who they claim to be — which is exactly the
+  assumption an audit trail exists to avoid needing. It was declared gap 2 in
+  [`docs/security-and-compliance.md`](docs/security-and-compliance.md); it is now
+  closed except for the directory integration, which is not the implementer's to
+  close.
+
+  **Three roles**, and authorisation is by role and never per user, because the
+  norm is explicit about it: a permission granted to a person is a permission
+  nobody can review. An *administrator* does everything; a *distributor* does the
+  daily work and cannot edit a procedure, reset an applet or change a security
+  setting; an *auditor* reads everything, verifies the chain, exports, and changes
+  nothing.
+
+  **The refusal is in `Store`, not in the screen**, because the specification asks
+  for it and because a screen is not what writes to the register. Two layers: a
+  **SQLite authorizer** on the connection, so a role that may not write `templates`
+  is refused while the statement is being *prepared* — the same argument that made
+  read-only mode a connection flag rather than a guard in each of the forty-odd
+  methods that write, and the reason a mutation added next year is covered without
+  anybody remembering to cover it — and `Store::require` for what is not a table
+  write at all: an applet reset writes to hardware, a password change re-keys a
+  file, an export takes personal data out of the register. The screen additionally
+  hides what a role cannot do, as a courtesy; a button painted by mistake still
+  cannot change anything.
+
+  **An existing register does not become unopenable, and that shaped the design.**
+  A migration cannot create an administrator without inventing a credential for
+  one, and a migration that demanded one before opening would have made every
+  existing register unopenable until somebody read a release note — a worse outcome
+  than the control being absent. So a register whose `operators` table is empty is
+  `Unenrolled`: it refuses nothing, behaves exactly as it did, and says on screen
+  that its actor is a label. Authorisation is switched on by a deliberate, audited
+  first-run path that creates the first administrator and then closes. It is the
+  same shape as the database password and the template-signature policy — off until
+  a deployment turns it on, and honest about being off. The register's **last**
+  administrator can be neither demoted nor disabled, because that is the same
+  lockout by a longer route.
+
+  **Local passwords are Argon2id** at OWASP's documented minimum (`m=19456 KiB,
+  t=2, p=1`). Those are **defaults pending ESI ratification**, not approved
+  parameters — `AGENTS.md` §8 makes KDF parameters the ESI's, exactly as the
+  SQLCipher ones are — and the screen that asks for a password says so. RFC 9106's
+  first recommendation was rejected for this deployment with the reason written
+  down: two gibibytes of working memory per sign-in is not a cost a unit's laptop
+  can pay, and a parameter set the first operator lowers is worse than one chosen
+  for the machine it runs on. The parameters travel inside the stored PHC string,
+  so raising them later costs a constant and a re-hash, not a migration.
+
+  **The progressive lockout is the norm's, timing for timing** (3 failures → 1 min,
+  +2 → 15 min, +2 → 1 h), and it counts against the username that was *typed*,
+  including usernames that do not exist — counting only real accounts would turn
+  the lockout into an oracle for who is on the register. Whether a policy written
+  for web login, where the primary control is the source IP, maps onto a desktop
+  workstation at all is recorded as an open ESI question rather than improvised.
+  What makes it usable meanwhile is that an administrator can lift one, audited:
+  the database password's throttle deliberately never locks precisely because there
+  is nobody to lift it.
+
+  **A session is not a presence.** A shared hand-over desk produces Bruno recording
+  a return under Ana's session, so the session locks after 5 idle minutes and ends
+  after 30 — and anything destructive or irreversible asks for the credential again
+  regardless, because *when did somebody authenticate* and *are they still here* are
+  different questions. That re-verification is good for two minutes and is enforced
+  in `Store::require`, not at the button.
+
+  **FIDO2 sign-in is built and not hardware-verified.** `Fido2Writer::get_assertion`
+  puts it on the same trait as the bootstrap's writes, which is what lets the whole
+  sign-in be driven through `MockBackend` with no key attached and none required.
+  The register checks that the authenticator answering is the one registered, that
+  it reported *user verification* rather than merely a touch — a touch proves
+  somebody is present, not who — and that its signature counter advanced. It does
+  **not** verify the assertion signature, which needs the credential's public key
+  and a P-256 verifier this build does not carry; that gap is named in the feature
+  file rather than implied away.
+
+  **AD authentication (phase 4) is deliberately not built.** `AGENTS.md` §8 makes
+  integration with a corporate system an ESI decision, and guessing at a mechanism
+  would be inventing an architecture security premise.
+
+  Schema **v9**: `operators` (the authorisation list, administrator-only) and
+  `operator_sign_ins` (everything the sign-in mechanism writes about itself). The
+  split was found by a test rather than foreseen — a *correct* password was refused,
+  because recording the successful login was itself a write to `operators` from a
+  session that had not yet signed in.
+
+  New dependency `argon2`, and the `hooks` feature of the existing `rusqlite`.
+
 ### Fixed
 
 - **The initial FIDO2 credential was registered against whatever the run's own

@@ -185,6 +185,68 @@ forced and failing rather than as working. Changing it restarts device detection
 recorded as `device.transport.selected`; the trail therefore says which transport was
 live when a key was prepared.
 
+## Runbook: turn operator authentication on
+
+Until somebody does this, the register has **no operators**: the `actor` on every audit
+entry is whatever user is signed in to the workstation, the Operators screen says so in as
+many words, and nothing is refused. That is the state every register written before this
+release is in, and it is deliberate — a control that locked a unit out of its own register
+would be worse than the control being absent.
+
+Turning it on is one act, and it cannot be undone from inside the application.
+
+1. Decide **who the first administrator is**. Not "whoever is at the desk": they are the
+   only person who can enrol anybody else, so it has to be somebody who will still be here
+   next month. The register's last administrator can be neither demoted nor disabled, which
+   is the safety net, not a plan.
+2. **Operators** → *Create the first administrator*. Username (lower-case, no spaces — it
+   is the actor on every audit entry from now on), the name they are called by, and a
+   password twice. The meter is the same one the database password uses and the floor is
+   the same twelve characters.
+3. Press the button. It is recorded as `operator.enrolled … first=true`, which is the entry
+   an auditor reads as *this is when authorisation began on this register*.
+4. **Everybody now has to sign in**, on every workstation that opens this register — the
+   state lives in the file, not in a setting. Enrol them: *Enrol an operator*, choosing a
+   role.
+
+| Give them | If they | 
+|---|---|
+| **Distributor** | run bootstraps, register holders, record hand-overs and returns. The daily work |
+| **Auditor** | need to read the register and export from it, and must change nothing |
+| **Administrator** | edit procedures, reset applets, change the database password, or manage this list |
+
+Two things to say out loud to the unit before doing this:
+
+* **This is not the database password.** That one makes a *copy* of the file unreadable —
+  a backup on a share, a sync client's conflict copy, a stolen laptop. This one says who
+  you are. Both are wanted, and neither does the other's job.
+* **There is no password reset by e-mail.** An administrator sets a new password for
+  somebody who forgets theirs. If every administrator forgets theirs at once, the register
+  cannot be administered from inside the application.
+
+### If somebody is locked out
+
+Three wrong attempts lock an account for a minute, five for a quarter of an hour, seven for
+an hour, and it survives closing the application. Any administrator can lift it:
+**Operators** → *Clear lockout*, audited as `operator.lockout.cleared`.
+
+### What a sensitive operation asks for
+
+Editing a procedure, resetting an applet, changing the database password, managing
+operators and taking an export ask for your credential **again**, even though you are
+signed in, and the answer lasts two minutes. That is not distrust of the session — it is
+that a session records when somebody signed in, and a hand-over desk is shared. Locking the
+session throws the two minutes away, because coming back to the desk is exactly the moment
+the tool must not assume the same person returned.
+
+### Signing in with a key
+
+An administrator can register a FIDO2 credential on an operator's own YubiKey, and that
+operator then signs in by presenting it with their PIN. The key must **verify the user** —
+a PIN or a biometric, not merely a touch — because a touch proves somebody is present and
+not who. This path is built and has **not been verified against real hardware**; the
+password remains the break-glass route.
+
 ## Choosing, creating and switching databases
 
 The database screen appears whenever nothing is open. From it you can:

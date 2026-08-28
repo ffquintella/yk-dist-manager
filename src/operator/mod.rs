@@ -50,13 +50,18 @@ pub use session::{Idle, Session, SessionState};
 ///
 /// Three, from the spec, and deliberately not more: a role nobody can describe in
 /// one sentence is a role nobody will assign correctly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Role {
     /// Everything, including templates, applet resets, the database password and
     /// the operator list itself.
     Administrator,
     /// The daily work: the inventory, holders, bootstrap runs, hand-overs and
     /// returns, and what happens to a key afterwards.
+    ///
+    /// The **default** wherever a role has to be chosen before anybody has
+    /// chosen one, because it is the least privileged role that can do any work
+    /// at all: a mis-click enrols somebody who cannot edit a procedure.
+    #[default]
     Distributor,
     /// Reads everything, verifies the chain, exports reports. Changes nothing.
     Auditor,

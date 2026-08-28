@@ -634,6 +634,79 @@ pub struct ResetPanel {
     pub presence_seen: crate::device::reinsert::Presence,
 }
 
+/// The sign-in screen, while somebody is filling it in
+/// (`features/operator-auth-and-roles.md` phases 2, 3 and 6).
+///
+/// The password field is cleared the moment it has been used, in the same call,
+/// exactly as the database password and the share password are — it is the third
+/// secret this application touches and it is handled the same way
+/// (`AGENTS.md` §2).
+#[derive(Debug, Clone, Default)]
+pub struct SignInForm {
+    pub username: String,
+    /// Typed, used once, cleared. Never persisted, never logged, never audited.
+    pub password: String,
+    /// The last refusal, in the words the operator sees. Never anything typed.
+    pub error: Option<String>,
+    /// Which method the operator chose, when their account has both.
+    pub method: Option<crate::operator::AuthMethod>,
+    /// True while the screen is asking for the credential again for a sensitive
+    /// operation rather than for a fresh sign-in (phase 5).
+    pub reverifying: Option<crate::operator::Action>,
+}
+
+impl SignInForm {
+    /// Clear everything typed. Called after every attempt, accepted or refused.
+    pub fn wipe(&mut self) {
+        self.password.clear();
+    }
+
+    /// Clear the whole form, including who was being signed in.
+    pub fn reset(&mut self) {
+        self.username.clear();
+        self.password.clear();
+        self.error = None;
+        self.method = None;
+        self.reverifying = None;
+    }
+}
+
+/// The Operators screen (`features/operator-auth-and-roles.md` phase 7).
+///
+/// Administrators only, and the store refuses every write from it anyway — the
+/// screen hides what a role cannot do as a courtesy, not as the control.
+#[derive(Debug, Clone, Default)]
+pub struct OperatorPanel {
+    /// Every operator, refreshed with the other views.
+    pub operators: Vec<crate::operator::Operator>,
+    /// The enrolment being drafted. Nothing reaches the register until the
+    /// administrator presses the button that says so.
+    pub new_username: String,
+    pub new_display_name: String,
+    pub new_role: crate::operator::Role,
+    /// Typed, used once, cleared.
+    pub new_password: String,
+    pub new_password_again: String,
+    pub error: Option<String>,
+    /// The operator whose card is expanded, if any.
+    pub expanded: Option<uuid::Uuid>,
+    /// The first-run panel's fields, kept apart from the enrolment ones so a
+    /// half-typed enrolment cannot be submitted as a first administrator.
+    pub first_username: String,
+    pub first_display_name: String,
+    pub first_password: String,
+    pub first_password_again: String,
+}
+
+impl OperatorPanel {
+    pub fn wipe(&mut self) {
+        self.new_password.clear();
+        self.new_password_again.clear();
+        self.first_password.clear();
+        self.first_password_again.clear();
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Inventory,
@@ -644,11 +717,12 @@ pub enum Tab {
     Terms,
     Reports,
     Audit,
+    Operators,
     Settings,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 9] = [
+    pub const ALL: [Tab; 10] = [
         Tab::Inventory,
         Tab::Holders,
         Tab::Distribution,
@@ -657,6 +731,7 @@ impl Tab {
         Tab::Terms,
         Tab::Reports,
         Tab::Audit,
+        Tab::Operators,
         Tab::Settings,
     ];
 
@@ -670,6 +745,7 @@ impl Tab {
             Tab::Terms => "Terms",
             Tab::Reports => "Reports",
             Tab::Audit => "Audit",
+            Tab::Operators => "Operators",
             Tab::Settings => "Settings",
         }
     }
@@ -1074,8 +1150,27 @@ pub struct YkDistApp {
     pub scan: ScanPanel,
     pub open_error: Option<String>,
     pub tab: Tab,
-    /// Operator credential recorded on every distribution and audit entry.
-    pub operator: String,
+    /// What goes in `audit.actor` and on a hand-over record.
+    ///
+    /// **Private, and derived** (`features/operator-auth-and-roles.md` phase 8).
+    /// Until that phase this was a public `String` with a text field in Settings
+    /// pointed at it, which is precisely what the feature exists to remove: an
+    /// audit trail whose actor is editable is only as strong as the assumption
+    /// that whoever is at the workstation is who they say they are.
+    ///
+    /// It is now a cache of [`Self::session`], rewritten by
+    /// [`Self::sync_operator`] whenever the session changes, and readable through
+    /// [`Self::operator`]. A cache rather than a call at each of the forty-odd
+    /// sites that need it, because most of them are inside a `&mut self` method
+    /// where an immutable borrow of `self` would not live.
+    operator: String,
+    /// Who is signed in — or that nobody is, or that this register has no
+    /// operators at all (`features/operator-auth-and-roles.md`).
+    pub session: crate::operator::SessionState,
+    /// The sign-in screen's state while somebody is filling it in.
+    pub sign_in: SignInForm,
+    /// The operator list, while an administrator is managing it (phase 7).
+    pub operator_panel: OperatorPanel,
     pub org: String,
     pub backend: Box<dyn YubiKeyBackend>,
     /// Which transport this session reads through, and why
@@ -1210,6 +1305,7 @@ impl YkDistApp {
         };
 
         let operator = settings.operator.clone();
+        let settings_operator = operator.clone();
         // The organisation is the operator's to state, in Settings — this
         // application is not branded to one. It still needs a value rather than an
         // empty string, because `{{org}}` reaches a certificate subject and a
@@ -1259,6 +1355,14 @@ impl YkDistApp {
             open_error: None,
             tab: Tab::Inventory,
             operator,
+            // Corrected the moment a register is opened and its operator count is
+            // known. Until then this is a workstation whose register has not been
+            // read, which is exactly what `Unenrolled` describes.
+            session: crate::operator::SessionState::Unenrolled {
+                workstation_user: settings_operator,
+            },
+            sign_in: SignInForm::default(),
+            operator_panel: OperatorPanel::default(),
             org,
             backend,
             transport,
@@ -5999,6 +6103,500 @@ impl YkDistApp {
         }
     }
 
+    // ------------------------------------------------- operator authentication
+
+    /// What goes in `audit.actor`.
+    ///
+    /// Read-only by design (`features/operator-auth-and-roles.md` phase 8): the
+    /// only things that move it are signing in, signing out and opening a
+    /// register, all of which go through [`Self::sync_operator`]. There is no
+    /// longer any way for a screen to set it.
+    pub fn operator(&self) -> &str {
+        &self.operator
+    }
+
+    /// Put the cached actor back in step with the session.
+    fn sync_operator(&mut self) {
+        self.operator = self.session.actor().to_owned();
+        if let Some(store) = &self.store {
+            store.act_as(self.session.authority());
+        }
+    }
+
+    /// Decide what authority a freshly opened register is under.
+    ///
+    /// The first-run path in one call: a register with no operators is
+    /// `Unenrolled` and behaves exactly as it did before this feature, and any
+    /// operator at all means somebody has to sign in.
+    fn adopt_register_authority(&mut self) {
+        let count = match &self.store {
+            Some(store) => store.operator_count().unwrap_or(0),
+            None => 0,
+        };
+        self.session = if count == 0 {
+            crate::operator::SessionState::Unenrolled {
+                workstation_user: self.settings.operator.clone(),
+            }
+        } else {
+            crate::operator::SessionState::SignedOut
+        };
+        self.sign_in.reset();
+        self.sync_operator();
+        self.refresh_operators();
+    }
+
+    /// Does this register have authentication switched on?
+    pub fn is_enrolled(&self) -> bool {
+        !matches!(
+            self.session,
+            crate::operator::SessionState::Unenrolled { .. }
+        )
+    }
+
+    /// The operator list, for the screen that manages it.
+    pub fn refresh_operators(&mut self) {
+        self.operator_panel.operators = match &self.store {
+            Some(store) => store.operators().unwrap_or_default(),
+            None => Vec::new(),
+        };
+    }
+
+    /// Create the register's first administrator (phase 7's first-run path).
+    ///
+    /// The only way authorisation is ever switched on, and it is available only
+    /// while the register has no operators — the store refuses it after that, so
+    /// hiding the panel is a courtesy rather than the control.
+    pub fn enrol_first_administrator(&mut self) {
+        let (username, display, password, again) = (
+            self.operator_panel.first_username.clone(),
+            self.operator_panel.first_display_name.clone(),
+            self.operator_panel.first_password.clone(),
+            self.operator_panel.first_password_again.clone(),
+        );
+        if password != again {
+            self.operator_panel.error = Some("the two passwords do not match".into());
+            self.operator_panel.wipe();
+            return;
+        }
+        let by = self.operator.clone();
+        let Some(store) = &self.store else {
+            self.operator_panel.error = Some("no register is open".into());
+            return;
+        };
+        match store.enrol_first_administrator(&username, &display, &password, &by) {
+            Ok(operator) => {
+                self.operator_panel.wipe();
+                self.operator_panel.first_username.clear();
+                self.operator_panel.first_display_name.clear();
+                self.operator_panel.error = None;
+                self.status = format!(
+                    "{} is this register's first administrator — authorisation is now in force, \
+                     and everybody has to sign in",
+                    operator.username
+                );
+                self.adopt_register_authority();
+            }
+            Err(e) => {
+                self.operator_panel.wipe();
+                self.operator_panel.error = Some(e.to_string());
+            }
+        }
+    }
+
+    /// Enrol another operator. Administrators only; the store enforces it.
+    pub fn enrol_operator(&mut self) {
+        let (username, display, role, password, again) = (
+            self.operator_panel.new_username.clone(),
+            self.operator_panel.new_display_name.clone(),
+            self.operator_panel.new_role,
+            self.operator_panel.new_password.clone(),
+            self.operator_panel.new_password_again.clone(),
+        );
+        if password != again {
+            self.operator_panel.error = Some("the two passwords do not match".into());
+            self.operator_panel.wipe();
+            return;
+        }
+        let by = self.operator.clone();
+        let outcome = match &self.store {
+            Some(store) => store.enrol_operator(
+                &crate::operator::NewOperator {
+                    username,
+                    display_name: display,
+                    role,
+                },
+                Some(password.as_str()),
+                &by,
+            ),
+            None => Err(crate::store::StoreError::NotFound("no register".into())),
+        };
+        self.operator_panel.wipe();
+        match outcome {
+            Ok(operator) => {
+                self.operator_panel.new_username.clear();
+                self.operator_panel.new_display_name.clear();
+                self.operator_panel.error = None;
+                self.status = format!(
+                    "{} enrolled as {}",
+                    operator.username,
+                    operator.role.label()
+                );
+                self.refresh_operators();
+            }
+            Err(e) => self.report_authorisation(crate::operator::Action::ManageOperators, e),
+        }
+    }
+
+    /// Move an operator to another role.
+    pub fn change_operator_role(&mut self, id: uuid::Uuid, role: crate::operator::Role) {
+        let by = self.operator.clone();
+        let outcome = match &self.store {
+            Some(store) => store.set_operator_role(id, role, &by),
+            None => Err(crate::store::StoreError::NotFound("no register".into())),
+        };
+        match outcome {
+            Ok(()) => {
+                self.status = format!("role changed to {}", role.label());
+                self.refresh_operators();
+            }
+            Err(e) => self.report_authorisation(crate::operator::Action::ManageOperators, e),
+        }
+    }
+
+    /// Enable or disable an operator. Never a delete — that would orphan every
+    /// audit entry they wrote.
+    pub fn set_operator_active(&mut self, id: uuid::Uuid, active: bool) {
+        let by = self.operator.clone();
+        let outcome = match &self.store {
+            Some(store) => store.set_operator_active(id, active, &by),
+            None => Err(crate::store::StoreError::NotFound("no register".into())),
+        };
+        match outcome {
+            Ok(()) => {
+                self.status = if active {
+                    "operator enabled".into()
+                } else {
+                    "operator disabled — their history stays on the register".to_owned()
+                };
+                self.refresh_operators();
+            }
+            Err(e) => self.report_authorisation(crate::operator::Action::ManageOperators, e),
+        }
+    }
+
+    /// Lift a lockout.
+    pub fn clear_operator_lockout(&mut self, username: &str) {
+        let by = self.operator.clone();
+        let outcome = match &self.store {
+            Some(store) => store.clear_operator_lockout(username, &by),
+            None => Err(crate::store::StoreError::NotFound("no register".into())),
+        };
+        match outcome {
+            Ok(()) => {
+                self.status = format!("{username} can sign in again");
+                self.refresh_operators();
+            }
+            Err(e) => self.report_authorisation(crate::operator::Action::ManageOperators, e),
+        }
+    }
+
+    /// Sign in with the password on the form.
+    ///
+    /// The password is wiped in this call whatever the outcome, exactly as the
+    /// database password and the share password are.
+    pub fn sign_in_with_password(&mut self) {
+        let (username, password) = (
+            self.sign_in.username.trim().to_lowercase(),
+            self.sign_in.password.clone(),
+        );
+        let outcome = match &self.store {
+            Some(store) => store.sign_in_with_password(&username, &password, chrono::Utc::now()),
+            None => Err(crate::store::StoreError::NotFound("no register".into())),
+        };
+        self.sign_in.wipe();
+        self.accept_sign_in(outcome);
+    }
+
+    /// Sign in with the operator's own security key
+    /// (`features/operator-auth-and-roles.md` phase 3).
+    ///
+    /// The PIN is the key's, not a password on this register — so it is typed
+    /// into the same field, used for the one CTAP2 exchange, and wiped here.
+    ///
+    /// **Not hardware-verified**: the exchange is exercised through
+    /// `device::write::MockWriter`, and no key was attached to the workstation
+    /// this was written on.
+    pub fn sign_in_with_key(&mut self, writer: &mut dyn crate::device::write::WriteBackend) {
+        let username = self.sign_in.username.trim().to_lowercase();
+        // The key's own PIN, validated by the same rules every other FIDO2 PIN in
+        // this application goes through, and wiped on drop like every other one.
+        let pin = match crate::secret::Secret::from_operator_input(
+            crate::secret::SecretKind::Fido2Pin,
+            &self.sign_in.password,
+        ) {
+            Ok(pin) => pin,
+            Err(e) => {
+                self.sign_in.wipe();
+                self.sign_in.error = Some(e.to_string());
+                return;
+            }
+        };
+        self.sign_in.wipe();
+
+        let registered = match &self.store {
+            Some(store) => store
+                .operator_by_username(&username)
+                .ok()
+                .flatten()
+                .and_then(|operator| operator.credential),
+            None => None,
+        };
+        let Some(registered) = registered else {
+            // Deliberately the same words as a wrong credential: the screen must
+            // not answer "is there an account called ana, and has it got a key".
+            self.sign_in.error = Some(
+                crate::store::operators::SignInRefusal::Credential
+                    .message()
+                    .into(),
+            );
+            return;
+        };
+
+        let mut challenge = [0u8; 32];
+        if let Err(e) = getrandom::fill(&mut challenge) {
+            self.sign_in.error = Some(format!("no randomness for a sign-in challenge: {e}"));
+            return;
+        }
+        let request = crate::device::write::AssertionRequest {
+            relying_party: registered.relying_party.clone(),
+            credential_id_hex: registered.credential_id_hex.clone(),
+            challenge_hex: hex::encode(challenge),
+            // Always. A touch proves somebody is present, not who.
+            require_user_verification: true,
+        };
+
+        let evidence = match writer.get_assertion(registered.serial, &request, &pin) {
+            Ok(evidence) => evidence,
+            Err(e) => {
+                self.sign_in.error = Some(e.detail());
+                return;
+            }
+        };
+
+        let asserted = crate::store::operators::AssertedCredential {
+            credential_id_hex: evidence.credential_id_hex,
+            relying_party: evidence.relying_party,
+            serial: registered.serial,
+            user_verified: evidence.user_verified,
+            counter: evidence.counter,
+        };
+        let outcome = match &self.store {
+            Some(store) => store.sign_in_with_credential(&username, &asserted, chrono::Utc::now()),
+            None => Err(crate::store::StoreError::NotFound("no register".into())),
+        };
+        self.accept_sign_in(outcome);
+    }
+
+    fn accept_sign_in(&mut self, outcome: crate::store::Result<crate::operator::Session>) {
+        match outcome {
+            Ok(session) => {
+                let describe = session.describe();
+                self.session = crate::operator::SessionState::SignedIn(Box::new(session));
+                self.sign_in.reset();
+                self.sync_operator();
+                if let Some(store) = &self.store {
+                    store.mark_reverified(chrono::Utc::now());
+                }
+                self.status = format!("signed in — {describe}");
+                self.refresh_operators();
+                self.refresh();
+            }
+            Err(e) => {
+                // The store has already written `operator.login.failed`; this is
+                // only what the person at the keyboard reads.
+                self.sign_in.error = Some(match &e {
+                    crate::store::StoreError::Forbidden { what, .. } => what.clone(),
+                    other => other.to_string(),
+                });
+            }
+        }
+    }
+
+    /// End the session deliberately.
+    pub fn sign_out(&mut self, reason: &str) {
+        let Some(session) = self.session.session() else {
+            return;
+        };
+        let username = session.username.clone();
+        if let Some(store) = &self.store
+            && let Err(e) = store.record_sign_out(&username, reason)
+        {
+            tracing::error!(event = "audit.append.failed", what = "operator.logout", reason = %e);
+            self.status = format!("AUDIT FAILURE: {e}");
+        }
+        self.session = crate::operator::SessionState::SignedOut;
+        self.sign_in.reset();
+        self.sync_operator();
+        self.status = format!("signed out ({reason})");
+    }
+
+    /// Lock the session without ending it.
+    pub fn lock_session(&mut self, reason: &str) {
+        let Some(session) = self.session.session_mut() else {
+            return;
+        };
+        if session.is_locked() {
+            return;
+        }
+        session.lock();
+        let username = session.username.clone();
+        if let Some(store) = &self.store
+            && let Err(e) = store.record_session_locked(&username, reason)
+        {
+            tracing::error!(
+                event = "audit.append.failed",
+                what = "operator.session.locked",
+                reason = %e
+            );
+        }
+        // A locked session carries `Authority::SignedOut`, so the store starts
+        // refusing at the same instant the screen does.
+        self.sync_operator();
+        self.status = format!("locked ({reason}) — sign in again to carry on");
+    }
+
+    /// The idle clock, run once a frame from the shell
+    /// (`features/operator-auth-and-roles.md` phase 6).
+    pub fn tick_session(&mut self, now: chrono::DateTime<chrono::Utc>) {
+        let verdict = self
+            .session
+            .session()
+            .filter(|session| !session.is_locked())
+            .map(|session| session.idle_state_at(now));
+        match verdict {
+            Some(crate::operator::Idle::Expire) => self.sign_out("timeout"),
+            Some(crate::operator::Idle::Lock) => self.lock_session("idle"),
+            _ => {}
+        }
+    }
+
+    /// Record that the operator did something, so the idle clock starts again.
+    pub fn touch_session(&mut self, now: chrono::DateTime<chrono::Utc>) {
+        if let Some(session) = self.session.session_mut() {
+            session.touch(now);
+        }
+    }
+
+    /// Ask for the credential again before a sensitive operation (phase 5).
+    ///
+    /// Opens the prompt; the answer comes back through
+    /// [`Self::complete_reverification`]. A register with no operators skips
+    /// straight through, because in that state the control is off.
+    pub fn require_reverification(&mut self, action: crate::operator::Action) -> bool {
+        if !self.is_enrolled() {
+            return true;
+        }
+        if self.session.is_reverified_at(chrono::Utc::now()) {
+            return true;
+        }
+        self.sign_in.reverifying = Some(action);
+        self.sign_in.error = None;
+        self.status = format!(
+            "{} needs your credential again — a session says when you signed in, not whether you \
+             are still here",
+            action.describe()
+        );
+        false
+    }
+
+    /// The credential was presented again for a sensitive operation.
+    pub fn complete_reverification(&mut self) {
+        let Some(action) = self.sign_in.reverifying else {
+            return;
+        };
+        let password = self.sign_in.password.clone();
+        self.sign_in.wipe();
+        let Some(session) = self.session.session() else {
+            self.sign_in.error = Some("nobody is signed in".into());
+            return;
+        };
+        let (username, method) = (session.username.clone(), session.method);
+        let now = chrono::Utc::now();
+
+        let accepted = match &self.store {
+            // Verified by signing in again with the same credential, which is the
+            // one check that cannot be got round by knowing the session exists.
+            Some(store) => store
+                .sign_in_with_password(&username, &password, now)
+                .is_ok(),
+            None => false,
+        };
+        if !accepted {
+            self.sign_in.error = Some(
+                crate::store::operators::SignInRefusal::Credential
+                    .message()
+                    .into(),
+            );
+            return;
+        }
+
+        if let Some(session) = self.session.session_mut() {
+            session.reverify(now);
+        }
+        if let Some(store) = &self.store {
+            store.mark_reverified(now);
+            if let Err(e) = store.record_reverified(&username, action, method) {
+                tracing::error!(
+                    event = "audit.append.failed",
+                    what = "operator.reverified",
+                    reason = %e
+                );
+                self.status = format!("AUDIT FAILURE: {e}");
+                return;
+            }
+        }
+        self.sign_in.reverifying = None;
+        self.sign_in.error = None;
+        self.status = format!(
+            "re-verified — you may {} for the next two minutes",
+            action.describe()
+        );
+    }
+
+    /// Put a store refusal in front of the operator, and on the trail.
+    ///
+    /// A refusal is a security event in its own right: either somebody tried what
+    /// they may not do, or a screen offered a button it should have hidden. Both
+    /// are worth having.
+    fn report_authorisation(
+        &mut self,
+        action: crate::operator::Action,
+        e: crate::store::StoreError,
+    ) {
+        let refusal = matches!(
+            e,
+            crate::store::StoreError::Forbidden { .. }
+                | crate::store::StoreError::NotAuthorised
+                | crate::store::StoreError::NeedsReverification { .. }
+        );
+        if refusal {
+            let actor = self.operator.clone();
+            if let Some(store) = &self.store {
+                let _reason = e.to_string();
+                if let Err(audit) = store.record_refusal(&actor, action, "role") {
+                    tracing::error!(
+                        event = "audit.append.failed",
+                        what = "operator.authorisation.refused",
+                        reason = %audit
+                    );
+                }
+            }
+        }
+        tracing::warn!(event = "operator.action.refused", action = action.slug(), reason = %e);
+        self.status = e.to_string();
+        self.operator_panel.error = Some(e.to_string());
+    }
+
     /// Read the attached key(s) and add or refresh the inventory record.
     pub fn detect_keys(&mut self) {
         // The chosen key, when the operator has chosen one — `None` still means "the
@@ -8376,6 +8974,7 @@ impl eframe::App for YkDistApp {
                             Tab::Terms => crate::ui::terms::show(self, ui),
                             Tab::Reports => crate::ui::reports::show(self, ui),
                             Tab::Audit => crate::ui::audit::show(self, ui),
+                            Tab::Operators => crate::ui::operators::show(self, ui),
                             Tab::Settings => crate::ui::settings::show(self, ui),
                         }
                         ui.add_space(18.0);
