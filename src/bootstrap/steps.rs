@@ -84,7 +84,12 @@ pub fn perform(
     secrets: &mut Vec<Secret>,
     recorder: &mut dyn RunRecorder,
 ) -> Result<StepOutcomeKind, WriteError> {
-    let params = &step.params;
+    // The **rendered** parameters, from the plan the operator confirmed — not
+    // `step.params`, which are the patterns. Reading the patterns here is how the
+    // CSR came to be signed for `CN={{holder.name}},OU={{org.unit}},O={{org}}`
+    // with `rfc822Name={{holder.email}}`: a request that a CA signs, that imports
+    // cleanly, and that fails at the holder's first signature.
+    let params = &command.params;
     let serial = ctx.serial;
 
     match command.kind {

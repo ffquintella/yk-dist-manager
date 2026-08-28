@@ -15,6 +15,8 @@
 //!
 //! `ykman` flags follow version 5.9.2 (`ykman <cmd> --help`).
 
+use std::collections::BTreeMap;
+
 use crate::domain::StepKind;
 use crate::template::{BootstrapTemplate, RenderContext, TemplateError, TemplateStep};
 
@@ -114,6 +116,16 @@ pub struct PlannedCommand {
     pub args: Vec<Arg>,
     /// Anything the operator needs to know about how this step is performed.
     pub note: Option<String>,
+    /// The step's parameters, **every one of them already rendered** against the
+    /// same context as [`Self::description`].
+    ///
+    /// This is what the executor reads. The alternative — reading
+    /// [`TemplateStep::params`] at execution time — is how a CSR went out with
+    /// `CN={{holder.name}}` verbatim in its subject: the raw parameter is a
+    /// pattern, and a step that takes it for a value asks the applet to sign a
+    /// placeholder. Rendering happens once, here, and the plan the operator
+    /// confirmed is therefore made of the same strings the run uses.
+    pub params: BTreeMap<String, String>,
 }
 
 impl PlannedCommand {
@@ -268,6 +280,19 @@ pub fn native_op(kind: StepKind) -> Option<NativeOp> {
 
 fn plan_step(step: &TemplateStep, ctx: &RenderContext) -> Result<PlannedCommand, TemplateError> {
     let description = crate::template::render(&step.description, ctx)?;
+
+    // Every parameter, not only the ones this function goes on to read for the
+    // `ykman` line: a step kind that grows a parameter cannot forget to render
+    // it, and a pattern that names a variable this holder has no value for is
+    // refused here — before anything is shown as a plan — rather than reaching
+    // a key as text.
+    let params = step
+        .params
+        .iter()
+        .map(|(key, pattern)| {
+            crate::template::render(pattern, ctx).map(|value| (key.clone(), value))
+        })
+        .collect::<Result<BTreeMap<String, String>, TemplateError>>()?;
 
     let (program, args, note) = match step.kind {
         StepKind::Fido2Pin => {
@@ -542,5 +567,6 @@ fn plan_step(step: &TemplateStep, ctx: &RenderContext) -> Result<PlannedCommand,
         program,
         args,
         note,
+        params,
     })
 }

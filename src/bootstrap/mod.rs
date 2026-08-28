@@ -346,9 +346,10 @@ impl<'a> Executor<'a> {
                 certificate_pem: request.certificate_pem.as_deref(),
             };
 
-            // The plan carries the rendered command; the template carries the
-            // parameters a step reads. Looked up rather than copied into the
-            // plan, so the two cannot disagree about a slot number.
+            // The plan carries the rendered command *and* the rendered
+            // parameters a step reads (`PlannedCommand::params`); the template is
+            // still looked up for what belongs to the procedure rather than to
+            // this run — the retry budget below, and the step's id.
             let Some(template_step) = request
                 .template
                 .steps

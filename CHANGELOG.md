@@ -18,6 +18,27 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+### Fixed
+
+- **A CSR was requested for `CN={{holder.name}}`, not for the holder** — the
+  bootstrap executor read a step's parameters straight off the template
+  ([`src/bootstrap/steps.rs`](src/bootstrap/steps.rs)), where they are *patterns*,
+  so the PIV signing request went to the applet with
+  `CN={{holder.name}},OU={{org.unit}},O={{org}}` as its subject and
+  `{{holder.email}}` as its `rfc822Name`. The request is signed on-device and looks
+  perfectly well formed; a CA would sign it, it would import cleanly, and it would
+  fail at the holder's first signature — while the plan the operator confirmed
+  showed the correct, rendered values throughout.
+
+  Parameters are now rendered **once**, by the planner, and carried on
+  `PlannedCommand::params`, which is what the executor reads
+  ([`src/template/plan.rs`](src/template/plan.rs)). Every parameter of every step
+  kind is rendered, not only the ones the `ykman` reference line quotes, so a step
+  that grows a parameter cannot forget one; a parameter naming an unknown variable
+  is now refused at planning time, before a plan is shown, rather than reaching a
+  key as text. The plan the operator confirms and the values the run applies are
+  the same strings by construction.
+
 ## [0.17.4] - 2026-08-26
 
 ### Added

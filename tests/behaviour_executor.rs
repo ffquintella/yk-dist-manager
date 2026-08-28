@@ -957,3 +957,68 @@ fn scenario_an_empty_otp_slot_is_a_skip_with_a_reason_rather_than_a_failed_write
         "and nothing was attempted against the key"
     );
 }
+
+#[test]
+fn scenario_the_csr_names_the_holder_rather_than_the_placeholder_that_stands_for_them() {
+    // `features/step-piv-signing-certificate.md`, the template-parameter table: the
+    // CSR's `subject` and `san_email` are patterns (`CN={{holder.name}},…`), and a
+    // step reads the *rendered* value. A request that reaches a CA with `{{`
+    // still in its subject is signed, installed and useless, and nobody finds out
+    // until the holder's first signature.
+
+    // Given the standard procedure, whose CSR subject and SAN are patterns
+    let template = template();
+    let commands = commands(&template);
+    let request = request(&template, &commands);
+    let mut key = MockWriter::factory_fresh(SERIAL);
+    let mut recording = Recording::default();
+
+    // When the operator confirms and runs it
+    let confirmation = Confirmation::given(SERIAL, commands.len());
+    let run = {
+        let mut executor = Executor::new(Transports { backend: &mut key });
+        executor
+            .run(&request, &confirmation, &mut recording)
+            .unwrap()
+    };
+
+    // Then the request was signed for this holder, by name and by address
+    let csr = key
+        .calls()
+        .iter()
+        .find(|c| c.operation == "piv.create_csr")
+        .expect("the CSR step ran");
+    assert!(
+        !csr.arguments.iter().any(|a| a.contains("{{")),
+        "no unrendered variable may reach the applet: {:?}",
+        csr.arguments
+    );
+    assert!(
+        csr.arguments
+            .contains(&"CN=Ana Silva,OU=ESI,O=Example Organisation".to_owned()),
+        "the subject is the rendered DN: {:?}",
+        csr.arguments
+    );
+    assert!(
+        csr.arguments.contains(&"ana.silva@example.org".to_owned()),
+        "the rfc822Name is the holder's address: {:?}",
+        csr.arguments
+    );
+
+    // And the run's own record says the same, because that detail is what the
+    // operator reads back when they take the request to the CA
+    let detail = &run
+        .steps
+        .iter()
+        .find(|s| s.step_id == "piv-csr")
+        .expect("the standard procedure has a CSR step")
+        .detail;
+    assert!(
+        !detail.contains("{{"),
+        "the recorded detail carries the rendered values: {detail}"
+    );
+    assert!(
+        detail.contains("CN=Ana Silva,OU=ESI,O=Example Organisation"),
+        "the recorded detail names the holder: {detail}"
+    );
+}

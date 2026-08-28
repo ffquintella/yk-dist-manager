@@ -161,6 +161,46 @@ fn the_certificate_subject_is_bound_to_the_holder() {
 }
 
 #[test]
+fn every_planned_parameter_is_rendered_not_a_pattern() {
+    // The executor reads `PlannedCommand::params`, so a pattern that survives
+    // planning is a pattern that reaches a key. Asserted across every step of
+    // every built-in template rather than on the CSR alone: the point is that no
+    // step kind can be added with an unrendered parameter.
+    for template in BootstrapTemplate::builtin() {
+        for command in plan(&template, &ctx()).unwrap() {
+            for (key, value) in &command.params {
+                assert!(
+                    !value.contains("{{") && !value.contains("}}"),
+                    "{}/{}: parameter `{key}` is still a pattern: {value}",
+                    template.id,
+                    command.step_id
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_parameter_naming_an_unknown_variable_is_refused_at_planning_time() {
+    // Refused before the operator is shown a plan, and long before a key is
+    // touched — `render`'s rule, applied to parameters as well as descriptions:
+    // an unknown name is an error, never an empty string.
+    let mut template = BootstrapTemplate::org_standard();
+    template
+        .steps
+        .iter_mut()
+        .find(|s| s.id == "piv-csr")
+        .expect("the standard procedure has a CSR step")
+        .params
+        .insert("subject".into(), "CN={{holder.nickname}}".into());
+
+    match plan(&template, &ctx()) {
+        Err(TemplateError::UnknownVariable(name)) => assert_eq!(name, "holder.nickname"),
+        other => panic!("planning must refuse an unknown variable, got: {other:?}"),
+    }
+}
+
+#[test]
 fn the_key_serial_selects_the_device_on_every_command() {
     let commands = plan(&BootstrapTemplate::org_standard(), &ctx()).unwrap();
     for command in commands.iter().filter(|c| c.program.is_some()) {

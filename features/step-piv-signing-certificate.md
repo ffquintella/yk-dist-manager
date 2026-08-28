@@ -43,6 +43,11 @@ with the crate.
 **No key was attached when the write paths were written.** The AES authentication was
 verified on 2026-08-11; `GENERATE` and `PUT DATA` were not.
 
+The subject and the SAN the request actually carries were wrong until 2026-08-28 —
+unrendered patterns, see *Template parameters* — which is worth stating here
+because everything above it was right: the plan showed the holder's name, the
+signature over the CSR was valid, and only the names inside it were placeholders.
+
 ## Design
 
 ### The SAN problem, stated exactly
@@ -108,6 +113,16 @@ a verifiable fact. This is a required part of the step, not an extra.
 
 The DN deliberately excludes the e-mail (`features/holder-registry.md`), and a unit
 test enforces that.
+
+Every one of these is a **pattern**, and what a step applies is the pattern
+*rendered* for this holder and this key. That rendering happens once, in the
+planner, and the rendered values travel on `PlannedCommand::params` — which is what
+the executor reads. Until 2026-08-28 it read the template's raw parameters instead,
+and the CSR went to the applet asking for `CN={{holder.name}},…` with
+`rfc822Name={{holder.email}}`: a well-formed request for a subject that names
+nobody, which a CA signs and which fails at the holder's first signature. A
+parameter naming a variable the context does not have is refused at planning time,
+before the plan is shown.
 
 ## Phases
 
