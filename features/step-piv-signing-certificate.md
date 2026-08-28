@@ -32,13 +32,27 @@ PKCS#10 with the `rfc822Name` SAN and signs it through the slot, `PivCertImport`
 takes the certificate the operator brings back and refuses it unless it belongs to
 this key and this holder, and `Verify` reads the applets back.
 
-Two of those no longer go through the [`yubikey`] crate, and the reason is the same
-one for both: generation and import need **management-key authentication**, which the
-crate cannot do on firmware 5.7 (its `MgmKey` is a 3DES type). They run on
-[`device::piv_session`](../src/device/piv_session.rs) instead — one session that
-authenticates with AES and issues the write, because that authentication belongs to
-the session. `piv::sign_data` and `piv::attest` need no such authentication and stay
-with the crate.
+Three of those no longer go through the [`yubikey`] crate. For generation and import
+the reason is **management-key authentication**, which the crate cannot do on firmware
+5.7 (its `MgmKey` is a 3DES type). For the CSR the reason is **`PinPolicy::Always`**:
+the card requires the `VERIFY` and the `GENERAL AUTHENTICATE` to reach it with nothing
+in between, and the crate opens one PC/SC transaction per call — so it lets go of the
+card between the PIN and the signature. All three run on
+[`device::piv_session`](../src/device/piv_session.rs) instead — one session, one held
+transaction, because both of those properties belong to the session. `piv::attest`
+needs neither and stays with the crate.
+
+**`piv-csr` failed on a real key on 2026-08-28**, immediately after a `piv-keygen` that
+had succeeded, with `piv.create_csr failed: PC/SC error: An attempt was made to end a
+non-existent transaction`. The step was reading the slot's metadata through one crate
+connection, verifying the PIN in a second PC/SC transaction and signing in a third,
+having just opened a third card handle after the keygen closed two — with the card
+unheld between every pair. It now opens one session, reads the slot's public key from
+`GET METADATA` on it, and verifies-and-signs inside a single transaction it does not
+release; and [`Session::open`](../src/device/piv_session.rs) sweeps the readers three
+times rather than once, because closing a handle disconnects with `ResetCard` and a
+warm reset takes the card off the bus for long enough that the next step's first sweep
+can miss a key that is in the port.
 
 **No key was attached when the write paths were written.** The AES authentication was
 verified on 2026-08-11; `GENERATE` and `PUT DATA` were not.

@@ -64,6 +64,14 @@ const ALG_AES256: u8 = 0x0C;
 /// The largest data field a short APDU carries. Anything longer is chained.
 const MAX_APDU_DATA: usize = 255;
 
+/// How many times to sweep the readers looking for the key before saying it is
+/// not attached. See [`Session::open`] for why one sweep is not enough.
+const CONNECT_ATTEMPTS: u32 = 3;
+
+/// How long to wait between those sweeps. A YubiKey's warm reset is well inside
+/// two of these, and an operator cannot perceive the whole budget.
+const CONNECT_RETRY_PAUSE: std::time::Duration = std::time::Duration::from_millis(150);
+
 /// Which cipher the management key slot is using.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MgmAlgorithm {
@@ -155,6 +163,31 @@ impl KeyAlgorithm {
         }
     }
 
+    /// The identifier as the card reports it in `GET METADATA` tag `0x01`.
+    ///
+    /// The inverse of [`KeyAlgorithm::id`], and the reason a caller never has to
+    /// guess what a slot holds: the algorithm a request is built for is read off
+    /// the key that is actually in the slot.
+    pub fn from_id(id: u8) -> Option<Self> {
+        Some(match id {
+            0x06 => KeyAlgorithm::Rsa1024,
+            0x07 => KeyAlgorithm::Rsa2048,
+            0x11 => KeyAlgorithm::EccP256,
+            0x14 => KeyAlgorithm::EccP384,
+            _ => return None,
+        })
+    }
+
+    /// The name the templates and the evidence record use.
+    pub fn name(&self) -> &'static str {
+        match self {
+            KeyAlgorithm::Rsa1024 => "RSA1024",
+            KeyAlgorithm::Rsa2048 => "RSA2048",
+            KeyAlgorithm::EccP256 => "ECCP256",
+            KeyAlgorithm::EccP384 => "ECCP384",
+        }
+    }
+
     fn is_ec(&self) -> bool {
         matches!(self, KeyAlgorithm::EccP256 | KeyAlgorithm::EccP384)
     }
@@ -208,7 +241,37 @@ pub struct Session {
 
 impl Session {
     /// Connect to the key with this serial and select the PIV applet.
+    ///
+    /// Retried, briefly, because of what the *previous* step left behind: closing
+    /// a PC/SC card handle disconnects it with `ResetCard` — which is the right
+    /// disposition for a tool that verifies PINs, since it clears the applet's
+    /// security status rather than leaving a verified card for the next client —
+    /// and a warm reset takes the card off the bus for a fraction of a second. A
+    /// bootstrap run walks its steps back to back, so the step after a keygen
+    /// asks for the card while it is still coming back. One sweep answers
+    /// "not attached" for a key that is in the port; three, spaced, do not.
+    ///
+    /// The retry costs nothing on the normal path (the first sweep finds it) and
+    /// is safe to repeat: it selects and reads a serial, and sends no secret.
     pub fn open(serial: u32, operation: &'static str) -> Result<Self> {
+        for attempt in 0..CONNECT_ATTEMPTS {
+            if attempt > 0 {
+                std::thread::sleep(CONNECT_RETRY_PAUSE);
+            }
+            match Self::connect_once(serial, operation) {
+                Ok(Some(session)) => return Ok(session),
+                // Nothing answered as this key yet — worth another look.
+                Ok(None) => continue,
+                // No PC/SC service, or no reader list: not something a pause fixes.
+                Err(e) => return Err(e),
+            }
+        }
+        Err(WriteError::NotAttached(serial))
+    }
+
+    /// One sweep of the readers. `None` means no attached key answered as this
+    /// serial, which is a state rather than a failure.
+    fn connect_once(serial: u32, operation: &'static str) -> Result<Option<Self>> {
         let ctx = pcsc::Context::establish(pcsc::Scope::User).map_err(|e| WriteError::Failed {
             operation,
             reason: format!("no PC/SC service: {e}"),
@@ -237,10 +300,10 @@ impl Session {
             let mut candidate = Self { card };
             if candidate.select_piv(operation).is_ok() && candidate.serial(operation) == Ok(serial)
             {
-                return Ok(candidate);
+                return Ok(Some(candidate));
             }
         }
-        Err(WriteError::NotAttached(serial))
+        Ok(None)
     }
 
     /// Send one APDU, following `61xx` continuations, and return the data with
@@ -250,36 +313,7 @@ impl Session {
     /// which is every RSA public key and every certificate read — without it the
     /// answer arrives truncated and parses as garbage rather than as an error.
     fn transmit(&mut self, apdu: &[u8], operation: &'static str) -> Result<(Vec<u8>, u16)> {
-        let mut collected = Vec::new();
-        let mut request = apdu.to_vec();
-
-        loop {
-            let mut buf = vec![0u8; 4096];
-            let response =
-                self.card
-                    .transmit(&request, &mut buf)
-                    .map_err(|e| WriteError::Failed {
-                        operation,
-                        reason: format!("the card did not answer: {e}"),
-                    })?;
-            if response.len() < 2 {
-                return Err(WriteError::Failed {
-                    operation,
-                    reason: "truncated response from the card".into(),
-                });
-            }
-            let split = response.len() - 2;
-            let sw = u16::from(response[split]) << 8 | u16::from(response[split + 1]);
-            collected.extend_from_slice(&response[..split]);
-
-            // `61 xx`: more data waiting, xx bytes of it (0 meaning "unknown, ask
-            // for the maximum").
-            if sw & 0xFF00 == 0x6100 {
-                request = vec![0x00, 0xC0, 0x00, 0x00, (sw & 0x00FF) as u8];
-                continue;
-            }
-            return Ok((collected, sw));
-        }
+        transmit_on(&self.card, apdu, operation)
     }
 
     /// Send a command whose data field may exceed one APDU, using command
@@ -387,26 +421,7 @@ impl Session {
     /// Required before the PIN-protected management key can be read, and before a
     /// key generated with `PinPolicy::Always` will sign.
     pub fn verify_pin(&mut self, pin: &str, operation: &'static str) -> Result<()> {
-        let padded = pad_pin(pin, operation)?;
-        let mut apdu = vec![0x00, 0x20, 0x00, 0x80, padded.len() as u8];
-        apdu.extend_from_slice(&padded);
-
-        let (_, sw) = self.transmit(&apdu, operation)?;
-        match sw {
-            0x9000 => Ok(()),
-            // `63 Cx` — wrong PIN, x attempts left. The count is the one thing
-            // worth translating precisely: it is what tells the operator whether
-            // to stop.
-            other if other & 0xFFF0 == 0x63C0 => Err(WriteError::WrongSecret {
-                applet: "PIV",
-                retries_left: (other & 0x000F) as u8,
-            }),
-            0x6983 => Err(WriteError::Locked { applet: "PIV" }),
-            other => Err(WriteError::Failed {
-                operation,
-                reason: format!("the PIN was not accepted: card status 0x{other:04x}"),
-            }),
-        }
+        verify_pin_on(&self.card, pin, operation)
     }
 
     /// Authenticate with the management key the caller holds.
@@ -684,6 +699,64 @@ impl Session {
         spki_from_generated(algorithm, &response, operation)
     }
 
+    /// What a slot holds: the algorithm of its key, and that key as a DER
+    /// `SubjectPublicKeyInfo`.
+    ///
+    /// Read from the card rather than taken from the caller, so a certificate
+    /// request is about the key that is actually in the slot. A request built
+    /// around a public key handed in from elsewhere is one the card cannot sign,
+    /// and the mismatch would only surface as a rejection at the CA.
+    pub fn slot_public_key(
+        &mut self,
+        slot: u8,
+        operation: &'static str,
+    ) -> Result<(KeyAlgorithm, Vec<u8>)> {
+        let data = self.metadata(slot, operation)?.ok_or(WriteError::Failed {
+            operation,
+            reason: format!(
+                "PIV slot {slot:02x} holds no key, so there is nothing to build a request for \
+                 or to check a certificate against — generate one first"
+            ),
+        })?;
+        public_key_from_metadata(&data, slot, operation)
+    }
+
+    /// Verify the PIN and sign with the slot's key, **without letting go of the
+    /// card in between**.
+    ///
+    /// This is the whole point of the function. The signing slot is generated
+    /// `PinPolicy::Always`, which means the card requires a `VERIFY` immediately
+    /// before each `GENERAL AUTHENTICATE` — and "immediately" is the card's own
+    /// security status, which any other PC/SC client can clear by selecting an
+    /// applet, and which a card reset destroys outright. Doing the two through a
+    /// library that opens one PC/SC transaction per call leaves a window between
+    /// them; on macOS, where the system's own smart-card daemon talks to attached
+    /// tokens unprompted, that window is the difference between a CSR and
+    /// `piv.create_csr failed: PC/SC error`. One transaction, held across both,
+    /// closes it.
+    pub fn sign_with_pin(
+        &mut self,
+        slot: u8,
+        algorithm: KeyAlgorithm,
+        pin: &str,
+        payload: &[u8],
+        operation: &'static str,
+    ) -> Result<Vec<u8>> {
+        // Built before the card is locked: a request that cannot be assembled is
+        // not worth taking the reader for, and it must not burn a PIN attempt.
+        let apdu = sign_apdu(slot, algorithm, payload, operation)?;
+
+        let txn = self.card.transaction().map_err(|e| WriteError::Failed {
+            operation,
+            reason: format!("the card could not be held for signing: {e}"),
+        })?;
+
+        verify_pin_on(&txn, pin, operation)?;
+        let (response, sw) = transmit_on(&txn, &apdu, operation)?;
+        expect_ok(sw, operation, "signing with the key in the slot")?;
+        signature_from_response(&response, operation)
+    }
+
     /// `PUT DATA` an issued certificate into the object belonging to a slot.
     ///
     /// Also needs management-key authentication on this session.
@@ -711,6 +784,154 @@ impl Session {
         let (_, sw) = self.transmit_chained([0x00, 0xDB, 0x3F, 0xFF], &data, operation)?;
         expect_ok(sw, operation, "writing the certificate to the slot")
     }
+}
+
+/// Send one APDU to a card, following `61xx` continuations.
+///
+/// Takes the card rather than the session so it can be handed either the
+/// [`Session`]'s own handle or a **held** [`pcsc::Transaction`], which derefs to
+/// the same card. That is the whole reason this is a free function: a signature
+/// from a `PinPolicy::Always` slot has to verify the PIN and sign without letting
+/// go of the card in between, and the only way to hold it is to keep one
+/// transaction alive across both APDUs.
+fn transmit_on(card: &pcsc::Card, apdu: &[u8], operation: &'static str) -> Result<(Vec<u8>, u16)> {
+    let mut collected = Vec::new();
+    let mut request = apdu.to_vec();
+
+    loop {
+        let mut buf = vec![0u8; 4096];
+        let response = card
+            .transmit(&request, &mut buf)
+            .map_err(|e| WriteError::Failed {
+                operation,
+                reason: format!("the card did not answer: {e}"),
+            })?;
+        if response.len() < 2 {
+            return Err(WriteError::Failed {
+                operation,
+                reason: "truncated response from the card".into(),
+            });
+        }
+        let split = response.len() - 2;
+        let sw = u16::from(response[split]) << 8 | u16::from(response[split + 1]);
+        collected.extend_from_slice(&response[..split]);
+
+        // `61 xx`: more data waiting, xx bytes of it (0 meaning "unknown, ask
+        // for the maximum").
+        if sw & 0xFF00 == 0x6100 {
+            request = vec![0x00, 0xC0, 0x00, 0x00, (sw & 0x00FF) as u8];
+            continue;
+        }
+        return Ok((collected, sw));
+    }
+}
+
+/// `VERIFY` the PIN on whatever handle is passed — the session's card, or a held
+/// transaction on it.
+fn verify_pin_on(card: &pcsc::Card, pin: &str, operation: &'static str) -> Result<()> {
+    let padded = pad_pin(pin, operation)?;
+    let mut apdu = vec![0x00, 0x20, 0x00, 0x80, padded.len() as u8];
+    apdu.extend_from_slice(&padded);
+
+    let (_, sw) = transmit_on(card, &apdu, operation)?;
+    match sw {
+        0x9000 => Ok(()),
+        // `63 Cx` — wrong PIN, x attempts left. The count is the one thing
+        // worth translating precisely: it is what tells the operator whether
+        // to stop.
+        other if other & 0xFFF0 == 0x63C0 => Err(WriteError::WrongSecret {
+            applet: "PIV",
+            retries_left: (other & 0x000F) as u8,
+        }),
+        0x6983 => Err(WriteError::Locked { applet: "PIV" }),
+        other => Err(WriteError::Failed {
+            operation,
+            reason: format!("the PIN was not accepted: card status 0x{other:04x}"),
+        }),
+    }
+}
+
+/// The `GENERAL AUTHENTICATE` command that asks a slot to sign.
+///
+/// `7C { 82 00, 81 <payload> }` — an empty `82` is the request for a response,
+/// and `81` carries the bytes to sign. For ECDSA those bytes are the bare digest,
+/// sized to the curve; RSA would need PKCS#1 padding applied first, which
+/// [`super::csr`] refuses to guess at.
+///
+/// Pure, so the bytes are checked by a test rather than by a key in a port.
+fn sign_apdu(
+    slot: u8,
+    algorithm: KeyAlgorithm,
+    payload: &[u8],
+    operation: &'static str,
+) -> Result<Vec<u8>> {
+    let mut body = vec![0x82, 0x00, 0x81];
+    push_len(&mut body, payload.len());
+    body.extend_from_slice(payload);
+
+    let mut data = vec![0x7C];
+    push_len(&mut data, body.len());
+    data.extend_from_slice(&body);
+
+    // A short APDU carries 255 bytes. Everything this signs is an ECDSA digest of
+    // 32 or 48, so the limit is a guard rather than a case to handle: chaining a
+    // signature request is only needed for RSA, which is refused upstream, and a
+    // silent `as u8` truncation here would send a length the card reads as a
+    // different command.
+    if data.len() > MAX_APDU_DATA {
+        return Err(WriteError::Unsupported {
+            operation,
+            reason: format!(
+                "a {} byte signature request does not fit one APDU — only ECDSA digests are \
+                 signed here",
+                data.len()
+            ),
+        });
+    }
+
+    let mut apdu = vec![0x00, 0x87, algorithm.id(), slot, data.len() as u8];
+    apdu.extend_from_slice(&data);
+    apdu.push(0x00);
+    Ok(apdu)
+}
+
+/// The signature out of a `GENERAL AUTHENTICATE` response: `7C { 82 <sig> }`.
+fn signature_from_response(response: &[u8], operation: &'static str) -> Result<Vec<u8>> {
+    inner_tlv(response, 0x7C, 0x82)
+        .map(<[u8]>::to_vec)
+        .ok_or(WriteError::Failed {
+            operation,
+            reason: "the card answered the signature request without a signature".into(),
+        })
+}
+
+/// The algorithm and public key a slot holds, out of a `GET METADATA` response.
+///
+/// Tag `0x01` is the algorithm; tag `0x04` holds the public key in the same
+/// encoding a `GENERATE` answers with, minus the `7F 49` wrapper.
+fn public_key_from_metadata(
+    data: &[u8],
+    slot: u8,
+    operation: &'static str,
+) -> Result<(KeyAlgorithm, Vec<u8>)> {
+    let id = find_tlv(data, 0x01)
+        .and_then(|v| v.first().copied())
+        .ok_or(WriteError::Failed {
+            operation,
+            reason: format!("PIV slot {slot:02x} did not report which algorithm it holds"),
+        })?;
+    let algorithm = KeyAlgorithm::from_id(id).ok_or(WriteError::Unsupported {
+        operation,
+        reason: format!("PIV slot {slot:02x} holds a key of algorithm 0x{id:02x}"),
+    })?;
+    let body = find_tlv(data, 0x04).ok_or(WriteError::Failed {
+        operation,
+        reason: format!(
+            "PIV slot {slot:02x} holds no key, so there is nothing to build a request for or \
+             to check a certificate against — generate one first"
+        ),
+    })?;
+    Ok((algorithm, spki_from_public_key(algorithm, body, operation)?))
 }
 
 /// Pad a PIN to the 8 bytes the applet expects, with `0xFF`.
@@ -795,6 +1016,20 @@ fn spki_from_generated(
     response: &[u8],
     operation: &'static str,
 ) -> Result<Vec<u8>> {
+    let body = find_tlv(response, 0x7F49).ok_or_else(|| WriteError::Failed {
+        operation,
+        reason: "the card's response holds no generated public key".into(),
+    })?;
+    spki_from_public_key(algorithm, body, operation)
+}
+
+/// The same translation, for a public key the card has already unwrapped —
+/// `GET METADATA` carries it under tag `0x04` with no `7F 49` around it.
+fn spki_from_public_key(
+    algorithm: KeyAlgorithm,
+    body: &[u8],
+    operation: &'static str,
+) -> Result<Vec<u8>> {
     use x509_cert::der::asn1::BitString;
     use x509_cert::der::{Any, Decode, Encode};
     use x509_cert::spki::{AlgorithmIdentifierOwned, ObjectIdentifier, SubjectPublicKeyInfoOwned};
@@ -803,11 +1038,6 @@ fn spki_from_generated(
     const PRIME256V1: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.10045.3.1.7");
     const SECP384R1: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.132.0.34");
     const RSA_ENCRYPTION: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.1");
-
-    let body = find_tlv(response, 0x7F49).ok_or_else(|| WriteError::Failed {
-        operation,
-        reason: "the card's response holds no generated public key".into(),
-    })?;
 
     let (oid, parameters, key_bytes) = if algorithm.is_ec() {
         let point = find_tlv(body, 0x86).ok_or_else(|| WriteError::Failed {
@@ -1196,5 +1426,104 @@ mod tests {
             "the top bit set needs a pad byte"
         );
         assert_eq!(der_integer(&[]), vec![0x02, 0x01, 0x00]);
+    }
+
+    #[test]
+    fn a_signature_request_is_the_dynamic_authentication_template_the_card_expects() {
+        // `7C { 82 00, 81 <digest> }` inside `00 87 <alg> <slot>`, with Le. A
+        // digest is the whole payload for ECDSA — no padding, which is why RSA
+        // is refused a layer up rather than approximated.
+        let digest = [0xAAu8; 32];
+        let apdu = sign_apdu(0x9C, KeyAlgorithm::EccP256, &digest, "test").unwrap();
+
+        assert_eq!(&apdu[..4], &[0x00, 0x87, 0x11, 0x9C], "header");
+        assert_eq!(apdu[4] as usize, apdu.len() - 6, "Lc counts the data only");
+        assert_eq!(&apdu[5..9], &[0x7C, 0x24, 0x82, 0x00]);
+        assert_eq!(
+            &apdu[9..11],
+            &[0x81, 0x20],
+            "the digest, tagged and measured"
+        );
+        assert_eq!(&apdu[11..43], &digest);
+        assert_eq!(
+            *apdu.last().unwrap(),
+            0x00,
+            "Le asks for the signature back"
+        );
+    }
+
+    #[test]
+    fn a_payload_too_long_for_one_apdu_is_refused_rather_than_truncated() {
+        // An RSA-2048 block. `as u8` would send Lc = 0x03 and the card would read
+        // the rest of the request as further commands.
+        let err = sign_apdu(0x9C, KeyAlgorithm::Rsa2048, &[0u8; 256], "test").unwrap_err();
+        assert!(matches!(err, WriteError::Unsupported { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn the_signature_is_read_out_of_the_response_template() {
+        let response = tlvs_bytes(0x7C, &[0x82, 0x04, 0x30, 0x06, 0x02, 0x01]);
+        assert_eq!(
+            signature_from_response(&response, "test").unwrap(),
+            vec![0x30, 0x06, 0x02, 0x01]
+        );
+        // A card that answered without one is an error, not an empty signature:
+        // `csr::finish` would otherwise be handed nothing to wrap.
+        assert!(signature_from_response(&[], "test").is_err());
+        assert!(signature_from_response(&[0x7C, 0x00], "test").is_err());
+    }
+
+    #[test]
+    fn a_slots_metadata_names_its_algorithm_and_yields_a_subject_public_key_info() {
+        // `01 <alg>` and `04 { 86 <point> }`, the shape `GET METADATA` answers in.
+        let point: Vec<u8> = std::iter::once(0x04).chain([0x07u8; 64]).collect();
+        let mut public = vec![0x86, point.len() as u8];
+        public.extend_from_slice(&point);
+        let mut data = vec![0x01, 0x01, 0x11, 0x04, public.len() as u8];
+        data.extend_from_slice(&public);
+
+        let (algorithm, spki) = public_key_from_metadata(&data, 0x9C, "test").unwrap();
+        assert_eq!(algorithm, KeyAlgorithm::EccP256);
+        assert_eq!(algorithm.name(), "ECCP256");
+        assert_eq!(
+            spki,
+            spki_from_public_key(KeyAlgorithm::EccP256, &public, "test").unwrap(),
+            "the metadata body decodes the same way a generate response does"
+        );
+    }
+
+    #[test]
+    fn a_slot_with_no_key_says_so_instead_of_producing_an_empty_request() {
+        // Only the algorithm, no `04` — a slot that has never been generated.
+        let err = public_key_from_metadata(&[0x01, 0x01, 0x11], 0x9C, "test").unwrap_err();
+        assert!(err.detail().contains("9c"), "{}", err.detail());
+        assert!(err.detail().contains("generate"), "{}", err.detail());
+    }
+
+    #[test]
+    fn every_algorithm_identifier_survives_the_round_trip_through_the_card() {
+        for algorithm in [
+            KeyAlgorithm::EccP256,
+            KeyAlgorithm::EccP384,
+            KeyAlgorithm::Rsa1024,
+            KeyAlgorithm::Rsa2048,
+        ] {
+            assert_eq!(KeyAlgorithm::from_id(algorithm.id()), Some(algorithm));
+            // The name is what the CSR builder matches on, so it has to be the
+            // form the templates use.
+            assert_eq!(
+                KeyAlgorithm::from_name(algorithm.name(), "test").unwrap(),
+                algorithm
+            );
+        }
+        assert_eq!(KeyAlgorithm::from_id(0x00), None);
+    }
+
+    /// One TLV, for the tests above.
+    fn tlvs_bytes(tag: u8, value: &[u8]) -> Vec<u8> {
+        let mut out = vec![tag];
+        push_len(&mut out, value.len());
+        out.extend_from_slice(value);
+        out
     }
 }

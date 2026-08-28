@@ -149,6 +149,33 @@ Maintenance instructions (see AGENTS.md §5):
 
 ### Fixed
 
+- **The CSR step failed on a real key with `PC/SC error: An attempt was made to
+  end a non-existent transaction`**, one step after the keygen it depends on had
+  succeeded ([`features/step-piv-signing-certificate.md`](features/step-piv-signing-certificate.md)).
+  The signing key is generated `PinPolicy::Always`, which means the card requires
+  the `VERIFY` and the signature to reach it with nothing in between — and
+  `piv.create_csr` was doing the two through the [`yubikey`] crate, which opens one
+  PC/SC transaction per call and so let go of the card between them. It also opened
+  a fresh card handle to do it, moments after the keygen step had closed two of its
+  own; a handle closes with `ResetCard`, and a warm reset takes the card off the bus
+  for a fraction of a second.
+
+  `piv.create_csr` now runs entirely on [`device::piv_session`](src/device/piv_session.rs),
+  the module that already exists for exchanges that belong to a session rather than
+  to a process: one connection, the slot's public key read from its own
+  `GET METADATA`, and the PIN verified and the digest signed inside **one held PC/SC
+  transaction**. `Session::open` sweeps the readers three times spaced 150 ms rather
+  than once, so a key that is in the port but still coming back from the previous
+  step's reset is not reported as unattached. The card is still disconnected with
+  `ResetCard`, deliberately: that is what clears the applet's security status
+  instead of leaving a PIN-verified card for the next client.
+
+  `piv.import_certificate` — the step immediately after, which never ran — had the
+  same shape: a crate handle opened to check that the certificate belongs to the
+  key in the slot, closed, and a session opened to do the write. It is now one
+  session as well, and the check still happens before the management key is asked
+  for, so a certificate belonging to another key is refused without authenticating.
+
 - **The initial FIDO2 credential was registered against whatever the run's own
   relying party was, not the one the plan showed** — the executor read a parameter
   called `rp` ([`src/bootstrap/steps.rs`](src/bootstrap/steps.rs)), and no template
