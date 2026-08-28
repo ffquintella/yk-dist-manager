@@ -69,6 +69,16 @@ are written so that choice is explicit rather than implied.
 | `uv` | Require user verification at creation | (Phase 3) |
 | `alg` | COSE algorithm preference (ES256 / EdDSA) | (Phase 3) |
 
+**These names are authoritative on both sides of the confirmation gate.** The
+template ships them, `template::plan` renders them into `PlannedCommand::params`
+and shows them in the plan under these names, and `bootstrap::steps` reads them
+from that plan — not from `TemplateStep::params`, which are patterns. Where a
+hand-written template omits one, the run falls back to its own relying party and
+to the certificate SAN, which is what the defaults render to in this deployment
+anyway. Until 2026-08-28 the executor read a parameter named `rp`, which nothing
+ships, and never read `user_name` or `resident` at all: a template that set either
+was silently ignored while the plan showed the value it set.
+
 ### Capacity
 
 A YubiKey 5 holds 25 discoverable credentials (100 on firmware 5.7+). The step must
@@ -88,10 +98,22 @@ PIN used to authorise creation.
 | 1 | Plan entry, native-only, no fallback | Done | asserted by test |
 | 2 | `get_info` read: PIN state, remaining credential slots, supported algorithms | **Done** | `remainingDiscoverableCredentials` (CTAP 2.1) is read into `Fido2State::remaining_credential_slots`, and a key with **no free slot** is refused before the PIN is set rather than by the authenticator's own error — which would leave a key that has had a PIN written and nothing else. `None` is "the firmware does not report it", which is not "full": treating it as full would refuse the step on every key below 5.7 |
 | 3 | `make_credential` with `rk=true`, UV, algorithm choice | **Done** | **hardware-verified** — the step `ykman` cannot perform at all, and therefore the whole case for the native transport |
-| 4 | Record credential id + RP id on the run | **Done** | written into the step's detail as `credential_id=… rp_id=… algorithm=… user_name=…` and read back by [`bootstrap::credential_evidence`](../src/bootstrap/mod.rs), the same idiom the CSR and the attestation use. All four are public by construction: a credential id is what the relying party keeps in its own database, and the private key never leaves the device |
+| 4 | Record credential id + RP id on the run | **Done** | written into the step's detail as `credential_id=… rp_id=… algorithm=… user_name=… discoverable=…` and read back by [`bootstrap::credential_evidence`](../src/bootstrap/mod.rs), the same idiom the CSR and the attestation use. All four are public by construction: a credential id is what the relying party keeps in its own database, and the private key never leaves the device |
 | 5 | List / delete credentials from the GUI | Todo | `ykman` can do this; native is nicer |
 | 6 | Enterprise attestation option | Todo | needs an RP that verifies it |
 | 7 | Bind the credential to an internal relying party | Todo | depends on which service; BastionVault is the obvious candidate |
+
+### The relying party in the record is read whole (2026-08-28)
+
+`rp_id` defaults to `{{org}}`, and an organisation's name has spaces in it, so the
+`name=value` reading of a step detail — which is how every piece of a run's
+evidence is recovered, without a column per kind — used to truncate it at the
+first space: a register that recorded `rp_id=Fundação Getulio Vargas` answered
+`Fundação` when asked what the credential was bound to. [`domain::detail_field`](../src/domain/lifecycle.rs)
+is now the single reader, a value runs to the next field rather than to the next
+space, and details already written to a register read correctly without being
+rewritten. Which relying party the credential *should* be bound to is still the
+open question below.
 
 ## Audit events
 
@@ -104,6 +126,13 @@ PIN used to authorise creation.
 ## Tests
 
 - `scenario_credential_creation_cannot_fall_back_to_ykman` — native-only.
+- `scenario_the_credential_is_registered_against_the_relying_party_the_plan_showed`
+  (`tests/behaviour_executor.rs`) — a procedure that names its own `rp_id` and
+  `user_name` is the one the `fido2.make_credential` call carries, and the one the
+  register reads back.
+- `the_credential_plan_shows_every_parameter_the_step_reads_under_its_own_name`
+  (`tests/unit_template.rs`) — the parameter names on the two sides of the
+  confirmation gate are the same words.
 - `credential_registration_is_native_because_ykman_cannot_do_it` — the plan names
   `ctap-hid-fido2`.
 - Phase 2+: mock CTAP transport — key full, PIN not set, UV required but unavailable,

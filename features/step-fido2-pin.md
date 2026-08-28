@@ -58,6 +58,15 @@ reference command. Nothing is applied yet — the executor is Wave 1.
 | `source` | `operator-entered` \| `holder-entered` \| `generated` | `operator-entered` |
 | `enforcement` (on the `fido2-force-pin-change` step) | `firmware-if-available` — use `forcePINChange` where the firmware has it, otherwise fall back to the instruction on the term | `firmware-if-available` |
 
+**`min_length` is the name on both sides of the confirmation gate.** The plan
+renders it under that name and the executor reads it under that name, from the
+plan rather than from the template's own patterns. Until 2026-08-28 the executor
+read `length`, which nothing ships: a procedure asking for an eight-character PIN
+generated a six-character one, and one raising the firmware's own floor to eight
+raised it to six, while the plan the operator confirmed showed eight in both
+cases. Same defect as the credential step's `rp_id`
+(`features/step-fido2-credentials.md`), one arm of the same `match` over.
+
 ### Why the native path is not optional here
 
 `ykman fido access change-pin --new-pin 123456` puts the PIN in an argv vector.

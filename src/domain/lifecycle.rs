@@ -553,17 +553,48 @@ fn normalise_subject(value: &str) -> String {
         .collect()
 }
 
-/// The `name=value` token a step detail carries, if it carries it.
+/// The `name=value` field a step detail carries, if it carries it.
 ///
-/// The same reading [`crate::bootstrap::credential_evidence`] does, and for the
-/// same reason: the evidence a run leaves lives in its step details, so a register
-/// written years ago answers this question without a schema change.
-fn field(detail: &str, name: &str) -> Option<String> {
-    detail
-        .split_whitespace()
-        .find_map(|token| token.strip_prefix(&format!("{name}=")))
-        .map(str::to_owned)
-        .filter(|value| !value.is_empty())
+/// The one reading of a step detail in the codebase — [`dependencies`] here and
+/// [`crate::bootstrap::credential_evidence`] both use it, for the same reason: the
+/// evidence a run leaves lives in its step details, so a register written years
+/// ago answers this question without a schema change.
+///
+/// **The value runs to the next field, not to the next space.** A relying-party
+/// id is `{{org}}` by default (`features/step-fido2-credentials.md`), and an
+/// organisation's name has spaces in it, so a reading that stopped at the first
+/// one recorded `rp_id=Fundação Getulio Vargas` and read back `Fundação` — a
+/// register naming a relying party that does not exist. Values never span a line,
+/// so the search stops at one.
+pub fn detail_field(detail: &str, name: &str) -> Option<String> {
+    let needle = format!("{name}=");
+    let start = detail
+        .match_indices(&needle)
+        .find(|(at, _)| *at == 0 || detail[..*at].ends_with(char::is_whitespace))
+        .map(|(at, _)| at + needle.len())?;
+    let rest = &detail[start..];
+    let rest = rest.split('\n').next().unwrap_or(rest);
+    let end = rest
+        .char_indices()
+        .filter(|(_, c)| c.is_whitespace())
+        .find(|(at, _)| starts_a_field(&rest[*at..]))
+        .map_or(rest.len(), |(at, _)| at);
+    let value = rest[..end].trim().to_owned();
+    (!value.is_empty()).then_some(value)
+}
+
+/// Does this run of text open a new `name=value` field?
+///
+/// Only a bare `name=` made of the characters a parameter name is made of counts,
+/// so the spaces *inside* a value do not end it.
+fn starts_a_field(text: &str) -> bool {
+    let token = text.trim_start();
+    match token.find('=') {
+        None | Some(0) => false,
+        Some(at) => token[..at]
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_'),
+    }
 }
 
 /// Everything the runs against this key say was put on it.
@@ -583,7 +614,7 @@ pub fn dependencies(runs: &[BootstrapRun]) -> Vec<Dependency> {
         for step in run.steps.iter().filter(|s| s.status == StepStatus::Done) {
             match step.kind {
                 StepKind::PivCertImport => {
-                    let serial = field(&step.detail, "serial")
+                    let serial = detail_field(&step.detail, "serial")
                         .unwrap_or_else(|| "(serial not recorded)".to_owned());
                     items.push(Dependency {
                         kind: DependencyKind::Certificate,
@@ -594,10 +625,10 @@ pub fn dependencies(runs: &[BootstrapRun]) -> Vec<Dependency> {
                     });
                 }
                 StepKind::Fido2Credential => {
-                    let Some(id) = field(&step.detail, "credential_id") else {
+                    let Some(id) = detail_field(&step.detail, "credential_id") else {
                         continue;
                     };
-                    let rp = field(&step.detail, "rp_id").unwrap_or_default();
+                    let rp = detail_field(&step.detail, "rp_id").unwrap_or_default();
                     items.push(Dependency {
                         kind: DependencyKind::Credential,
                         subject: id,
@@ -613,7 +644,7 @@ pub fn dependencies(runs: &[BootstrapRun]) -> Vec<Dependency> {
                 StepKind::OtpAccessCode => {
                     items.push(Dependency {
                         kind: DependencyKind::OtpAccessCode,
-                        subject: field(&step.detail, "slot")
+                        subject: detail_field(&step.detail, "slot")
                             .map(|slot| format!("slot {slot}"))
                             .unwrap_or_else(|| "OTP slot".to_owned()),
                         detail: step.detail.lines().next().unwrap_or_default().to_owned(),
@@ -913,6 +944,50 @@ mod tests {
         step.status = StepStatus::Done;
         step.finished_at = Some(Utc::now());
         step
+    }
+
+    #[test]
+    fn a_recorded_value_with_spaces_in_it_is_read_back_whole() {
+        // The relying-party id a run records is `{{org}}` by default, and an
+        // organisation's name is more than one word. Reading it as a whitespace
+        // token gave back the first word — a register naming a relying party
+        // nobody has ever registered anything with.
+        let detail = "[native] resident credential registered — credential_id=DEADBEEF \
+                      rp_id=Fundação Getulio Vargas algorithm=ES256 user_name=ana@example.org \
+                      discoverable=true";
+        assert_eq!(
+            detail_field(detail, "rp_id").as_deref(),
+            Some("Fundação Getulio Vargas")
+        );
+        assert_eq!(
+            detail_field(detail, "credential_id").as_deref(),
+            Some("DEADBEEF")
+        );
+        assert_eq!(detail_field(detail, "algorithm").as_deref(), Some("ES256"));
+        assert_eq!(
+            detail_field(detail, "discoverable").as_deref(),
+            Some("true")
+        );
+        assert_eq!(
+            detail_field(detail, "rp").as_deref(),
+            None,
+            "a prefix is not a field"
+        );
+        assert_eq!(detail_field(detail, "issuer"), None);
+    }
+
+    #[test]
+    fn a_value_stops_at_the_end_of_its_line() {
+        // A step detail can carry a PEM block under its first line — the CSR and
+        // the attestation both do — and no field's value continues into it.
+        let detail = "[native] certificate imported into slot 9c — subject=CN=Ana Silva,OU=ESI \
+                      serial=0A1B2C\n-----BEGIN CERTIFICATE-----\nMIIB\n";
+        assert_eq!(detail_field(detail, "serial").as_deref(), Some("0A1B2C"));
+        assert_eq!(
+            detail_field(detail, "subject").as_deref(),
+            Some("CN=Ana Silva,OU=ESI"),
+            "a distinguished name has spaces in it too"
+        );
     }
 
     #[test]

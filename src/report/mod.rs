@@ -860,17 +860,13 @@ fn certificates(data: &Dataset<'_>) -> Vec<ImportedCertificate> {
     out
 }
 
-/// The `name=value` token a step detail carries.
+/// The `name=value` field a step detail carries.
 ///
-/// The same reading [`crate::domain::lifecycle`] does, and deliberately the same
-/// shape: the evidence a run leaves lives in its step details, and two different
-/// parsers over one format is how they come to disagree.
+/// [`crate::domain::detail_field`] itself, rather than a third copy of the same
+/// five lines: the evidence a run leaves lives in its step details, and two
+/// different parsers over one format is how they come to disagree.
 fn field(detail: &str, name: &str) -> Option<String> {
-    detail
-        .split_whitespace()
-        .find_map(|token| token.strip_prefix(&format!("{name}=")))
-        .map(str::to_owned)
-        .filter(|value| !value.is_empty())
+    crate::domain::detail_field(detail, name)
 }
 
 /// The second half of `valid=<not_before>..<not_after>`.

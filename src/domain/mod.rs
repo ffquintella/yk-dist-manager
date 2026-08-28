@@ -19,7 +19,7 @@ pub use distribution::{DeliveryMethod, DistributionRecord};
 pub use document::{AttachedDocument, DocumentError, DocumentKind};
 pub use lifecycle::{
     Dependency, DependencyKind, IncidentKind, KeyIncident, Remediation, RemediationKind,
-    RevocationReason, RmaCase, RmaState, Sanitisation,
+    RevocationReason, RmaCase, RmaState, Sanitisation, detail_field,
 };
 // `escape_rfc4514` is re-exported for the property test that pins its
 // reversibility (`features/testing-strategy.md` phase 9): the escaper is what

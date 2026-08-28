@@ -357,11 +357,25 @@ fn plan_step(step: &TemplateStep, ctx: &RenderContext) -> Result<PlannedCommand,
         StepKind::Fido2Credential => {
             let rp = step.rendered_param("rp_id", ctx)?;
             let user = step.rendered_param("user_name", ctx)?;
+            // Shown under the parameter's own name, and every parameter the step
+            // reads is shown: the operator confirms `rp_id`, `user_name` and
+            // `resident`, and those are the three the executor acts on.
+            //
+            // Defaulted rather than required, unlike the two above: every parameter
+            // has already been rendered by the time we get here, so the only way
+            // this fails is a template that does not carry `resident` at all, and
+            // the answer for one that does not is the same `true` the executor
+            // takes. A missing relying party is a different matter and stays a
+            // refusal.
+            let resident = step
+                .rendered_param("resident", ctx)
+                .unwrap_or_else(|_| "true".into());
             (
                 None,
                 vec![
                     Arg::literal(format!("rp_id={rp}")),
-                    Arg::literal(format!("user={user}")),
+                    Arg::literal(format!("user_name={user}")),
+                    Arg::literal(format!("resident={resident}")),
                 ],
                 Some(
                     "`ykman` cannot create credentials at all — it only lists and deletes them. \

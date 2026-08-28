@@ -18,6 +18,46 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+### Fixed
+
+- **The initial FIDO2 credential was registered against whatever the run's own
+  relying party was, not the one the plan showed** — the executor read a parameter
+  called `rp` ([`src/bootstrap/steps.rs`](src/bootstrap/steps.rs)), and no template
+  has ever shipped one: the built-in procedures and `TemplateStep::for_kind` carry
+  **`rp_id`** and **`user_name`** ([`features/step-fido2-credentials.md`](features/step-fido2-credentials.md),
+  the template-parameter table). So the relying party silently fell back to the
+  run's own, `user_name` was never read at all — it came from the certificate SAN —
+  and `resident`, the parameter the step exists for, was never read either. Nothing
+  looked wrong, because in this deployment the fallbacks hold the same strings the
+  defaults render to; but a template that *set* `rp_id` or `user_name` was ignored,
+  while [`src/template/plan.rs`](src/template/plan.rs) rendered `rp_id` into the
+  plan the operator confirmed. Sibling of the CSR fix in 0.17.5 and the same shape:
+  the confirmation gate showing one thing while the run does another.
+
+  The executor now reads all three parameters, and the plan shows all three under
+  their own names — it labelled `user_name` as `user=` and did not show `resident`
+  at all. The run's detail records `discoverable=` alongside the credential id, so
+  the record says which kind of credential was created rather than assuming.
+
+- **A procedure that asked for a longer PIN got a six-character one** — the same
+  defect one arm over. `fido2-pin` and `fido2-min-pin-length` both ship
+  `min_length` ([`features/step-fido2-pin.md`](features/step-fido2-pin.md)) and the
+  executor read `length`, so a template asking for an eight-character PIN generated
+  six characters, and one raising the firmware's own floor to eight raised it to
+  six. The plan, which reads `min_length`, showed eight in both cases.
+
+- **A relying party with a space in its name read back as its first word** — the
+  evidence a run leaves lives in `name=value` fields inside its step details, and
+  all three readers of that format stopped a value at the first space. The default
+  relying-party id is `{{org}}`, and an organisation's name is more than one word,
+  so a register recorded `rp_id=Fundação Getulio Vargas` and answered `Fundação`
+  when asked afterwards what the credential was bound to — as did every
+  distinguished name in a certificate-import detail. There is now one reader,
+  [`domain::detail_field`](src/domain/lifecycle.rs), used by
+  `bootstrap::credential_evidence`, `domain::dependencies` and `report`: a value
+  runs to the next field or to the end of its line, so nothing already written to a
+  register needs rewriting to be read correctly.
+
 ## [0.17.5] - 2026-08-28
 
 ### Fixed

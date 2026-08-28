@@ -711,12 +711,11 @@ pub fn credential_evidence(run: &BootstrapRun) -> Vec<CredentialEvidence> {
         .iter()
         .filter(|step| step.kind == StepKind::Fido2Credential)
         .filter_map(|step| {
-            let field = |name: &str| {
-                step.detail
-                    .split_whitespace()
-                    .find_map(|token| token.strip_prefix(&format!("{name}=")))
-                    .map(str::to_owned)
-            };
+            // `domain::detail_field`, not a split on whitespace: a relying-party
+            // id defaults to `{{org}}`, and an organisation's name has spaces in
+            // it, so the value runs to the next field rather than to the next
+            // space.
+            let field = |name: &str| crate::domain::detail_field(&step.detail, name);
             Some(CredentialEvidence {
                 credential_id_hex: field("credential_id")?,
                 relying_party: field("rp_id")?,
