@@ -18,6 +18,8 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+## [0.17.5] - 2026-08-28
+
 ### Fixed
 
 - **A CSR was requested for `CN={{holder.name}}`, not for the holder** — the
