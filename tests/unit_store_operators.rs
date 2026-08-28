@@ -589,3 +589,108 @@ fn a_refusal_is_itself_recorded() {
     assert!(entry.details.contains("action=reset-applet"));
     assert!(entry.details.contains("authority=Auditor"));
 }
+
+// ------------------------------------- the guards are wired, not merely present
+
+/// The gap this closes: every one of the checks above passed while **no caller
+/// used them**. `Store::require` was reachable only from operator management, so
+/// a template edit, a factory reset, a re-key and an export all went through with
+/// a session hours old. A check nothing calls is documentation.
+#[test]
+fn a_procedure_edit_asks_for_the_credential_again_at_the_write_itself() {
+    // Given an administrator whose re-verification has lapsed
+    let store = enrolled();
+    store.act_as(Authority::SignedIn(Role::Administrator));
+    let template = yk_dist_manager::template::BootstrapTemplate::org_standard();
+
+    // When they store a procedure without presenting the credential again
+    let refused = store.upsert_template(&template);
+
+    // Then the write itself refuses — not a screen, and not a check nobody calls
+    assert!(
+        matches!(refused, Err(StoreError::NeedsReverification { .. })),
+        "{refused:?}"
+    );
+
+    // And the same is true of a term, which is what a holder signs
+    let term = yk_dist_manager::term::TermTemplate::builtin()
+        .into_iter()
+        .next()
+        .expect("this build ships terms");
+    assert!(
+        matches!(
+            store.upsert_term_template(&term),
+            Err(StoreError::NeedsReverification { .. })
+        ),
+        "a term is as sensitive as a procedure"
+    );
+
+    // When the credential is presented again, the write goes through
+    store.mark_reverified(Utc::now());
+    store.upsert_template(&template).expect("re-verified");
+    store.upsert_term_template(&term).expect("re-verified");
+}
+
+/// Retiring, reinstating and deleting a version are the three ways to change what
+/// the wizard offers without writing a new one, and each is as sensitive as the
+/// edit.
+#[test]
+fn withdrawing_a_procedure_is_as_sensitive_as_writing_one() {
+    let store = enrolled();
+    let template = yk_dist_manager::template::BootstrapTemplate::org_standard();
+    store
+        .upsert_template(&template)
+        .expect("stored while re-verified");
+    let (id, version) = (template.id.clone(), template.version.clone());
+
+    // Given the re-verification has lapsed
+    store.act_as(Authority::SignedIn(Role::Administrator));
+
+    for refused in [
+        store.retire_template(&id, &version),
+        store.reinstate_template(&id, &version),
+        store.delete_template(&id, &version),
+    ] {
+        assert!(
+            matches!(refused, Err(StoreError::NeedsReverification { .. })),
+            "{refused:?}"
+        );
+    }
+}
+
+/// The role half of a template write is left to SQLite on purpose, and that is a
+/// property worth pinning: the explicit check must not start answering first, or
+/// the authorizer stops being exercised by anything.
+#[test]
+fn the_role_refusal_on_a_template_still_comes_from_the_database() {
+    let store = enrolled();
+    store.act_as(Authority::SignedIn(Role::Distributor));
+    // Re-verified, so the only thing left to refuse is the role.
+    store.mark_reverified(Utc::now());
+
+    let refused =
+        store.upsert_template(&yk_dist_manager::template::BootstrapTemplate::org_standard());
+    assert!(
+        matches!(refused, Err(StoreError::NotAuthorised)),
+        "the authorizer is the layer that refuses a role, got {refused:?}"
+    );
+}
+
+/// The seeds run before anybody has signed in, and must not be caught by the
+/// guard on the method they go through — a register that could not seed its own
+/// built-in procedures would open half-configured.
+#[test]
+fn opening_a_register_still_seeds_its_built_in_procedures() {
+    // Given a freshly opened register, which is `Unenrolled` however many
+    // operators the file holds
+    let store = register();
+    assert_eq!(store.authority(), Authority::Unenrolled);
+
+    // When it seeds
+    let templates = store.seed_builtin_templates().expect("the seeds run");
+    let terms = store.seed_builtin_terms().expect("the seeds run");
+
+    // Then they went in
+    assert!(templates > 0, "this build ships procedures");
+    assert!(terms > 0, "this build ships terms");
+}

@@ -44,6 +44,15 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
         SessionState::SignedIn(_) => {
             session_card(app, ui);
             ui.add_space(16.0);
+            // A sensitive operation asked for the credential again (phase 5).
+            // The prompt lives here and the refusal that opened it can have come
+            // from any other screen, which is why `require_reverification`
+            // brings the operator to this one: a status line pointing at a
+            // screen they have to find is not a prompt.
+            if app.sign_in.reverifying.is_some() {
+                sign_in_card(app, ui);
+                ui.add_space(16.0);
+            }
             if app
                 .session
                 .authority()

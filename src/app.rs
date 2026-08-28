@@ -2265,6 +2265,14 @@ impl YkDistApp {
             return;
         }
         let was_encrypted = store.is_encrypted();
+        // Before `Store::change_password`, not inside it: that method takes the
+        // store **by value**, so a refusal raised in there would close the
+        // register as the price of saying no
+        // (`features/operator-auth-and-roles.md` phase 5).
+        if !self.may(crate::operator::Action::ChangeDatabasePassword) {
+            self.password_form.error = Some(self.status.clone());
+            return;
+        }
         if remove && !was_encrypted {
             self.password_form.error = Some("this register has no password to remove".into());
             return;
@@ -3576,6 +3584,16 @@ impl YkDistApp {
     /// when they did — and re-checked inside the engine against the request.
     fn run_confirmed_reset(&mut self, serial: u32, applets: &[crate::device::reset::Applet]) {
         use crate::device::reset::{self, Confirmation, HardwareResetter, Request};
+
+        // Every reset arrives here — the direct one, the one after a power cycle
+        // and the FIDO2 retry — so this is the only place the guard has to be,
+        // and it is before the resetter is built rather than after
+        // (`features/operator-auth-and-roles.md` phase 5). A reset refused once
+        // the applet is gone is not a refusal.
+        if !self.may(crate::operator::Action::ResetApplet) {
+            self.reset.error = Some(self.status.clone());
+            return;
+        }
 
         // Nothing else touches the key while this runs, for the reason the
         // executor stops it too: enumerating readers while another handle holds
@@ -5865,6 +5883,11 @@ impl YkDistApp {
 
     /// Write a filed document back out to disk.
     pub fn export_document(&mut self, id: uuid::Uuid) {
+        // A filed consignment term names its holder
+        // (`features/operator-auth-and-roles.md` phase 5).
+        if !self.may(crate::operator::Action::Export) {
+            return;
+        }
         let Some(store) = &self.store else { return };
         let document = match store.document_content(id) {
             Ok(document) => document,
@@ -6520,6 +6543,10 @@ impl YkDistApp {
         }
         self.sign_in.reverifying = Some(action);
         self.sign_in.error = None;
+        // The prompt is painted by the Operators screen, and the refusal that
+        // opened it can have come from any of the others. A status line pointing
+        // at a screen the operator has to find is not a prompt.
+        self.tab = Tab::Operators;
         self.status = format!(
             "{} needs your credential again — a session says when you signed in, not whether you \
              are still here",
@@ -6580,6 +6607,37 @@ impl YkDistApp {
             "re-verified — you may {} for the next two minutes",
             action.describe()
         );
+    }
+
+    /// Refuse an action before the thing it guards happens, or let it through.
+    ///
+    /// The half of the authorisation a table name cannot express
+    /// (`features/operator-auth-and-roles.md` phase 5). Resetting an applet
+    /// writes to hardware, changing the database password re-keys a file, and an
+    /// export carries personal data out of the register: none of the three is an
+    /// `INSERT`, so the SQLite authorizer never sees them, and each is
+    /// irreversible enough that a refusal *after* the fact is not a refusal.
+    ///
+    /// Callers put this **before** the write. Returns `false` having already put
+    /// the reason on screen and on the trail — and, when the answer is only that
+    /// the session is older than the re-verification window, having opened the
+    /// prompt that fixes it rather than leaving a dead end.
+    fn may(&mut self, action: crate::operator::Action) -> bool {
+        let Some(store) = &self.store else {
+            return true;
+        };
+        match store.require(action) {
+            Ok(()) => true,
+            Err(e) => {
+                let needs_credential =
+                    matches!(e, crate::store::StoreError::NeedsReverification { .. });
+                self.report_authorisation(action, e);
+                if needs_credential {
+                    self.require_reverification(action);
+                }
+                false
+            }
+        }
     }
 
     /// Put a store refusal in front of the operator, and on the trail.
@@ -8672,6 +8730,14 @@ impl YkDistApp {
         use crate::report::bundle;
 
         self.reports.error = None;
+        // The bundle is every report at once, so it is the largest quantity of
+        // personal data this tool ever writes to a file
+        // (`features/operator-auth-and-roles.md` phase 5). Refused before the
+        // directory is created, so a refusal leaves nothing behind.
+        if !self.may(crate::operator::Action::Export) {
+            self.reports.error = Some(self.status.clone());
+            return None;
+        }
         let now = chrono::Utc::now();
         let directory = into.join(bundle::directory_name(now));
         if let Err(e) = std::fs::create_dir_all(&directory) {
@@ -8811,6 +8877,14 @@ impl YkDistApp {
             self.reports.error = Some("generate a report before exporting it".into());
             return false;
         };
+        // A report carries holder names and corporate addresses out of the
+        // register (`features/operator-auth-and-roles.md` phase 5). Guarded here
+        // rather than in `export_report`, because this is the half the behaviour
+        // suite drives and the file chooser is the half it does not.
+        if !self.may(crate::operator::Action::Export) {
+            self.reports.error = Some(self.status.clone());
+            return false;
+        }
         let format = self.reports.format;
         let content = crate::report::export::render(&report, format);
 

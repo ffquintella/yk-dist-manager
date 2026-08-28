@@ -210,6 +210,31 @@ impl Store {
         Ok(())
     }
 
+    /// The re-verification half of [`Store::require`], on its own.
+    ///
+    /// For a write the authorizer **already** covers by table name — a procedure,
+    /// a term, the operator list. The role refusal is deliberately left to
+    /// SQLite: it refuses the statement whether or not this line is here, it is
+    /// the layer a mutation written next year inherits without anybody
+    /// remembering, and `tests/unit_store_operators.rs` asserts that it is what
+    /// speaks. What SQLite cannot express is a **live credential**, because that
+    /// is a property of the session and not of the statement, so that is the one
+    /// thing checked here (`features/operator-auth-and-roles.md` phase 5).
+    ///
+    /// Use [`Store::require`] instead wherever the operation is not a table write
+    /// at all, and therefore has no authorizer behind it.
+    pub fn require_fresh_credential(&self, action: Action) -> Result<()> {
+        if !self.authority().may(action) {
+            return Ok(());
+        }
+        if action.needs_reverification() && !self.is_reverified_at(Utc::now()) {
+            return Err(StoreError::NeedsReverification {
+                what: action.describe().to_owned(),
+            });
+        }
+        Ok(())
+    }
+
     /// The credential was presented again (`features/operator-auth-and-roles.md`
     /// phase 5).
     pub fn mark_reverified(&self, now: DateTime<Utc>) {

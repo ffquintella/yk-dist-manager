@@ -2549,7 +2549,20 @@ impl Store {
 
     // ------------------------------------------------------------- templates
 
+    ///
+    /// Also the point where a procedure edit asks for the credential again
+    /// (`features/operator-auth-and-roles.md` phase 5). The SQLite authorizer
+    /// already refuses a non-administrator the `templates` write, and stays the
+    /// layer that does; what it cannot see is the **re-verification**, because a
+    /// live credential is not a property of a statement. Every other way into
+    /// this table —
+    /// [`Self::save_template_version`], [`Self::import_template`] — comes through
+    /// here, and so does [`Self::seed_builtin_templates`]: the seeds run at open
+    /// time, while a freshly opened store is still `Unenrolled` and nothing is
+    /// refused, which is why they are not a special case.
     pub fn upsert_template(&self, template: &BootstrapTemplate) -> Result<()> {
+        self.require_fresh_credential(crate::operator::Action::ManageTemplates)?;
+
         self.conn.execute(
             "INSERT INTO templates (id, version, name, body, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5)
@@ -2662,6 +2675,7 @@ impl Store {
     /// [`Self::seed_builtin_templates`] will not resurrect it — seeding asks
     /// whether the `(id, version)` exists, not whether it is in use.
     pub fn retire_template(&self, id: &str, version: &str) -> Result<StoredTemplate> {
+        self.require_fresh_credential(crate::operator::Action::ManageTemplates)?;
         let stored = self.stored_template(id, version)?;
         self.conn.execute(
             "UPDATE templates SET retired_at = ?1 WHERE id = ?2 AND version = ?3
@@ -2673,6 +2687,7 @@ impl Store {
 
     /// Put a retired version back in use.
     pub fn reinstate_template(&self, id: &str, version: &str) -> Result<StoredTemplate> {
+        self.require_fresh_credential(crate::operator::Action::ManageTemplates)?;
         let stored = self.stored_template(id, version)?;
         self.conn.execute(
             "UPDATE templates SET retired_at = NULL WHERE id = ?1 AND version = ?2",
@@ -2689,6 +2704,7 @@ impl Store {
     /// retirement, which is the operation that does what was asked. See
     /// [`StoredTemplate::removal_refusal`].
     pub fn delete_template(&self, id: &str, version: &str) -> Result<StoredTemplate> {
+        self.require_fresh_credential(crate::operator::Action::ManageTemplates)?;
         let stored = self.stored_template(id, version)?;
         if let Some(reason) = stored.removal_refusal() {
             return Err(StoreError::TemplateInUse {
@@ -2777,7 +2793,14 @@ impl Store {
 
     // --------------------------------------------------------- term templates
 
+    /// Store a term version.
+    ///
+    /// Guarded like [`Self::upsert_template`], and for the same reason: a term is
+    /// what a holder signs. [`Self::save_term_template_version`] and
+    /// [`Self::seed_builtin_terms`] both come through here.
     pub fn upsert_term_template(&self, template: &TermTemplate) -> Result<()> {
+        self.require_fresh_credential(crate::operator::Action::ManageTemplates)?;
+
         self.conn.execute(
             "INSERT INTO term_templates (id, language, version, title, body, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
