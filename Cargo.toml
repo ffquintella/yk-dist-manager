@@ -26,6 +26,25 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 sha2 = "0.10"
 hex = "0.4"
 
+# Hashing an operator's local sign-in password
+# (`features/operator-auth-and-roles.md` phase 2). Argon2id, the memory-hard
+# winner of the Password Hashing Competition and what both OWASP and RFC 9106
+# name first — and a *password hash* rather than a KDF, so the parameters travel
+# inside the stored PHC string and the cost can be raised later without
+# invalidating a credential anybody holds.
+#
+# Not optional: a build that could not check a password could not enforce a role
+# either, and the local password is the break-glass path that keeps a register
+# administrable when the administrator's key is not in the room.
+#
+# `default-features = false` plus `alloc` and `password-hash` drops the crate's
+# `std`-only conveniences and its RNG: the salt comes from `getrandom`, which is
+# already the one source `features/secrets-custody.md` allows.
+argon2 = { version = "0.5", default-features = false, features = [
+    "alloc",
+    "password-hash",
+] }
+
 # The secrets a bootstrap sets (`crate::secret`). Both are load-bearing for
 # AGENTS.md §2 rather than conveniences:
 #

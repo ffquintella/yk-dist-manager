@@ -28,6 +28,7 @@
 //! | [`versioning`] | "What number does the next edit get?", shared by both |
 //! | [`diagnostics`] | `--diagnose`: what this build is and what it can reach |
 //! | [`audit`] | Append-only, hash-chained audit trail |
+//! | [`operator`] | Who is signed in, and what their role lets them do |
 //! | [`status`] | How loudly the status bar reports the last outcome |
 //! | [`logbuf`] | The last N log lines, for the panel an operator can copy from |
 //! | [`logging`] | The single logging entry point for the whole app |
@@ -49,6 +50,7 @@ pub mod envelope;
 pub mod incident;
 pub mod logbuf;
 pub mod logging;
+pub mod operator;
 pub mod password;
 pub mod paths;
 pub mod pdf;
