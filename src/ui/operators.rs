@@ -255,6 +255,41 @@ fn sign_in_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
             }
         });
 
+        // The preferred method (phase 3): the unit that distributes security keys
+        // is the unit most able to hold one.
+        //
+        // Offered **unconditionally**, and deliberately: a button that appeared
+        // only for an account with a key registered would answer "is there an
+        // operator called ana, and has she got a key" to anybody at the
+        // keyboard, which is the exact question every refusal on this screen is
+        // worded to avoid. An account with no key gets the same words as a wrong
+        // credential.
+        if reverifying.is_none() {
+            ui.add_space(10.0);
+            super::hint(
+                ui,
+                "With a security key, the field above is the key's PIN — not a password on this \
+                 register. The key has to be attached.",
+            );
+            ui.add_space(6.0);
+            if ui
+                .add(Button::new("Sign in with a security key").outline())
+                .clicked()
+            {
+                let username = locked
+                    .is_some()
+                    .then(|| {
+                        app.session
+                            .session()
+                            .map(|session| session.username.clone())
+                            .unwrap_or_default()
+                    })
+                    .unwrap_or_else(|| app.sign_in.username.clone());
+                app.sign_in.username = username;
+                app.sign_in_with_attached_key();
+            }
+        }
+
         ui.add_space(10.0);
         super::hint(
             ui,
@@ -402,6 +437,8 @@ fn list_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
     let mut role_change: Option<(uuid::Uuid, Role)> = None;
     let mut active_change: Option<(uuid::Uuid, bool)> = None;
     let mut unlock: Option<String> = None;
+    let mut register: Option<uuid::Uuid> = None;
+    let mut confirm_register: Option<(uuid::Uuid, u32)> = None;
 
     super::titled_card(ui, "Operators on this register", |ui| {
         if operators.is_empty() {
@@ -447,6 +484,66 @@ fn list_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
                     if super::row_button(ui, "Clear lockout").clicked() {
                         unlock = Some(operator.username.clone());
                     }
+                    let label = if operator.credential.is_some() {
+                        "Replace security key"
+                    } else {
+                        "Register a security key"
+                    };
+                    if super::row_button(ui, label).clicked() {
+                        register = Some(operator.id);
+                    }
+                }
+            });
+        }
+
+        // Registering a key is a two-step act on purpose: the serial says *which*
+        // key, and typing it is the same confirmation the factory reset asks for.
+        // A credential written to the wrong key is one an operator cannot sign in
+        // with and cannot easily find.
+        if let Some(id) = app.operator_panel.registering {
+            let who = operators
+                .iter()
+                .find(|operator| operator.id == id)
+                .map(|operator| operator.display_name.clone())
+                .unwrap_or_default();
+            ui.add_space(12.0);
+            super::notice(
+                ui,
+                CalloutTone::Info,
+                &format!(
+                    "Attach {who}'s own key, then type its serial and its PIN. A resident \
+                     credential is created on the key, bound to “{}” as the \
+                     relying party, and this register keeps only its public id — the \
+                     private key never leaves the key.",
+                    app.org
+                ),
+            );
+            ui.add_space(10.0);
+            super::capped_input(ui, &mut app.operator_panel.key_serial, MAX_TEXT, |input| {
+                input.label("Serial").id_salt("operator-key-serial")
+            });
+            ui.add_space(10.0);
+            super::capped_input(ui, &mut app.operator_panel.key_pin, MAX_TEXT, |input| {
+                input
+                    .label("The key's PIN")
+                    .password(true)
+                    .id_salt("operator-key-pin")
+            });
+            ui.add_space(12.0);
+            let serial: Option<u32> = app.operator_panel.key_serial.trim().parse().ok();
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add(Button::new("Register it").enabled(serial.is_some()))
+                    .clicked()
+                    && let Some(serial) = serial
+                {
+                    confirm_register = Some((id, serial));
+                }
+                if ui.add(Button::new("Cancel").outline()).clicked() {
+                    register = None;
+                    confirm_register = None;
+                    app.operator_panel.registering = None;
+                    app.operator_panel.wipe();
                 }
             });
         }
@@ -473,6 +570,17 @@ fn list_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
         && app.require_reverification(crate::operator::Action::ManageOperators)
     {
         app.clear_operator_lockout(&username);
+    }
+    if let Some(id) = register {
+        app.operator_panel.registering = Some(id);
+        app.operator_panel.key_serial.clear();
+        app.operator_panel.wipe();
+        app.operator_panel.error = None;
+    }
+    if let Some((id, serial)) = confirm_register
+        && app.require_reverification(crate::operator::Action::ManageOperators)
+    {
+        app.register_key_for_operator_on_hardware(id, serial);
     }
 }
 

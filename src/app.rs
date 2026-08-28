@@ -655,6 +655,12 @@ pub struct SignInForm {
     pub reverifying: Option<crate::operator::Action>,
 }
 
+/// The username as the store knows it: trimmed and lower-cased, the one
+/// normalisation every sign-in path has to agree on.
+fn username_typed(form: &SignInForm) -> String {
+    form.username.trim().to_lowercase()
+}
+
 impl SignInForm {
     /// Clear everything typed. Called after every attempt, accepted or refused.
     pub fn wipe(&mut self) {
@@ -696,6 +702,13 @@ pub struct OperatorPanel {
     pub first_display_name: String,
     pub first_password: String,
     pub first_password_again: String,
+    /// The operator a security key is being registered for
+    /// (`features/operator-auth-and-roles.md` phase 3), and the serial and PIN of
+    /// the key doing the answering. The PIN is the **key's**, not a password on
+    /// this register: typed, used for one CTAP2 exchange, cleared.
+    pub registering: Option<uuid::Uuid>,
+    pub key_serial: String,
+    pub key_pin: String,
 }
 
 impl OperatorPanel {
@@ -704,6 +717,7 @@ impl OperatorPanel {
         self.new_password_again.clear();
         self.first_password.clear();
         self.first_password_again.clear();
+        self.key_pin.clear();
     }
 }
 
@@ -6437,6 +6451,153 @@ impl YkDistApp {
             None => Err(crate::store::StoreError::NotFound("no register".into())),
         };
         self.accept_sign_in(outcome);
+    }
+
+    /// Sign in with whichever key is attached, addressing it by the serial the
+    /// operator typed (`features/operator-auth-and-roles.md` phase 3).
+    ///
+    /// The transport is chosen here rather than passed in, so that the screen has
+    /// no hardware knowledge and the behaviour suite can still drive
+    /// [`Self::sign_in_with_key`] with a `MockWriter` and no key attached.
+    pub fn sign_in_with_attached_key(&mut self) {
+        if !crate::device::composite::NativeBackend::is_available() {
+            self.sign_in.wipe();
+            self.sign_in.error =
+                Some("this build has no write transport, so a key cannot answer".into());
+            return;
+        }
+        // The key is addressed by the serial it was registered on, which the
+        // register knows and the operator does not have to type. An account with
+        // no key registered is refused in the words a wrong credential gets —
+        // the screen must not answer "is there an operator called ana".
+        let serial = self
+            .store
+            .as_ref()
+            .and_then(|store| {
+                store
+                    .operator_by_username(&username_typed(&self.sign_in))
+                    .ok()
+            })
+            .flatten()
+            .and_then(|operator| operator.credential)
+            .map(|credential| credential.serial);
+        let Some(serial) = serial else {
+            self.sign_in.wipe();
+            self.sign_in.error = Some(
+                crate::store::operators::SignInRefusal::Credential
+                    .message()
+                    .into(),
+            );
+            return;
+        };
+        match Self::write_backend(serial) {
+            Some(mut writer) => self.sign_in_with_key(writer.as_mut()),
+            None => {
+                self.sign_in.wipe();
+                self.sign_in.error =
+                    Some("this build has no write transport, so a key cannot answer".into());
+            }
+        }
+    }
+
+    /// Register the security key an operator will sign in with
+    /// (`features/operator-auth-and-roles.md` phase 3).
+    ///
+    /// The half that was missing: `Store::register_operator_credential` existed
+    /// and nothing produced a credential for it, so no operator could ever have
+    /// one and the sign-in it enables was unreachable.
+    ///
+    /// Split from the transport for the same reason as the sign-in, and the
+    /// resident credential is made with user verification required — a touch
+    /// proves somebody is present, not who.
+    ///
+    /// **Not hardware-verified**: driven through `device::write::MockWriter`,
+    /// with no key attached to the workstation this was written on.
+    pub fn register_key_for_operator(
+        &mut self,
+        id: uuid::Uuid,
+        serial: u32,
+        writer: &mut dyn crate::device::write::WriteBackend,
+    ) {
+        let pin = match crate::secret::Secret::from_operator_input(
+            crate::secret::SecretKind::Fido2Pin,
+            &self.operator_panel.key_pin,
+        ) {
+            Ok(pin) => pin,
+            Err(e) => {
+                self.operator_panel.wipe();
+                self.operator_panel.error = Some(e.to_string());
+                return;
+            }
+        };
+        self.operator_panel.wipe();
+
+        let Some(operator) = self
+            .operator_panel
+            .operators
+            .iter()
+            .find(|candidate| candidate.id == id)
+            .cloned()
+        else {
+            self.operator_panel.error = Some("that operator is not on this register".into());
+            return;
+        };
+
+        let request = crate::device::write::CredentialRequest {
+            relying_party: self.org.clone(),
+            relying_party_name: self.org.clone(),
+            user_name: operator.username.clone(),
+            user_display_name: operator.display_name.clone(),
+            // Resident, so the key can answer for it without being told which
+            // credential to use.
+            resident: true,
+            require_user_verification: true,
+        };
+        let evidence = match writer.make_credential(serial, &request, &pin) {
+            Ok(evidence) => evidence,
+            Err(e) => {
+                self.operator_panel.error = Some(e.detail());
+                return;
+            }
+        };
+
+        let credential = crate::operator::RegisteredCredential {
+            credential_id_hex: evidence.credential_id_hex,
+            relying_party: evidence.relying_party,
+            serial,
+            // Fresh: nothing has asserted with it yet, so the first sign-in has
+            // to advance it.
+            counter: 0,
+        };
+        let by = self.operator.clone();
+        let result = match &self.store {
+            Some(store) => store.register_operator_credential(id, &credential, &by),
+            None => Err(crate::store::StoreError::NotFound("no register".into())),
+        };
+        match result {
+            Ok(()) => {
+                self.operator_panel.registering = None;
+                self.operator_panel.error = None;
+                self.status = format!(
+                    "serial {serial} is now {}'s security key",
+                    operator.username
+                );
+                self.refresh_operators();
+            }
+            Err(e) => self.report_authorisation(crate::operator::Action::ManageOperators, e),
+        }
+    }
+
+    /// Register a key over whatever transport this build has.
+    pub fn register_key_for_operator_on_hardware(&mut self, id: uuid::Uuid, serial: u32) {
+        match Self::write_backend(serial) {
+            Some(mut writer) => self.register_key_for_operator(id, serial, writer.as_mut()),
+            None => {
+                self.operator_panel.wipe();
+                self.operator_panel.error =
+                    Some("this build has no write transport, so no key can be registered".into());
+            }
+        }
     }
 
     fn accept_sign_in(&mut self, outcome: crate::store::Result<crate::operator::Session>) {
