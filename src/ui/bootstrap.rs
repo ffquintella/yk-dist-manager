@@ -8,6 +8,7 @@
 use elegance::{Accent, Badge, BadgeTone, Button, CalloutTone, Checkbox, Select};
 
 use crate::app::{WizardStage, YkDistApp};
+use crate::device::certificate::AddressVerdict;
 use crate::template::Transport;
 
 /// Widest a serial field needs to be. A serial is eight digits; the column it
@@ -803,15 +804,38 @@ fn certificate_exchange(app: &mut YkDistApp, ui: &mut egui::Ui) {
 
         ui.add_space(14.0);
         ui.label("The issued certificate (PEM), pasted or loaded from a file:");
-        let box_ = ui.add(
-            egui::TextEdit::multiline(&mut app.wizard.certificate_pem)
-                .desired_rows(6)
-                .code_editor()
-                .hint_text("-----BEGIN CERTIFICATE-----"),
-        );
-        if box_.changed() {
-            app.preview_certificate();
-        }
+        // The box takes the card, which takes the window, and grows downwards
+        // with it: a PEM is around thirty lines of base64, and a fixed-width
+        // six-row editor wrapped them into a column narrow enough to hide the
+        // one thing an operator reads a PEM for — that it is a certificate and
+        // not a request. Height is bounded rather than free because
+        // `TextEdit` sizes itself to its content: unbounded, a pasted
+        // certificate pushed the buttons, the preview and the PIN below the
+        // bottom of the screen. Past the bound the editor scrolls.
+        let line = ui.text_style_height(&egui::TextStyle::Monospace);
+        let max_height = (ui.ctx().content_rect().height() * 0.4).clamp(8.0 * line, 34.0 * line);
+        egui::ScrollArea::vertical()
+            .id_salt("certificate-pem-scroll")
+            .max_height(max_height)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                // Twice the parser's limit, because that limit is on the DER and
+                // this is the base64 of it (`AGENTS.md` §2: every input bounded).
+                let box_ = super::capped_area(
+                    ui,
+                    &mut app.wizard.certificate_pem,
+                    crate::device::certificate::MAX_CERTIFICATE_BYTES * 2,
+                    |area| {
+                        area.id_salt("certificate-pem")
+                            .rows(8)
+                            .monospace(true)
+                            .hint("-----BEGIN CERTIFICATE-----")
+                    },
+                );
+                if box_.changed() {
+                    app.preview_certificate();
+                }
+            });
 
         ui.add_space(8.0);
         ui.horizontal_wrapped(|ui| {
@@ -838,7 +862,41 @@ fn certificate_exchange(app: &mut YkDistApp, ui: &mut egui::Ui) {
                                 "Valid",
                                 format!("{} .. {}", summary.not_before, summary.not_after),
                             ),
-                            ("rfc822Name", summary.email_sans.join(", ")),
+                            // Spelled out when there is nothing there: an empty
+                            // cell reads as "not shown", and the absence is the
+                            // finding.
+                            (
+                                "rfc822Name",
+                                if summary.email_sans.is_empty() {
+                                    "none — this certificate carries no subjectAltName".to_owned()
+                                } else {
+                                    summary.email_sans.join(", ")
+                                },
+                            ),
+                            // Shown here because the read-back checks it after
+                            // the write, and the operator is deciding before it:
+                            // an encryption or server certificate in slot 9c
+                            // imports cleanly and fails every signature.
+                            (
+                                "Key usage",
+                                format!(
+                                    "{} ({})",
+                                    summary.signing_verdict().label(),
+                                    if summary.key_usages.is_empty() {
+                                        "no keyUsage extension".to_owned()
+                                    } else {
+                                        summary.key_usages.join(", ")
+                                    }
+                                ),
+                            ),
+                            (
+                                "Extended key usage",
+                                if summary.extended_key_usages.is_empty() {
+                                    "none stated".to_owned()
+                                } else {
+                                    summary.extended_key_usages.join(", ")
+                                },
+                            ),
                         ] {
                             ui.label(field);
                             super::mono(ui, &value);
@@ -846,20 +904,22 @@ fn certificate_exchange(app: &mut YkDistApp, ui: &mut egui::Ui) {
                         }
                     });
                     ui.add_space(8.0);
-                    match app.certificate_matches_holder() {
-                        Some(true) => super::notice(
-                            ui,
-                            CalloutTone::Success,
-                            "The address in this certificate is the one this run was built for.",
-                        ),
-                        Some(false) => super::notice(
-                            ui,
-                            CalloutTone::Warning,
-                            "This certificate does not carry the address this run was built for. \
-                             The import will refuse it — check it is the right holder's \
-                             certificate.",
-                        ),
-                        None => {}
+                    // Whose certificate this is, in the words the import step
+                    // will use if it refuses. `Unchecked` says nothing: a run
+                    // with no address recorded has nothing to report here.
+                    match app.certificate_address_verdict() {
+                        Some(verdict) if !matches!(verdict, AddressVerdict::Unchecked) => {
+                            super::notice(
+                                ui,
+                                if verdict.accepted() {
+                                    CalloutTone::Success
+                                } else {
+                                    CalloutTone::Warning
+                                },
+                                &verdict.sentence(),
+                            );
+                        }
+                        _ => {}
                     }
                 }
                 Err(message) => super::error_label(ui, message),

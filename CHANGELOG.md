@@ -214,6 +214,32 @@ Maintenance instructions (see AGENTS.md §5):
   runs to the next field or to the end of its line, so nothing already written to a
   register needs rewriting to be read correctly.
 
+- **A certificate the CA stripped the `rfc822Name` from was reported as somebody
+  else's certificate** ([`features/ca-integration.md`](features/ca-integration.md)).
+  Both the wizard and the import step said the same thing about every address
+  mismatch — "check it is the right holder's certificate" — but a CA profile meant
+  for TLS servers answers a signing request with a certificate for *the right
+  person* and no subject alternative name at all, which is by far the more common
+  of the two. The operator was sent to look for a filing mistake they had not made,
+  when what has to change is the profile the certificate was issued from. The
+  refusal now distinguishes the two — [`certificate::AddressVerdict`](src/device/certificate.rs)
+  — and says so in the same words in the wizard, in the step detail and in the
+  audit trail. Nothing reaches the key in either case, as before.
+
+### Changed
+
+- **The certificate box in the CA round trip takes the window.** It was a
+  fixed-width six-row editor that wrapped a PEM into a column about thirty
+  characters wide and then grew to the full height of its content, pushing the
+  buttons, the preview and the PIN field off the bottom of the screen. It now
+  takes the width of the card and grows downwards with the window, up to a bound
+  past which it scrolls.
+
+- **The certificate preview shows key usage and extended key usage.** The
+  read-back checks both *after* the write; the operator decides *before* it, and
+  an encryption or TLS-server certificate in slot 9c imports cleanly and then
+  fails every signature the holder makes.
+
 ## [0.17.5] - 2026-08-28
 
 ### Fixed

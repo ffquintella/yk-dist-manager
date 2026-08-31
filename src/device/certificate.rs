@@ -64,6 +64,29 @@ pub struct Summary {
 }
 
 impl Summary {
+    /// Why the address in this certificate does or does not fit `expected`.
+    ///
+    /// [`covers_email`](Self::covers_email) answers yes or no; this answers
+    /// *which kind of no*, because the two kinds are fixed in different places.
+    pub fn address_verdict(&self, expected: &str) -> AddressVerdict {
+        let expected = expected.trim();
+        if expected.is_empty() {
+            return AddressVerdict::Unchecked;
+        }
+        if self.covers_email(expected) {
+            return AddressVerdict::Carried;
+        }
+        if self.email_sans.is_empty() {
+            return AddressVerdict::Absent {
+                expected: expected.to_owned(),
+            };
+        }
+        AddressVerdict::Another {
+            expected: expected.to_owned(),
+            held: self.email_sans.clone(),
+        }
+    }
+
     /// Does this certificate carry `email` as an `rfc822Name`?
     ///
     /// The comparison is case-insensitive on the whole address. The local part is
@@ -162,6 +185,69 @@ impl Fitness {
             Fitness::Fit => "usable for signing",
             Fitness::Unfit => "not issued for signing",
             Fitness::NotStated => "does not state a usage",
+        }
+    }
+}
+
+/// Why the address in a certificate does or does not fit the holder the run was
+/// built for.
+///
+/// Four answers, and the reason for the split is that two of them are somebody
+/// else's problem. A certificate carrying *another* holder's address is the
+/// wrong document: the operator picked the wrong file, and the fix is on their
+/// desk. One carrying **no** `rfc822Name` at all is very often the right
+/// document from a CA profile that dropped the extension — the subject is the
+/// right person and re-checking the file changes nothing, because what has to
+/// change is the profile the CA issued from. Telling an operator to "check it
+/// is the right holder's certificate" in that second case sends them hunting a
+/// mistake they did not make.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AddressVerdict {
+    /// The holder's address is among the certificate's `rfc822Name`s.
+    Carried,
+    /// The run recorded no address to compare against, so nothing was checked —
+    /// the counterpart of [`Fitness::NotStated`], and never silently a pass.
+    Unchecked,
+    /// The certificate carries no `rfc822Name` at all.
+    Absent { expected: String },
+    /// It carries addresses, and none of them is the holder's.
+    Another { expected: String, held: Vec<String> },
+}
+
+impl AddressVerdict {
+    /// May the import go ahead as far as the address is concerned?
+    ///
+    /// [`Unchecked`](Self::Unchecked) accepts: a run that recorded no address
+    /// asked for no address, and refusing on a comparison that was never made
+    /// would block every certificate.
+    pub fn accepted(&self) -> bool {
+        matches!(self, Self::Carried | Self::Unchecked)
+    }
+
+    /// What to tell the operator — the same sentence in the wizard, in the
+    /// step detail and in the audit trail.
+    pub fn sentence(&self) -> String {
+        match self {
+            Self::Carried => {
+                "The address in this certificate is the one this run was built for.".to_owned()
+            }
+            Self::Unchecked => {
+                "This run recorded no address, so nothing was checked against the certificate."
+                    .to_owned()
+            }
+            Self::Absent { expected } => format!(
+                "This certificate carries no rfc822Name at all, so it cannot sign as {expected}. \
+                 Nothing was written. The subject may well be the right person: a CA profile that \
+                 ignores the subject alternative name in the request issues exactly this. Ask for \
+                 it to be reissued from a profile that keeps the rfc822Name — the request this run \
+                 produced already asks for it."
+            ),
+            Self::Another { expected, held } => format!(
+                "This certificate carries [{}] and not {expected} — it is another holder's \
+                 certificate. Nothing was written: signatures made with it would not validate \
+                 against this holder's address.",
+                held.join(", ")
+            ),
         }
     }
 }
@@ -641,6 +727,21 @@ mod tests {
     /// imports cleanly and then fails every signature the holder makes.
     const ENCRYPTION: &str = include_str!("../../tests/fixtures/certificate_encryption_usage.pem");
 
+    /// A certificate with **no** subject alternative name at all: what a CA
+    /// profile meant for TLS servers returns when it is handed a signing
+    /// request, ignoring the `rfc822Name` the request asked for. The subject is
+    /// the right person; the extension the whole PIV signing step exists for is
+    /// simply not there.
+    ///
+    /// ```text
+    /// openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+    ///   -keyout /dev/null -nodes -days 3650 \
+    ///   -subj '/O=Example Organisation/CN=Ana Silva' \
+    ///   -addext 'keyUsage=critical,digitalSignature,keyEncipherment' \
+    ///   -addext 'extendedKeyUsage=serverAuth'
+    /// ```
+    const NO_SAN: &str = include_str!("../../tests/fixtures/certificate_without_san.pem");
+
     fn summary_of(pem: &str) -> Summary {
         summarise(&der_from_pem(pem).expect("the fixture is PEM"), "test").unwrap()
     }
@@ -922,5 +1023,73 @@ mod tests {
         assert_eq!(unbase64("MIIB0"), None);
         assert_eq!(unbase64("MIIB!!!!"), None);
         assert_eq!(unbase64(""), None);
+    }
+
+    #[test]
+    fn an_address_that_is_carried_is_accepted_whatever_the_case() {
+        let summary = summary_of(SAMPLE);
+
+        assert_eq!(
+            summary.address_verdict("ANA.SILVA@EXAMPLE.ORG"),
+            AddressVerdict::Carried
+        );
+        assert!(
+            summary
+                .address_verdict("  ana.silva@example.org ")
+                .accepted()
+        );
+    }
+
+    #[test]
+    fn a_certificate_with_no_san_is_told_apart_from_one_belonging_to_someone_else() {
+        // The distinction is the point: both refuse the import, but one is fixed
+        // by picking the right file and the other by the CA reissuing.
+        let dropped = summary_of(NO_SAN).address_verdict("ana.silva@example.org");
+        assert_eq!(
+            dropped,
+            AddressVerdict::Absent {
+                expected: "ana.silva@example.org".to_owned()
+            }
+        );
+        assert!(!dropped.accepted());
+        let sentence = dropped.sentence();
+        assert!(
+            sentence.contains("ana.silva@example.org") && sentence.contains("CA profile"),
+            "a dropped SAN is the CA's profile, and the sentence has to say so: {sentence}"
+        );
+
+        let wrong = summary_of(SAMPLE).address_verdict("bruno.costa@example.org");
+        assert_eq!(
+            wrong,
+            AddressVerdict::Another {
+                expected: "bruno.costa@example.org".to_owned(),
+                held: vec!["ana.silva@example.org".to_owned()],
+            }
+        );
+        let sentence = wrong.sentence();
+        assert!(
+            sentence.contains("bruno.costa@example.org")
+                && sentence.contains("ana.silva@example.org"),
+            "the refusal names both what was wanted and what was found: {sentence}"
+        );
+    }
+
+    #[test]
+    fn a_run_with_no_address_recorded_checks_nothing_and_blocks_nothing() {
+        let summary = summary_of(SAMPLE);
+
+        assert_eq!(summary.address_verdict("   "), AddressVerdict::Unchecked);
+        assert!(
+            summary.address_verdict("").accepted(),
+            "a comparison that was never made must not refuse a certificate"
+        );
+    }
+
+    #[test]
+    fn a_server_certificate_is_not_fit_for_the_signing_slot() {
+        // The same fixture, on the other check: an SSL profile answers a signing
+        // request with `serverAuth`, which slot 9c cannot use.
+        assert_eq!(summary_of(NO_SAN).signing_verdict(), Fitness::Unfit);
+        assert!(summary_of(NO_SAN).email_sans.is_empty());
     }
 }

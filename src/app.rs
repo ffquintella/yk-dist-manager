@@ -5998,11 +5998,15 @@ impl YkDistApp {
         ));
     }
 
-    /// Does the loaded certificate carry the address this run is building for?
+    /// Does the loaded certificate carry the address this run is building for,
+    /// and if not, why not?
     ///
-    /// The wizard shows the answer before the run. The import step checks it again
-    /// and refuses — this is the warning, not the gate.
-    pub fn certificate_matches_holder(&self) -> Option<bool> {
+    /// The wizard shows the answer before the run. The import step asks the same
+    /// question of the same `Summary` and refuses — this is the warning, not the
+    /// gate, which is why it returns the verdict rather than acting on it.
+    pub fn certificate_address_verdict(
+        &self,
+    ) -> Option<crate::device::certificate::AddressVerdict> {
         let summary = match self.wizard.certificate_preview.as_ref()? {
             Ok(summary) => summary,
             Err(_) => return None,
@@ -6015,7 +6019,7 @@ impl YkDistApp {
             &self.org,
         );
         let expected = self.settings.san.render(&ctx).ok()?;
-        Some(summary.covers_email(&expected))
+        Some(summary.address_verdict(&expected))
     }
 
     #[cfg(feature = "file-dialog")]

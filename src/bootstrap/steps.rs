@@ -490,19 +490,13 @@ pub fn perform(
 
             // The `rfc822Name` is the reason this whole step is native. A CA that
             // dropped it, or a certificate belonging to another holder, is caught
-            // here rather than by the holder.
-            if !ctx.certificate_email.trim().is_empty()
-                && !summary.covers_email(ctx.certificate_email)
-            {
+            // here rather than by the holder — and the refusal says which of the
+            // two it was, because they are fixed in different places.
+            let verdict = summary.address_verdict(ctx.certificate_email);
+            if !verdict.accepted() {
                 return Err(WriteError::Failed {
                     operation: OP,
-                    reason: format!(
-                        "this certificate does not carry {} as an rfc822Name — it holds [{}]. \
-                         Nothing was written: a signing certificate without the holder's address \
-                         does not validate the signatures it was issued for",
-                        ctx.certificate_email,
-                        summary.email_sans.join(",")
-                    ),
+                    reason: verdict.sentence(),
                 });
             }
 

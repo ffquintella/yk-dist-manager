@@ -29,6 +29,11 @@ const HOLDER_EMAIL: &str = "ana.silva@example.org";
 /// produced rather than one this crate did.
 const CERTIFICATE: &str = include_str!("fixtures/certificate_with_email_san.pem");
 
+/// The same holder, from a CA profile that dropped the subject alternative name:
+/// `O=Example Organisation, CN=Ana Silva` and no `rfc822Name` at all. The
+/// document a TLS-server profile returns when it is handed a signing request.
+const CERTIFICATE_WITHOUT_SAN: &str = include_str!("fixtures/certificate_without_san.pem");
+
 #[derive(Default)]
 struct Recording {
     audit: Vec<(String, String, String)>,
@@ -229,6 +234,43 @@ fn scenario_a_certificate_for_another_holder_is_refused_and_nothing_is_written()
     assert!(
         import.detail.contains("bruno.costa@example.org"),
         "the refusal has to name what was expected: {}",
+        import.detail
+    );
+    assert!(
+        !key.was_called("piv.import_certificate"),
+        "and nothing may reach the key"
+    );
+    assert_ne!(resumed.status, RunStatus::Completed);
+}
+
+#[test]
+fn scenario_a_certificate_the_ca_stripped_the_san_from_is_refused_as_the_cas_problem() {
+    // Not the same mix-up as the one above, and the operator must not be sent
+    // looking for it: the subject is the right person, the file is the one that
+    // came back, and what is missing is the extension the CA's profile dropped.
+    // Nothing the operator can do at their desk fixes it.
+    let mut key = MockWriter::factory_fresh(SERIAL);
+    let mut recording = Recording::default();
+    let run = first_run(&mut key, &mut recording);
+
+    let template = template();
+    let commands = commands(&template);
+    let request = request(&template, &commands, Some(CERTIFICATE_WITHOUT_SAN));
+
+    let mut recording = Recording::default();
+    let resumed = {
+        let mut executor = Executor::new(Transports { backend: &mut key });
+        executor.supply(transport_pin());
+        executor
+            .resume(&request, run, &mut recording)
+            .expect("the refusal is recorded, not raised")
+    };
+
+    let import = step(&resumed, StepKind::PivCertImport);
+    assert_eq!(import.status, StepStatus::Failed);
+    assert!(
+        import.detail.contains(HOLDER_EMAIL) && import.detail.contains("CA profile"),
+        "the refusal names the address that is missing and where it has to be fixed: {}",
         import.detail
     );
     assert!(

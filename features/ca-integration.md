@@ -24,7 +24,11 @@ through the wizard as a file or pasted text, and the run is resumed to import it
 Before the write the certificate is parsed
 ([`device::certificate`](../src/device/certificate.rs)), summarised on screen, matched
 against the slot's public key, and refused unless it carries the holder's
-`rfc822Name`. Phases 3–5 — a pilot CA, BastionVault, an enterprise CA — are
+`rfc822Name` — with the refusal distinguishing *this is another holder's
+certificate* from *this CA profile dropped the SAN*, because only the first is
+fixed at the operator's desk (2026-08-31). The preview also shows key usage and
+extended key usage, which the read-back checks after the write and the operator
+has to judge before it. Phases 3–5 — a pilot CA, BastionVault, an enterprise CA — are
 automations of this path and are not started; no `trait CertificateIssuer` has been
 invented for them, because an abstraction over one implementation is a guess.
 
