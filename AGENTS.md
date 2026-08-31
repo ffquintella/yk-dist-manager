@@ -334,13 +334,18 @@ make coverage-core     # THE GATE: cargo llvm-cov --all-features --fail-under-li
 make coverage-html     # browsable, when you need to find the gap
 ```
 
-Current: **85.76%** core line coverage (85.04% region), measured 2026-08-28 by
-`make coverage-core` on the full `--all-features` suite — 1125 tests across 58
-binaries, 588 of them in the `--lib` binary.
+Current: **86.41%** core line coverage (85.82% region), measured 2026-08-31 by
+`make coverage-core` on the full `--all-features` suite — the run that gated
+0.18.1.
 
-Half a point below the figure recorded earlier the same day, and the reason is the
-usual one for this repository: `piv.create_csr` and `piv.import_certificate` moved
-off the [`yubikey`] crate onto [`device::piv_session`](src/device/piv_session.rs),
+Two thirds of a point *above* the figure this replaces, and nothing in 0.18.1
+earned it: that release is a paint-only fix in `src/ui/`, which the measurement
+excludes. The operator-authentication work in 0.18.0 earned it and did not restate
+it — drift upwards is still drift, and §4 asks for the number either way.
+
+The 85.76% this replaces was itself half a point below the figure before it, for
+the usual reason in this repository: `piv.create_csr` and `piv.import_certificate`
+moved off the [`yubikey`] crate onto [`device::piv_session`](src/device/piv_session.rs),
 so their PIN, signature and `GET METADATA` *exchange* is now hand-written and no
 test can reach it without a key attached. The pure halves went the other way —
 APDU assembly, response parsing and the metadata decode are covered byte for byte
