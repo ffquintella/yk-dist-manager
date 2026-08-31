@@ -116,7 +116,10 @@ pub fn perform(
         }
 
         StepKind::Fido2MinPinLength => {
-            let wanted = number(params, "length").unwrap_or(6) as u8;
+            // `min_length`, the name the templates ship and the name
+            // `template::plan` renders into the plan — not `length`, which nothing
+            // sets (`features/step-fido2-pin.md`, the template-parameter table).
+            let wanted = number(params, "min_length").unwrap_or(6) as u8;
             let state = transports.backend.fido2_state(serial)?;
             if state
                 .min_pin_length
@@ -175,12 +178,20 @@ pub fn perform(
                     state.resident_credentials
                 )));
             }
+            // `resident` is a template parameter and a discoverable credential is
+            // what the step exists for, so `true` is both the default and what the
+            // built-in procedures ask for. Read rather than assumed: the transport
+            // honours it (`device::native_fido` sets `rk` from this field), and a
+            // parameter the operator can see in the template but the run ignores is
+            // the defect this arm already had twice over.
+            let resident = flag(params, "resident").unwrap_or(true);
             // A key with no free discoverable slot cannot take this credential, and
             // finding that out from the authenticator's own error leaves a key that
             // has had a PIN set and nothing else
             // (`features/step-fido2-credentials.md` phase 2). `None` means the
-            // firmware does not report it, which is not "full".
-            if state.remaining_credential_slots == Some(0) {
+            // firmware does not report it, which is not "full"; a credential that is
+            // not discoverable does not occupy one of those slots at all.
+            if resident && state.remaining_credential_slots == Some(0) {
                 return Err(WriteError::Unsupported {
                     operation: "fido2.make_credential",
                     reason: "this key has no discoverable-credential slots left — delete a \
@@ -194,13 +205,22 @@ pub fn perform(
                     "a resident credential needs the PIN this run did not set",
                 ));
             };
+            // `rp_id` and `user_name`, the names the templates ship and the names
+            // `template::plan` renders into the plan the operator confirms
+            // (`features/step-fido2-credentials.md`, the template-parameter table).
+            // This read a parameter called `rp` until 2026-08-28, which no template
+            // has ever had, so the relying party always fell back to the run's own
+            // and `user_name` was never read at all: the plan showed one relying
+            // party and the credential was registered against another. The
+            // fallbacks are belt and braces: `plan_step` refuses a template that
+            // carries neither, so `check()` rejects one before it can be stored.
             let request = CredentialRequest {
-                relying_party: text(params, "rp").unwrap_or(ctx.relying_party.to_owned()),
+                relying_party: text(params, "rp_id").unwrap_or(ctx.relying_party.to_owned()),
                 relying_party_name: ctx.relying_party.to_owned(),
-                user_name: ctx.certificate_email.to_owned(),
+                user_name: text(params, "user_name").unwrap_or(ctx.certificate_email.to_owned()),
                 user_display_name: ctx.holder_display.to_owned(),
                 // The whole point of the step: `ykman` cannot create one at all.
-                resident: true,
+                resident,
                 require_user_verification: true,
             };
             let evidence = transports
@@ -208,16 +228,23 @@ pub fn perform(
                 .make_credential(serial, &request, &secrets[index])?;
             // Written in `name=value` form rather than prose, so
             // `bootstrap::credential_evidence` can read it back off the register
-            // years later (`features/step-fido2-credentials.md` phase 4). All three
+            // years later (`features/step-fido2-credentials.md` phase 4). All of them
             // are public: a credential id is what a relying party stores in its own
-            // database, and the private key never left the device.
+            // database, and the private key never left the device. `discoverable`
+            // is recorded rather than assumed, because `resident` is a parameter.
             Ok(StepOutcomeKind::applied(format!(
-                "[native] resident credential registered — credential_id={} rp_id={} \
-                 algorithm={} user_name={}",
+                "[native] {} registered — credential_id={} rp_id={} \
+                 algorithm={} user_name={} discoverable={}",
+                if request.resident {
+                    "resident credential"
+                } else {
+                    "credential"
+                },
                 evidence.credential_id_hex,
                 evidence.relying_party,
                 evidence.algorithm,
-                request.user_name
+                request.user_name,
+                request.resident
             )))
         }
 
@@ -646,5 +673,7 @@ fn flag(params: &BTreeMap<String, String>, key: &str) -> Option<bool> {
 
 /// The PIN length a template asked for, floored by the domain minimum.
 fn pin_length(params: &BTreeMap<String, String>) -> usize {
-    number(params, "length").unwrap_or(6) as usize
+    // `min_length` is the parameter the templates carry; reading `length` here
+    // meant a procedure asking for an eight-character PIN quietly got six.
+    number(params, "min_length").unwrap_or(6) as usize
 }

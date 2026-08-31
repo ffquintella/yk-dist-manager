@@ -838,6 +838,86 @@ fn scenario_a_run_cannot_be_resumed_against_a_procedure_that_has_since_changed()
 }
 
 #[test]
+fn scenario_the_credential_is_registered_against_the_relying_party_the_plan_showed() {
+    // `features/step-fido2-credentials.md`, the template-parameter table: `rp_id`
+    // and `user_name` are this step's parameters, and `template::plan` renders both
+    // into the plan the operator confirms. The executor read a parameter named
+    // `rp`, which no template has ever shipped, so the relying party silently fell
+    // back to the run's own and `user_name` was never read at all. A confirmation
+    // gate that shows one relying party while the run registers against another is
+    // worse than showing nothing.
+
+    // Given a procedure whose credential step names its own relying party and user
+    let mut template = template();
+    let step = template
+        .steps
+        .iter_mut()
+        .find(|s| s.id == "fido2-credential")
+        .expect("the standard procedure registers a credential");
+    step.params.insert("rp_id".into(), "idp.example.org".into());
+    step.params
+        .insert("user_name".into(), "{{holder.email}}".into());
+
+    let commands = commands(&template);
+    let request = request(&template, &commands);
+
+    // And a plan that shows those two values to the operator
+    let planned = commands
+        .iter()
+        .find(|c| c.step_id == "fido2-credential")
+        .expect("the step is planned");
+    assert_eq!(
+        planned.params.get("rp_id").map(String::as_str),
+        Some("idp.example.org")
+    );
+    assert_eq!(
+        planned.params.get("user_name").map(String::as_str),
+        Some("ana.silva@example.org"),
+        "the plan shows the rendered address, not the pattern"
+    );
+
+    // When the operator confirms and runs it
+    let mut key = MockWriter::factory_fresh(SERIAL);
+    let mut recording = Recording::default();
+    let confirmation = Confirmation::given(SERIAL, commands.len());
+    let run = {
+        let mut executor = Executor::new(Transports { backend: &mut key });
+        executor
+            .run(&request, &confirmation, &mut recording)
+            .unwrap()
+    };
+
+    // Then the credential was created against exactly what the plan showed
+    let call = key
+        .calls()
+        .iter()
+        .find(|c| c.operation == "fido2.make_credential")
+        .expect("the credential step ran");
+    assert!(
+        call.arguments.contains(&"idp.example.org".to_owned()),
+        "the relying party is the template's, not the run's own: {:?}",
+        call.arguments
+    );
+    assert!(
+        call.arguments.contains(&"ana.silva@example.org".to_owned()),
+        "and the user name is the parameter, rendered: {:?}",
+        call.arguments
+    );
+    assert!(
+        call.arguments.contains(&"resident=true".to_owned()),
+        "a discoverable credential is the whole point of the step: {:?}",
+        call.arguments
+    );
+
+    // And the record agrees, because the record is what a relying party's own
+    // database is reconciled against years later
+    let evidence = yk_dist_manager::bootstrap::credential_evidence(&run);
+    assert_eq!(evidence.len(), 1, "{evidence:?}");
+    assert_eq!(evidence[0].relying_party, "idp.example.org");
+    assert_eq!(evidence[0].user_name, "ana.silva@example.org");
+}
+
+#[test]
 fn scenario_the_credential_a_run_registered_is_readable_off_the_record_afterwards() {
     // `features/step-fido2-credentials.md` phase 4. The credential id is what a
     // relying party keeps in its own database, so being able to read it back off the
@@ -858,9 +938,16 @@ fn scenario_the_credential_a_run_registered_is_readable_off_the_record_afterward
     let evidence = yk_dist_manager::bootstrap::credential_evidence(&run);
     assert_eq!(evidence.len(), 1, "{evidence:?}");
     assert!(!evidence[0].credential_id_hex.is_empty());
-    assert_eq!(evidence[0].relying_party, "example.org");
     assert_eq!(evidence[0].algorithm, "ES256");
-    assert_eq!(evidence[0].user_name, "ana@example.org");
+    // The standard procedure's own parameters, rendered: `rp_id` is `{{org}}` and
+    // `user_name` is `{{holder.email}}`. Both used to read back as the run's
+    // fields instead — `relying_party` and the certificate SAN — because the
+    // executor looked for parameters by names no template carries. In this
+    // deployment the two agree (`app` passes the organisation as the relying
+    // party); in this test they deliberately do not, which is what makes the
+    // source visible.
+    assert_eq!(evidence[0].relying_party, "Example Organisation");
+    assert_eq!(evidence[0].user_name, "ana.silva@example.org");
 }
 
 #[test]

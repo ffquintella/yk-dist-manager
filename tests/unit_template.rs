@@ -296,6 +296,59 @@ fn credential_registration_is_native_because_ykman_cannot_do_it() {
 }
 
 #[test]
+fn the_credential_plan_shows_every_parameter_the_step_reads_under_its_own_name() {
+    // The names on the two sides of the confirmation gate have to be the same
+    // word. They were not: the templates ship `rp_id` and `user_name`
+    // (`features/step-fido2-credentials.md`, the template-parameter table), the
+    // plan showed `rp_id=` and `user=`, and the executor read `rp`. Nothing was
+    // visibly broken, because the fallbacks happened to hold the same values —
+    // until a template set one of them, at which point the plan said one thing
+    // and the key was given another.
+    let template = BootstrapTemplate::org_standard();
+    let step = template
+        .steps
+        .iter()
+        .find(|s| s.kind == StepKind::Fido2Credential)
+        .expect("the standard procedure registers a credential");
+    let carried: Vec<&str> = step.params.keys().map(String::as_str).collect();
+    assert_eq!(carried, vec!["resident", "rp_id", "user_name"]);
+
+    // A step added by hand carries the same three, so it plans and runs the same
+    let added = TemplateStep::for_kind(StepKind::Fido2Credential, "fido2-credential");
+    assert_eq!(
+        added.params.keys().collect::<Vec<_>>(),
+        step.params.keys().collect::<Vec<_>>()
+    );
+
+    let commands = plan(&template, &ctx()).unwrap();
+    let credential = commands
+        .iter()
+        .find(|c| c.kind == StepKind::Fido2Credential)
+        .unwrap();
+
+    // Every one of them is rendered into what the executor reads
+    for name in &carried {
+        assert!(
+            credential.params.contains_key(*name),
+            "the executor reads {name} off the plan: {:?}",
+            credential.params
+        );
+    }
+
+    // And the operator is shown them under those names, with the values that run
+    let shown: Vec<String> = credential.args.iter().map(Arg::redacted).collect();
+    assert_eq!(
+        shown,
+        vec![
+            "rp_id=Example Organisation".to_owned(),
+            "user_name=ana.silva@example.org".to_owned(),
+            "resident=true".to_owned(),
+        ],
+        "the plan names the parameters, rendered"
+    );
+}
+
+#[test]
 fn the_fido2_config_steps_are_planned_native_because_that_is_what_runs() {
     // Given the plan for the standard procedure
     let commands = plan(&BootstrapTemplate::org_standard(), &ctx()).unwrap();

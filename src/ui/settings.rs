@@ -39,39 +39,36 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
 }
 
 /// Who is operating, for whom, and what the app looks like while they do it.
+///
+/// The operator is **shown, never typed** (`features/operator-auth-and-roles.md`
+/// phase 8). Until that phase this card held a text field pointed straight at the
+/// actor of every audit entry, which is exactly what the feature exists to
+/// remove: a trail whose author is editable is only as strong as the assumption
+/// that whoever is at the workstation is who they claim to be. The identity now
+/// comes from the session, and changing it means signing in as somebody else.
 fn identity(app: &mut YkDistApp, ui: &mut egui::Ui) {
     // Deferred: the identity is persisted when a field loses focus, not on
     // every keypress.
     let mut identity_changed = false;
+    let enrolled = app.is_enrolled();
+    let who = app.session.display();
 
     super::titled_card(ui, "Operator", |ui| {
         super::form_columns(ui, |left, right, _width| {
-            if super::capped_input(left, &mut app.operator, MAX_TEXT, |input| {
-                input.label("Operator").id_salt("settings-operator")
-            })
-            .lost_focus()
-            {
-                identity_changed = true;
-            }
-            // Which register the name belongs to, said where it is typed. With a
-            // register open the name is that register's; the workstation default
-            // is what an unnamed one falls back to, and an operator who does not
-            // know which they are editing will eventually sign somebody else's
-            // work (`features/database-selection.md` phase 8).
-            if app.store.is_some() {
+            left.label("Operator");
+            super::hint(left, &who);
+            if enrolled {
                 super::hint(
                     left,
-                    &format!(
-                        "Recorded for this register only — {}. Another register on this \
-                         workstation keeps its own name.",
-                        app.config.path.display()
-                    ),
+                    "Signed in, and recorded as the actor on everything you do. Sign in as \
+                     somebody else on the Operators screen.",
                 );
             } else {
                 super::hint(
                     left,
-                    "This workstation's default, used by any register that has no name of its \
-                     own.",
+                    "This register has no operators, so the actor on every audit entry is this \
+                     workstation's signed-in user — a label, not authentication. The Operators \
+                     screen is where that is turned into an identity.",
                 );
             }
             if super::capped_input(right, &mut app.org, MAX_TEXT, |input| {

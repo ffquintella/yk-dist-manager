@@ -334,9 +334,21 @@ make coverage-core     # THE GATE: cargo llvm-cov --all-features --fail-under-li
 make coverage-html     # browsable, when you need to find the gap
 ```
 
-Current: **85.75%** core line coverage (86.24% region), measured 2026-08-26 by
-`make coverage-core` on the full `--all-features` suite, 549 of those tests in the
-`--lib` binary.
+Current: **85.76%** core line coverage (85.04% region), measured 2026-08-28 by
+`make coverage-core` on the full `--all-features` suite — 1125 tests across 58
+binaries, 588 of them in the `--lib` binary.
+
+Half a point below the figure recorded earlier the same day, and the reason is the
+usual one for this repository: `piv.create_csr` and `piv.import_certificate` moved
+off the [`yubikey`] crate onto [`device::piv_session`](src/device/piv_session.rs),
+so their PIN, signature and `GET METADATA` *exchange* is now hand-written and no
+test can reach it without a key attached. The pure halves went the other way —
+APDU assembly, response parsing and the metadata decode are covered byte for byte
+by new tests — which is why the move is half a point and not several.
+
+Note that the two numbers in the entry this replaces were the wrong way round: the
+llvm-cov summary prints regions before lines, and 85.72/86.28 was region/line, not
+line/region. Read the columns, not the order they were written in last time.
 
 The figure stood at 87.02% until the factory reset stopped needing `ykman`
 (`dfa1f80`): [`device::ctaphid`](src/device/ctaphid.rs) and

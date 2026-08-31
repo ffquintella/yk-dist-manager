@@ -429,13 +429,69 @@ The trail, newest first (500 entries), with "Verify chain". A broken chain repor
 `AUDIT CHAIN BROKEN: …` in the status bar — loudly, because it means something is wrong that
 no other screen will tell you about.
 
+### Operators
+
+Who may use this register, and what their role lets them do
+(`../features/operator-auth-and-roles.md`). One screen with three faces, chosen by what
+the register is in:
+
+* **No operators enrolled.** A warning saying plainly that the actor on every audit entry
+  is this workstation's signed-in user — a label, not authentication — and that nothing is
+  refused. Below it, the one deliberate act that changes that: *Create the first
+  administrator*, which switches authorisation on for this register on every workstation,
+  permanently, and is audited as the moment it began. The card says that in the sentence
+  above the button rather than in a manual, and it says that this password is **not** the
+  database password: one keeps a copy of the file unreadable, the other says who you are,
+  and neither does the other's job.
+* **Signed out, or locked.** The sign-in card. A locked session names whose it is and says
+  nothing was lost. The refusal for an unknown username is word for word the refusal for a
+  wrong password, and **Sign in with a security key** is offered whether or not the account
+  being signed in has one registered — a button that appeared only for an account that did
+  would answer *is there an operator called ana, and has she got a key* to anybody at the
+  keyboard, which is the question those identical refusals exist to avoid. With a key, the
+  password field is the **key's PIN** and the card says so.
+* **Signed in.** *This session* — who, which role, what that role means in one sentence,
+  how long it has been idle, when it locks and ends, and how long a re-verification has
+  left — with **Lock** and **Sign out**. An administrator additionally gets *Enrol an
+  operator* and the list, where a role can be changed, an operator enabled or disabled, a
+  lockout cleared, and a security key registered or replaced. Never deleted: that would
+  orphan every audit entry they wrote.
+
+  Registering a key asks for its **serial** as well as its PIN, which is the same
+  confirmation the factory reset asks for and for the same reason: a credential written to
+  the wrong key is one an operator cannot sign in with and cannot easily find.
+
+  A **re-verification prompt** appears here too, above the list, whenever a sensitive
+  operation on *any* screen has asked for the credential again — the refusal brings the
+  operator to this screen, because a status line pointing at a screen they have to find is
+  not a prompt. It names the operation it is gating and why a session is not an answer
+  to it.
+
+Everything on this screen is hidden from a role that may not use it. That is a courtesy
+and not the control — `Store` refuses every one of these writes on its own, by a SQLite
+authorizer on the connection, by `Store::require` for what is not a table write and by
+`Store::require_fresh_credential` for the credential a statement cannot express, so a
+button painted by mistake still cannot change the register.
+
+The idle clock runs from the frame loop, so a session locks on a workstation nobody is
+touching rather than on the next mouse move. A signed-in session therefore asks for a
+repaint every 15 seconds; activity is counted from input events only, so a repaint the
+device watch or the sync lease asked for does not hold a walked-away session open.
+
 ### Settings
 
-Operator, organisation and **where incidents are reported** (persisted between sessions); the
+Organisation and **where incidents are reported** (persisted between sessions); the
 database path, locking mode and whether it is password-protected; the device transport; the
 recent databases; and the actions — *Switch database…*, *Open another…*, *Create new…*,
 integrity check, backup, reload. Also the **build id** — the version *and the commit* — so a
 screenshot identifies the build rather than only its version number.
+
+The **Operator** card is now read-only. It shows who is signed in, or — on a register with
+no operators — this workstation's user with the sentence that it is a label rather than an
+identity. The text field that used to be there is gone
+(`../features/operator-auth-and-roles.md` phase 8): an audit trail whose author can be
+typed is only as strong as the assumption that whoever is at the workstation is who they
+claim to be, and the Operators screen is where an identity comes from instead.
 
 *Report incidents to* is one field feeding two documents: the incident note a lost key
 produces, and the sealed-envelope slip that tells the holder where to report a loss. Left

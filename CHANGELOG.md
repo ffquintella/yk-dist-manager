@@ -18,6 +18,202 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+### Added
+
+- **Operator authentication and roles** ([`features/operator-auth-and-roles.md`](features/operator-auth-and-roles.md),
+  phases 1, 2, 3, 5, 6, 7 and 8). Until now the `actor` on every audit entry came
+  from `$USER` and was an editable text field in Settings. That is a label, and an
+  audit trail whose author is editable is only as strong as the assumption that
+  whoever is at the workstation is who they claim to be — which is exactly the
+  assumption an audit trail exists to avoid needing. It was declared gap 2 in
+  [`docs/security-and-compliance.md`](docs/security-and-compliance.md); it is now
+  closed except for the directory integration, which is not the implementer's to
+  close.
+
+  **Three roles**, and authorisation is by role and never per user, because the
+  norm is explicit about it: a permission granted to a person is a permission
+  nobody can review. An *administrator* does everything; a *distributor* does the
+  daily work and cannot edit a procedure, reset an applet or change a security
+  setting; an *auditor* reads everything, verifies the chain, exports, and changes
+  nothing.
+
+  **The refusal is in `Store`, not in the screen**, because the specification asks
+  for it and because a screen is not what writes to the register. Two layers: a
+  **SQLite authorizer** on the connection, so a role that may not write `templates`
+  is refused while the statement is being *prepared* — the same argument that made
+  read-only mode a connection flag rather than a guard in each of the forty-odd
+  methods that write, and the reason a mutation added next year is covered without
+  anybody remembering to cover it — and `Store::require` for what is not a table
+  write at all: an applet reset writes to hardware, a password change re-keys a
+  file, an export takes personal data out of the register. Each of those is called
+  *before* the write, because a reset refused once the applet is gone is not a
+  refusal; the re-key is guarded in `app` rather than inside
+  `Store::change_password`, which takes the store by value and would otherwise
+  close the register as the price of saying no. A third entry point,
+  `Store::require_fresh_credential`, covers a procedure or a term — a table the
+  authorizer already guards by name, where the *role* refusal is deliberately left
+  to SQLite and only the live credential, which no statement can express, is
+  checked explicitly. The screen additionally hides what a role cannot do, as a
+  courtesy; a button painted by mistake still cannot change anything.
+
+  **An existing register does not become unopenable, and that shaped the design.**
+  A migration cannot create an administrator without inventing a credential for
+  one, and a migration that demanded one before opening would have made every
+  existing register unopenable until somebody read a release note — a worse outcome
+  than the control being absent. So a register whose `operators` table is empty is
+  `Unenrolled`: it refuses nothing, behaves exactly as it did, and says on screen
+  that its actor is a label. Authorisation is switched on by a deliberate, audited
+  first-run path that creates the first administrator and then closes. It is the
+  same shape as the database password and the template-signature policy — off until
+  a deployment turns it on, and honest about being off. The register's **last**
+  administrator can be neither demoted nor disabled, because that is the same
+  lockout by a longer route.
+
+  **Local passwords are Argon2id** at OWASP's documented minimum (`m=19456 KiB,
+  t=2, p=1`). Those are **defaults pending ESI ratification**, not approved
+  parameters — `AGENTS.md` §8 makes KDF parameters the ESI's, exactly as the
+  SQLCipher ones are — and the screen that asks for a password says so. RFC 9106's
+  first recommendation was rejected for this deployment with the reason written
+  down: two gibibytes of working memory per sign-in is not a cost a unit's laptop
+  can pay, and a parameter set the first operator lowers is worse than one chosen
+  for the machine it runs on. The parameters travel inside the stored PHC string,
+  so raising them later costs a constant and a re-hash, not a migration.
+
+  **The progressive lockout is the norm's, timing for timing** (3 failures → 1 min,
+  +2 → 15 min, +2 → 1 h), and it counts against the username that was *typed*,
+  including usernames that do not exist — counting only real accounts would turn
+  the lockout into an oracle for who is on the register. Whether a policy written
+  for web login, where the primary control is the source IP, maps onto a desktop
+  workstation at all is recorded as an open ESI question rather than improvised.
+  What makes it usable meanwhile is that an administrator can lift one, audited:
+  the database password's throttle deliberately never locks precisely because there
+  is nobody to lift it.
+
+  **A session is not a presence.** A shared hand-over desk produces Bruno recording
+  a return under Ana's session, so the session locks after 5 idle minutes and ends
+  after 30 — and anything destructive or irreversible asks for the credential again
+  regardless, because *when did somebody authenticate* and *are they still here* are
+  different questions. That re-verification is good for two minutes and is enforced
+  at the write, not at the button. The idle clock runs from the frame loop, and a
+  signed-in session asks for a repaint every 15 seconds — egui sleeps when nothing
+  is happening, and an idle session is exactly the case in which nothing else asks
+  for a frame, so without it the lock would land on the next mouse move: the one
+  moment it is not wanted. Activity is counted from input events only, so a repaint
+  the device watch or the sync lease asked for does not hold a walked-away session
+  open. A refusal for a lapsed re-verification brings the operator to the screen
+  that carries the prompt, rather than leaving a status line pointing at a screen
+  they have to find, and is recorded as `reason=reverification` rather than
+  `reason=role` — the two call for different answers.
+
+  **FIDO2 sign-in is built and not hardware-verified.** `Fido2Writer::get_assertion`
+  puts it on the same trait as the bootstrap's writes, which is what lets the whole
+  sign-in be driven through `MockWriter` with no key attached and none required.
+  The register checks that the authenticator answering is the one registered, that
+  it reported *user verification* rather than merely a touch — a touch proves
+  somebody is present, not who — and that its signature counter advanced. It does
+  **not** verify the assertion signature, which needs the credential's public key
+  and a P-256 verifier this build does not carry; that gap is named in the feature
+  file rather than implied away.
+
+  Both halves are reachable from the screen. An administrator registers a key for
+  an operator from the Operators list, typing its **serial** as well as its PIN —
+  the same confirmation the factory reset asks for, because a credential written to
+  the wrong key is one that operator cannot sign in with and cannot easily find —
+  and the register keeps only the credential's public id, relying party and serial.
+  *Sign in with a security key* is offered whether or not the account being signed
+  in has one registered, deliberately: a button that appeared only for accounts that
+  did would tell anybody at the keyboard which operators exist and which of them
+  carry a key, which is the question the identical refusals for a wrong password and
+  an unknown username exist to avoid.
+
+  **AD authentication (phase 4) is deliberately not built.** `AGENTS.md` §8 makes
+  integration with a corporate system an ESI decision, and guessing at a mechanism
+  would be inventing an architecture security premise.
+
+  Schema **v9**: `operators` (the authorisation list, administrator-only) and
+  `operator_sign_ins` (everything the sign-in mechanism writes about itself). The
+  split was found by a test rather than foreseen — a *correct* password was refused,
+  because recording the successful login was itself a write to `operators` from a
+  session that had not yet signed in.
+
+  New dependency `argon2`, and the `hooks` feature of the existing `rusqlite`.
+
+  Tests: `tests/unit_store_operators.rs` takes the store, tells it which role it is
+  acting as and tries the write, so a refusal that can be got round by calling the
+  method could be got round by a button. `tests/behaviour_operator_auth.rs` drives
+  a real `YkDistApp` through the eight scenarios that only exist once one is
+  holding the store — and the first of them is the one that must never be weakened:
+  a register migrated to v9 with an empty `operators` table refuses **nothing**,
+  not a template edit, not an applet reset, not a re-key, not an export. Every
+  scenario asserts that the whole trail contains no password and no PIN.
+
+### Fixed
+
+- **The CSR step failed on a real key with `PC/SC error: An attempt was made to
+  end a non-existent transaction`**, one step after the keygen it depends on had
+  succeeded ([`features/step-piv-signing-certificate.md`](features/step-piv-signing-certificate.md)).
+  The signing key is generated `PinPolicy::Always`, which means the card requires
+  the `VERIFY` and the signature to reach it with nothing in between — and
+  `piv.create_csr` was doing the two through the [`yubikey`] crate, which opens one
+  PC/SC transaction per call and so let go of the card between them. It also opened
+  a fresh card handle to do it, moments after the keygen step had closed two of its
+  own; a handle closes with `ResetCard`, and a warm reset takes the card off the bus
+  for a fraction of a second.
+
+  `piv.create_csr` now runs entirely on [`device::piv_session`](src/device/piv_session.rs),
+  the module that already exists for exchanges that belong to a session rather than
+  to a process: one connection, the slot's public key read from its own
+  `GET METADATA`, and the PIN verified and the digest signed inside **one held PC/SC
+  transaction**. `Session::open` sweeps the readers three times spaced 150 ms rather
+  than once, so a key that is in the port but still coming back from the previous
+  step's reset is not reported as unattached. The card is still disconnected with
+  `ResetCard`, deliberately: that is what clears the applet's security status
+  instead of leaving a PIN-verified card for the next client.
+
+  `piv.import_certificate` — the step immediately after, which never ran — had the
+  same shape: a crate handle opened to check that the certificate belongs to the
+  key in the slot, closed, and a session opened to do the write. It is now one
+  session as well, and the check still happens before the management key is asked
+  for, so a certificate belonging to another key is refused without authenticating.
+
+- **The initial FIDO2 credential was registered against whatever the run's own
+  relying party was, not the one the plan showed** — the executor read a parameter
+  called `rp` ([`src/bootstrap/steps.rs`](src/bootstrap/steps.rs)), and no template
+  has ever shipped one: the built-in procedures and `TemplateStep::for_kind` carry
+  **`rp_id`** and **`user_name`** ([`features/step-fido2-credentials.md`](features/step-fido2-credentials.md),
+  the template-parameter table). So the relying party silently fell back to the
+  run's own, `user_name` was never read at all — it came from the certificate SAN —
+  and `resident`, the parameter the step exists for, was never read either. Nothing
+  looked wrong, because in this deployment the fallbacks hold the same strings the
+  defaults render to; but a template that *set* `rp_id` or `user_name` was ignored,
+  while [`src/template/plan.rs`](src/template/plan.rs) rendered `rp_id` into the
+  plan the operator confirmed. Sibling of the CSR fix in 0.17.5 and the same shape:
+  the confirmation gate showing one thing while the run does another.
+
+  The executor now reads all three parameters, and the plan shows all three under
+  their own names — it labelled `user_name` as `user=` and did not show `resident`
+  at all. The run's detail records `discoverable=` alongside the credential id, so
+  the record says which kind of credential was created rather than assuming.
+
+- **A procedure that asked for a longer PIN got a six-character one** — the same
+  defect one arm over. `fido2-pin` and `fido2-min-pin-length` both ship
+  `min_length` ([`features/step-fido2-pin.md`](features/step-fido2-pin.md)) and the
+  executor read `length`, so a template asking for an eight-character PIN generated
+  six characters, and one raising the firmware's own floor to eight raised it to
+  six. The plan, which reads `min_length`, showed eight in both cases.
+
+- **A relying party with a space in its name read back as its first word** — the
+  evidence a run leaves lives in `name=value` fields inside its step details, and
+  all three readers of that format stopped a value at the first space. The default
+  relying-party id is `{{org}}`, and an organisation's name is more than one word,
+  so a register recorded `rp_id=Fundação Getulio Vargas` and answered `Fundação`
+  when asked afterwards what the credential was bound to — as did every
+  distinguished name in a certificate-import detail. There is now one reader,
+  [`domain::detail_field`](src/domain/lifecycle.rs), used by
+  `bootstrap::credential_evidence`, `domain::dependencies` and `report`: a value
+  runs to the next field or to the end of its line, so nothing already written to a
+  register needs rewriting to be read correctly.
+
 ## [0.17.5] - 2026-08-28
 
 ### Fixed

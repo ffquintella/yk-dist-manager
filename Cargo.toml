@@ -26,6 +26,25 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 sha2 = "0.10"
 hex = "0.4"
 
+# Hashing an operator's local sign-in password
+# (`features/operator-auth-and-roles.md` phase 2). Argon2id, the memory-hard
+# winner of the Password Hashing Competition and what both OWASP and RFC 9106
+# name first — and a *password hash* rather than a KDF, so the parameters travel
+# inside the stored PHC string and the cost can be raised later without
+# invalidating a credential anybody holds.
+#
+# Not optional: a build that could not check a password could not enforce a role
+# either, and the local password is the break-glass path that keeps a register
+# administrable when the administrator's key is not in the room.
+#
+# `default-features = false` plus `alloc` and `password-hash` drops the crate's
+# `std`-only conveniences and its RNG: the salt comes from `getrandom`, which is
+# already the one source `features/secrets-custody.md` allows.
+argon2 = { version = "0.5", default-features = false, features = [
+    "alloc",
+    "password-hash",
+] }
+
 # The secrets a bootstrap sets (`crate::secret`). Both are load-bearing for
 # AGENTS.md §2 rather than conveniences:
 #
@@ -61,7 +80,14 @@ gethostname = "1"
 
 # Single-file database. `bundled` compiles SQLite in, so a workstation needs no
 # system SQLite and the file is the whole deployment.
-rusqlite = { version = "0.40", features = ["bundled"] }
+#
+# `hooks` is what exposes `sqlite3_set_authorizer`, and it is there for one
+# reason: `features/operator-auth-and-roles.md` asks for roles to be enforced in
+# `Store` rather than only in the UI, and an authorizer on the connection is the
+# only enforcement a mutation added next year cannot forget to ask for — the same
+# argument that made read-only mode a connection flag instead of a guard in each
+# of the forty-odd methods that write.
+rusqlite = { version = "0.40", features = ["bundled", "hooks"] }
 
 # Native, pure-Rust access to the hardware. Preferred over shelling out to
 # `ykman`; see docs/yubikey-reference.md for what each crate can and cannot do.

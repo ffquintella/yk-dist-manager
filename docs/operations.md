@@ -150,8 +150,12 @@ name in the top bar. *Copy the report* puts it on the clipboard, which is the qu
 way to answer "which build, on what machine?" without asking somebody to open a
 terminal.
 
-Set the operator name and organisation in **Settings**. Check that the status bar shows the
-database path and whether it is local or on a share.
+Set the organisation in **Settings** — it reaches the certificate subject and the FIDO2
+relying-party id, so it is not cosmetic. The operator is **shown there, never typed**: it
+comes from the session, and on a register nobody has enrolled into it is the workstation's
+signed-in user, labelled on screen as a label rather than an identity. See *Runbook: turn
+operator authentication on* below. Check that the status bar shows the database path and
+whether it is local or on a share.
 
 ### Which transport is reading the hardware
 
@@ -185,6 +189,85 @@ forced and failing rather than as working. Changing it restarts device detection
 recorded as `device.transport.selected`; the trail therefore says which transport was
 live when a key was prepared.
 
+## Runbook: turn operator authentication on
+
+Until somebody does this, the register has **no operators**: the `actor` on every audit
+entry is whatever user is signed in to the workstation, the Operators screen says so in as
+many words, and nothing is refused. That is the state every register written before this
+release is in, and it is deliberate — a control that locked a unit out of its own register
+would be worse than the control being absent.
+
+Turning it on is one act, and it cannot be undone from inside the application.
+
+1. Decide **who the first administrator is**. Not "whoever is at the desk": they are the
+   only person who can enrol anybody else, so it has to be somebody who will still be here
+   next month. The register's last administrator can be neither demoted nor disabled, which
+   is the safety net, not a plan.
+2. **Operators** → *Create the first administrator*. Username (lower-case, no spaces — it
+   is the actor on every audit entry from now on), the name they are called by, and a
+   password twice. The meter is the same one the database password uses and the floor is
+   the same twelve characters.
+3. Press the button. It is recorded as `operator.enrolled … first=true`, which is the entry
+   an auditor reads as *this is when authorisation began on this register*.
+4. **Everybody now has to sign in**, on every workstation that opens this register — the
+   state lives in the file, not in a setting. Enrol them: *Enrol an operator*, choosing a
+   role.
+
+| Give them | If they | 
+|---|---|
+| **Distributor** | run bootstraps, register holders, record hand-overs and returns. The daily work |
+| **Auditor** | need to read the register and export from it, and must change nothing |
+| **Administrator** | edit procedures, reset applets, change the database password, or manage this list |
+
+Two things to say out loud to the unit before doing this:
+
+* **This is not the database password.** That one makes a *copy* of the file unreadable —
+  a backup on a share, a sync client's conflict copy, a stolen laptop. This one says who
+  you are. Both are wanted, and neither does the other's job.
+* **There is no password reset by e-mail.** An administrator sets a new password for
+  somebody who forgets theirs. If every administrator forgets theirs at once, the register
+  cannot be administered from inside the application.
+
+### If somebody is locked out
+
+Three wrong attempts lock an account for a minute, five for a quarter of an hour, seven for
+an hour, and it survives closing the application. Any administrator can lift it:
+**Operators** → *Clear lockout*, audited as `operator.lockout.cleared`.
+
+### What a sensitive operation asks for
+
+Editing a procedure, resetting an applet, changing the database password, managing
+operators and taking an export ask for your credential **again**, even though you are
+signed in, and the answer lasts two minutes. That is not distrust of the session — it is
+that a session records when somebody signed in, and a hand-over desk is shared. Locking the
+session throws the two minutes away, because coming back to the desk is exactly the moment
+the tool must not assume the same person returned.
+
+### Signing in with a key
+
+An administrator can register a FIDO2 credential on an operator's own YubiKey, and that
+operator then signs in by presenting it with their PIN. The key must **verify the user** —
+a PIN or a biometric, not merely a touch — because a touch proves somebody is present and
+not who.
+
+To register one: **Operators** → the operator's row → *Register a security key*. Attach
+**their** key, type its **serial** and its PIN, and press *Register it*. The serial is
+asked for rather than read off whichever key is attached, for the same reason the factory
+reset asks you to type it: a credential written to the wrong key is one that operator
+cannot sign in with and cannot easily find. It is recorded as
+`operator.credential.changed … method=fido2`, and the register keeps only the credential's
+public id — the private key never leaves the key. *Replace security key* is the same
+action for a key that has been lost or swapped.
+
+To sign in with one: type the username, put the **key's PIN** in the password field, and
+press *Sign in with a security key*. That button is there whether or not the account has a
+key registered, deliberately — one that appeared only for accounts that did would tell
+anybody at the keyboard which operators exist and which of them carry a key.
+
+This path is built and has **not been verified against real hardware** — neither half of
+it. The password remains the break-glass route, and it is also still what a
+re-verification asks for, even for an operator who signed in with a key.
+
 ## Choosing, creating and switching databases
 
 The database screen appears whenever nothing is open. From it you can:
@@ -204,7 +287,7 @@ Once open, **Settings → Switch database…** closes the current one and brings
 back. The last database used is reopened at the next start, unless `$YKDM_DB` says
 otherwise.
 
-The recent list and the operator identity live in `settings.json` in the per-user data
+The recent list lives in `settings.json` in the per-user data
 directory (`$YKDM_SETTINGS` overrides it). **It never holds the database password** — it
 sits next to the database, so storing one there would defeat encrypting it.
 

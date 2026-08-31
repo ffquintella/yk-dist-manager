@@ -34,6 +34,7 @@
 pub mod backup;
 pub mod cloud;
 pub mod import;
+pub mod operators;
 pub mod presence;
 pub mod smb;
 
@@ -59,7 +60,7 @@ use crate::template::{BootstrapTemplate, StoredTemplate};
 use crate::term::TermTemplate;
 
 /// Current schema version, tracked in `PRAGMA user_version`.
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -142,6 +143,35 @@ pub enum StoreError {
          cannot be moved. Nothing was saved"
     )]
     EmailTaken { email: String, holder: String },
+    /// The signed-in role may not do this (`features/operator-auth-and-roles.md`
+    /// phase 1).
+    ///
+    /// Raised by [`Store::require`], which is the half of the authorisation that
+    /// covers what is *not* a table write — resetting an applet, changing the
+    /// database password, taking an export out of the register.
+    #[error("{who} may not {what}. Nothing was changed, and the refusal is on the audit trail")]
+    Forbidden { who: String, what: String },
+    /// SQLite itself refused the statement, because the authorizer installed for
+    /// this session's role denied the table.
+    ///
+    /// Its own variant, and not folded into [`StoreError::Forbidden`], because the
+    /// two say different things about *where* the refusal came from — and this one
+    /// is the important one: it means a code path reached a write it had no
+    /// business reaching and the database stopped it, rather than a check
+    /// remembering to. That is worth reading as a defect report as well as a
+    /// refusal.
+    #[error(
+        "this session's role may not change that. The register refused the statement itself, \
+         not the screen — nothing was changed"
+    )]
+    NotAuthorised,
+    /// A sensitive operation was attempted without a fresh re-verification
+    /// (`features/operator-auth-and-roles.md` phase 5).
+    #[error(
+        "{what} needs the credential presented again — a session says when somebody signed in, \
+         not whether they are still at the workstation. Nothing was changed"
+    )]
+    NeedsReverification { what: String },
     #[error("record not found: {0}")]
     NotFound(String),
     #[error("no database file at {0} — choose an existing one, or create a new one")]
@@ -219,6 +249,17 @@ impl From<rusqlite::Error> for StoreError {
                     || e.code == rusqlite::ErrorCode::DatabaseLocked =>
             {
                 StoreError::Busy
+            }
+            // The authorizer installed by [`Store::act_as`] denied the statement
+            // while it was being prepared. Translated here, once, for the same
+            // reason read-only is: authorisation is a property of the connection
+            // rather than a guard in each of the forty-odd methods that write, so
+            // a mutation added next year is covered without anybody remembering
+            // to cover it.
+            rusqlite::Error::SqliteFailure(e, _)
+                if e.code == rusqlite::ErrorCode::AuthorizationForStatementDenied =>
+            {
+                StoreError::NotAuthorised
             }
             _ => StoreError::Sqlite(error),
         }
@@ -483,6 +524,24 @@ pub struct Store {
     /// When this session last rewrote its row, or `None` when it has none — a
     /// read-only look, or a register whose presence table could not be written.
     presence_renewed_at: Option<DateTime<Utc>>,
+    /// The role this connection is acting as, as
+    /// [`crate::operator::Authority::code`]
+    /// (`features/operator-auth-and-roles.md` phase 1).
+    ///
+    /// Shared with the SQLite authorizer callback, which is why it is an
+    /// `Arc<AtomicU8>` and not an enum: the callback must be `Send + 'static`, so
+    /// it cannot borrow the store, and it runs on every statement preparation, so
+    /// what it reads should be one relaxed load.
+    authority: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    /// When the current re-verification expires
+    /// (`features/operator-auth-and-roles.md` phase 5).
+    ///
+    /// Here rather than only on the application's session because this is where
+    /// the refusal is: a sensitive operation checked only by the screen that
+    /// offers it is a sensitive operation one bug away from being unchecked.
+    /// `Cell` for the reason the audit mirror is a `RefCell` — every `Store`
+    /// method that writes takes `&self`.
+    reverified_until: std::cell::Cell<Option<DateTime<Utc>>>,
 }
 
 /// The result of verifying the audit chain when the register was opened.
@@ -734,6 +793,14 @@ impl Store {
             // somebody else's screen claiming an operator is "in the register"
             // when they are only looking at it would be worse than silence.
             presence_renewed_at: None,
+            // A reader writes nothing, so the authorizer has nothing to refuse
+            // and `SQLITE_OPEN_READ_ONLY` has already said so more strongly than
+            // any role could. Left unenrolled so a read-only look at a register
+            // that *does* have operators is not additionally refused its reads.
+            authority: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
+                crate::operator::Authority::Unenrolled.code(),
+            )),
+            reverified_until: std::cell::Cell::new(None),
         })
     }
 
@@ -779,9 +846,16 @@ impl Store {
             chain_status: ChainStatus::NotChecked,
             session: Uuid::new_v4(),
             presence_renewed_at: None,
+            authority: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
+                crate::operator::Authority::Unenrolled.code(),
+            )),
+            reverified_until: std::cell::Cell::new(None),
         };
         store.apply_pragmas()?;
         store.migrate()?;
+        // After the migration, which creates tables and therefore has to run
+        // unauthorised — and before anything an operator asks for.
+        store.install_authorizer()?;
         store.backup_on_open();
         store.chain_status = store.verify_chain_on_open();
         store.announce_presence(&config.operator);
@@ -995,6 +1069,9 @@ impl Store {
         }
         if version < 8 {
             self.conn.execute_batch(MIGRATE_V8)?;
+        }
+        if version < 9 {
+            self.conn.execute_batch(MIGRATE_V9)?;
         }
 
         self.conn
@@ -2472,7 +2549,20 @@ impl Store {
 
     // ------------------------------------------------------------- templates
 
+    ///
+    /// Also the point where a procedure edit asks for the credential again
+    /// (`features/operator-auth-and-roles.md` phase 5). The SQLite authorizer
+    /// already refuses a non-administrator the `templates` write, and stays the
+    /// layer that does; what it cannot see is the **re-verification**, because a
+    /// live credential is not a property of a statement. Every other way into
+    /// this table —
+    /// [`Self::save_template_version`], [`Self::import_template`] — comes through
+    /// here, and so does [`Self::seed_builtin_templates`]: the seeds run at open
+    /// time, while a freshly opened store is still `Unenrolled` and nothing is
+    /// refused, which is why they are not a special case.
     pub fn upsert_template(&self, template: &BootstrapTemplate) -> Result<()> {
+        self.require_fresh_credential(crate::operator::Action::ManageTemplates)?;
+
         self.conn.execute(
             "INSERT INTO templates (id, version, name, body, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5)
@@ -2585,6 +2675,7 @@ impl Store {
     /// [`Self::seed_builtin_templates`] will not resurrect it — seeding asks
     /// whether the `(id, version)` exists, not whether it is in use.
     pub fn retire_template(&self, id: &str, version: &str) -> Result<StoredTemplate> {
+        self.require_fresh_credential(crate::operator::Action::ManageTemplates)?;
         let stored = self.stored_template(id, version)?;
         self.conn.execute(
             "UPDATE templates SET retired_at = ?1 WHERE id = ?2 AND version = ?3
@@ -2596,6 +2687,7 @@ impl Store {
 
     /// Put a retired version back in use.
     pub fn reinstate_template(&self, id: &str, version: &str) -> Result<StoredTemplate> {
+        self.require_fresh_credential(crate::operator::Action::ManageTemplates)?;
         let stored = self.stored_template(id, version)?;
         self.conn.execute(
             "UPDATE templates SET retired_at = NULL WHERE id = ?1 AND version = ?2",
@@ -2612,6 +2704,7 @@ impl Store {
     /// retirement, which is the operation that does what was asked. See
     /// [`StoredTemplate::removal_refusal`].
     pub fn delete_template(&self, id: &str, version: &str) -> Result<StoredTemplate> {
+        self.require_fresh_credential(crate::operator::Action::ManageTemplates)?;
         let stored = self.stored_template(id, version)?;
         if let Some(reason) = stored.removal_refusal() {
             return Err(StoreError::TemplateInUse {
@@ -2700,7 +2793,14 @@ impl Store {
 
     // --------------------------------------------------------- term templates
 
+    /// Store a term version.
+    ///
+    /// Guarded like [`Self::upsert_template`], and for the same reason: a term is
+    /// what a holder signs. [`Self::save_term_template_version`] and
+    /// [`Self::seed_builtin_terms`] both come through here.
     pub fn upsert_term_template(&self, template: &TermTemplate) -> Result<()> {
+        self.require_fresh_credential(crate::operator::Action::ManageTemplates)?;
+
         self.conn.execute(
             "INSERT INTO term_templates (id, language, version, title, body, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -4207,6 +4307,79 @@ CREATE TABLE IF NOT EXISTS batch_keys (
 );
 
 CREATE INDEX IF NOT EXISTS idx_batch_keys_serial ON batch_keys(key_serial);
+"#;
+
+/// Schema v9 — **who may use this register**
+/// (`features/operator-auth-and-roles.md` phases 1, 2, 3 and 7).
+///
+/// Two tables, and the split between them is the design, not tidiness.
+///
+/// `operators` is the authorisation list: one row per person, a role, and
+/// whichever credentials have been registered for them. Only an administrator may
+/// write it — a role that could edit this table would be every role — and that is
+/// enforced by the connection's authorizer rather than by a check each of the
+/// methods below has to remember.
+///
+/// `operator_sign_ins` is everything the **sign-in mechanism writes about
+/// itself** — the failure counter, the last successful sign-in, and the FIDO2
+/// signature counter — and it is deliberately not a set of columns on
+/// `operators`. Two reasons, both load-bearing:
+///
+/// * It has to be writable by a session that has **not** authenticated, because
+///   while somebody is signing in that is the only session there is. Merging it
+///   into `operators` would have meant either opening the authorisation list to
+///   signed-out sessions — the way round the whole feature — or a sign-in that
+///   cannot record whether it happened. The split was found by a test rather than
+///   foreseen: a correct password was refused because recording the successful
+///   login was itself a write to `operators`.
+/// * It is keyed on the **username that was typed**, not on an operator id, and
+///   it counts failures against usernames that do not exist. Counting only real
+///   accounts would turn the lockout into an oracle: type a name, see whether it
+///   can be locked out, learn who is on the register.
+///
+/// The FIDO2 signature counter is here rather than beside the credential id for
+/// the same reason, and it is not a stretch: the credential id is *authorisation*
+/// data, saying which key may answer, while the counter is *sign-in* data, saying
+/// what the last answer was.
+///
+/// **Nothing here is a password.** `password_phc` holds an Argon2id PHC string —
+/// algorithm, parameters, salt and derived key — which is not the password and
+/// cannot be turned back into one. `credential_id`, `credential_rp` and
+/// `credential_counter` are FIDO2 public data by construction; the credential's
+/// private key never leaves the authenticator, which is the property the method
+/// rests on.
+///
+/// **A register migrated to v9 has no operators in it, and that is the point.**
+/// An empty `operators` table is [`crate::operator::Authority::Unenrolled`], in
+/// which nothing is refused and the register behaves exactly as it did at v8. A
+/// migration that invented an administrator would have had to invent a credential
+/// for one; a migration that demanded one before opening would have made every
+/// existing register unopenable until somebody read a release note. Turning the
+/// control on is therefore a deliberate, audited act by somebody at the keyboard.
+const MIGRATE_V9: &str = r#"
+CREATE TABLE IF NOT EXISTS operators (
+    id                 TEXT PRIMARY KEY,
+    username           TEXT NOT NULL UNIQUE,
+    display_name       TEXT NOT NULL,
+    role               TEXT NOT NULL,
+    active             INTEGER NOT NULL DEFAULT 1,
+    created_at         TEXT NOT NULL,
+    created_by         TEXT NOT NULL DEFAULT '',
+    updated_at         TEXT NOT NULL,
+    password_phc       TEXT,
+    credential_id      TEXT,
+    credential_rp      TEXT,
+    credential_serial  INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS operator_sign_ins (
+    username           TEXT PRIMARY KEY,
+    failed_attempts    INTEGER NOT NULL DEFAULT 0,
+    locked_until       TEXT,
+    last_failure_at    TEXT,
+    last_login_at      TEXT,
+    credential_counter INTEGER NOT NULL DEFAULT 0
+);
 "#;
 
 #[cfg(test)]

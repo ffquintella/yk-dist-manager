@@ -32,11 +32,12 @@
 //! unpleasant and it is the honest cost of this dependency; the retry count comes
 //! from `get_pin_retries`, which is authoritative, rather than from parsing.
 
-use ctap_hid_fido2::fidokey::{FidoKeyHid, MakeCredentialArgsBuilder};
+use ctap_hid_fido2::fidokey::{FidoKeyHid, GetAssertionArgsBuilder, MakeCredentialArgsBuilder};
 use ctap_hid_fido2::{FidoKeyHidFactory, LibCfg};
 
 use super::write::{
-    CredentialEvidence, CredentialRequest, Fido2State, Fido2Writer, Result, WriteError,
+    AssertionEvidence, AssertionRequest, CredentialEvidence, CredentialRequest, Fido2State,
+    Fido2Writer, Result, WriteError,
 };
 use crate::secret::Secret;
 
@@ -267,6 +268,66 @@ impl Fido2Writer for NativeFido2 {
             credential_id_hex: hex::encode(&attestation.credential_descriptor.id),
             relying_party: request.relying_party.clone(),
             algorithm: "ES256".into(),
+        })
+    }
+
+    /// Answer a sign-in challenge with a credential already on the key
+    /// (`features/operator-auth-and-roles.md` phase 3).
+    ///
+    /// `uv` is asked for explicitly rather than left to the authenticator's
+    /// default: a touch proves somebody is at the workstation, and this call
+    /// exists to establish *who*. The caller checks the flag that comes back as
+    /// well as asking for it, because asking is a request and the flag is the
+    /// answer.
+    ///
+    /// **Not hardware-verified.** The exchange is written against `ctap-hid-fido2`
+    /// 3.5 and exercised end to end through `device::write::MockWriter`; no key
+    /// was attached to this workstation. Labelled the way this repository already
+    /// labels PIV.
+    fn get_assertion(
+        &mut self,
+        serial: u32,
+        request: &AssertionRequest,
+        pin: &Secret,
+    ) -> Result<AssertionEvidence> {
+        self.guard_serial(serial)?;
+        let key = self.open("fido2.get_assertion")?;
+
+        let challenge = hex::decode(&request.challenge_hex).map_err(|_| WriteError::Failed {
+            operation: "fido2.get_assertion",
+            reason: "the sign-in challenge was not hex".into(),
+        })?;
+        let credential_id =
+            hex::decode(&request.credential_id_hex).map_err(|_| WriteError::Failed {
+                operation: "fido2.get_assertion",
+                reason: "the registered credential id was not hex".into(),
+            })?;
+
+        let args = GetAssertionArgsBuilder::new(&request.relying_party, &challenge)
+            .pin(pin.expose())
+            .credential_id(&credential_id)
+            .build();
+
+        let assertions = key
+            .get_assertion_with_args(&args)
+            .map_err(|e| self.classify(&key, "fido2.get_assertion", e))?;
+
+        // One credential id was asked for, so one assertion is what a conforming
+        // authenticator returns. An empty answer is a refusal, not an accident.
+        let assertion = assertions
+            .into_iter()
+            .next()
+            .ok_or_else(|| WriteError::Failed {
+                operation: "fido2.get_assertion",
+                reason: "the security key returned no assertion for that credential".into(),
+            })?;
+
+        Ok(AssertionEvidence {
+            credential_id_hex: hex::encode(&assertion.credential_id),
+            relying_party: request.relying_party.clone(),
+            user_verified: assertion.flags.user_verified_result,
+            user_present: assertion.flags.user_present_result,
+            counter: assertion.sign_count,
         })
     }
 }
