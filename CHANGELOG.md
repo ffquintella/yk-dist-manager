@@ -16,7 +16,7 @@ Maintenance instructions (see AGENTS.md §5):
 * A database schema change also bumps store::SCHEMA_VERSION and ships a migration.
 -->
 
-## [Unreleased]
+## [0.18.0] - 2026-08-31
 
 ### Added
 
