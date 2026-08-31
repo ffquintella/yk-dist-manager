@@ -16,6 +16,19 @@ Maintenance instructions (see AGENTS.md §5):
 * A database schema change also bumps store::SCHEMA_VERSION and ships a migration.
 -->
 
+## [0.18.1] - 2026-08-31
+
+### Fixed
+
+- **The term preview is tall enough to read again.** The preview card sits at the
+  bottom of a long screen, and its scroll area asked only for a maximum height. A
+  nested `ScrollArea` gets no more than the space its parent has left, and by that
+  point the page's own scroll area has none — so egui fell back to its
+  `min_scrolled_size` floor of 64 px and the rendered term appeared as a two-line
+  slit with the signature block cut in half. The height is now named at both ends,
+  scaled to the window (`ui::terms::preview`); `auto_shrink` still lets a short
+  document take less.
+
 ## [0.18.0] - 2026-08-31
 
 ### Added

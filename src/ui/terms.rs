@@ -386,8 +386,18 @@ fn preview(app: &mut YkDistApp, ui: &mut egui::Ui) {
         // The rendered term keeps its own line breaks: it scrolls both ways
         // inside the card rather than being wrapped into something the holder
         // will not read.
+        //
+        // The height is asked for at both ends. This card is the last thing on a
+        // long page, so by the time it is laid out the page's own scroll area has
+        // no height left to give — and a `ScrollArea` with nothing available falls
+        // back to `min_scrolled_size`, which is 64 px. `max_height` alone left the
+        // preview a two-line slit. Naming the same number as the floor is what
+        // makes it the height; `auto_shrink` still lets a short document take less.
+        let line = ui.text_style_height(&egui::TextStyle::Monospace);
+        let height = (ui.ctx().content_rect().height() * 0.55).clamp(16.0 * line, 44.0 * line);
         egui::ScrollArea::both()
-            .max_height(360.0)
+            .max_height(height)
+            .min_scrolled_height(height)
             .auto_shrink([false, true])
             .id_salt("term-editor-preview")
             .show(ui, |ui| {
