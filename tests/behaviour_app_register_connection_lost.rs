@@ -25,6 +25,8 @@
 //! `$YKDM_SETTINGS` and `$YKDM_DATA_DIR`, and the process environment is shared by
 //! every test in a binary.
 
+use std::path::Path;
+
 use yk_dist_manager::YkDistApp;
 use yk_dist_manager::domain::{SerialSource, YubiKeyRecord};
 use yk_dist_manager::store::{Store, StoreConfig};
@@ -33,6 +35,61 @@ const SERIAL: u32 = 20_423_633;
 
 /// What SQLite says, and what the operator saw on the screen that started this.
 const REASON: &str = "database error: disk I/O error";
+
+/// The register is reached through a mount point, and taken out of reach by taking
+/// that mount point away — never by moving the file, which is both the wrong story
+/// (the register keeps existing on the server) and impossible on Windows while this
+/// process holds the connection open, the very state this scenario is about.
+///
+/// Same pair of helpers as `behaviour_app_share_dropped`, for the same reason.
+fn mount(server_side: &Path, at: &Path) {
+    link(server_side, at).expect("the mount point is made");
+    assert!(at.is_dir(), "the mount point leads to the share");
+}
+
+fn unmount(at: &Path) {
+    unlink(at).expect("the mount point goes away");
+    assert!(!at.exists(), "the mount point is gone");
+}
+
+#[cfg(unix)]
+fn link(server_side: &Path, at: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(server_side, at)
+}
+
+#[cfg(unix)]
+fn unlink(at: &Path) -> std::io::Result<()> {
+    std::fs::remove_file(at)
+}
+
+/// A junction, not a symlink: `mklink /J` needs no privilege, while a directory
+/// symlink needs `SeCreateSymbolicLinkPrivilege` or developer mode — which a build
+/// agent may not have. A junction is also what a mapped share's mount point is.
+#[cfg(windows)]
+fn link(server_side: &Path, at: &Path) -> std::io::Result<()> {
+    let out = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(at)
+        .arg(server_side)
+        .output()?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "mklink /J failed: {}{}",
+            String::from_utf8_lossy(&out.stdout).trim(),
+            String::from_utf8_lossy(&out.stderr).trim(),
+        )))
+    }
+}
+
+/// `remove_file` refuses a junction; removing the directory entry is what takes a
+/// reparse point away, and it leaves the directory it points at — and the file this
+/// process still has open under it — alone.
+#[cfg(windows)]
+fn unlink(at: &Path) -> std::io::Result<()> {
+    std::fs::remove_dir(at)
+}
 
 fn events(app: &YkDistApp, event: &str) -> Vec<String> {
     app.store
@@ -55,7 +112,13 @@ fn scenario_a_register_whose_connection_died_is_let_go_of_and_opened_again() {
         std::env::set_var("YKDM_DATA_DIR", home.path());
         std::env::set_var("YKDM_SETTINGS", home.path().join("settings.json"));
     }
-    let database = home.path().join("keys.sqlite3");
+    // The register lives on the "file server"; this workstation reaches it through a
+    // mount point, which is what the operating system mounted the share as.
+    let server_side = home.path().join("server-side-share");
+    let root = home.path().join("mounted-share");
+    std::fs::create_dir_all(&server_side).unwrap();
+    mount(&server_side, &root);
+    let database = root.join("keys.sqlite3");
 
     // Given a register with history on it, open and being worked in
     {
@@ -75,8 +138,8 @@ fn scenario_a_register_whose_connection_died_is_let_go_of_and_opened_again() {
 
     // When the connection stops answering and the file is genuinely out of reach —
     // the share was not back after all
-    let moved_away = home.path().join("keys.sqlite3.server-side");
-    std::fs::rename(&database, &moved_away).expect("the register goes out of reach");
+    unmount(&root);
+    assert!(!database.is_file(), "the register is not reachable");
     app.handle_register_connection_lost(REASON.to_owned());
 
     // Then the register is let go of rather than held open, and the operator is told
@@ -104,7 +167,8 @@ fn scenario_a_register_whose_connection_died_is_let_go_of_and_opened_again() {
 
     // When the file is where it was — the ordinary case, a session torn down under a
     // mount that never moved
-    std::fs::rename(&moved_away, &database).expect("the file server answers again");
+    mount(&server_side, &root);
+    assert!(database.is_file(), "the file server answers again");
     app.handle_register_connection_lost(REASON.to_owned());
 
     // Then the register is open again, without the operator doing anything: only this
