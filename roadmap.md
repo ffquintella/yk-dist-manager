@@ -47,7 +47,7 @@ deployment.
 > its own wave-0 phases finished. See
 > [Wave 0 is closed](#wave-0-is-closed).
 
-Released: **v0.17.5**. **Wave 1 is closed** (2026-08-14). **Wave 2 is closed**
+Released: **v0.18.2**. **Wave 1 is closed** (2026-08-14). **Wave 2 is closed**
 (2026-08-28) — every row in it is `[x]`, the last being operator authentication and
 roles, whose only open phase is the AD integration the ESI owns. Next wave:
 **Wave 3 — alternatives and delivery.**

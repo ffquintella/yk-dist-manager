@@ -16,6 +16,17 @@ Maintenance instructions (see AGENTS.md §5):
 * A database schema change also bumps store::SCHEMA_VERSION and ships a migration.
 -->
 
+## [0.18.2] - 2026-09-03
+
+### Changed
+
+- **The version number, and nothing else.** This release carries no functional change: the
+  tree it is built from is byte-identical to `releases/v0.18.1`, whose build succeeded and
+  produced every artefact. It exists because a version was asked for, and it is recorded that
+  way rather than dressed up — a changelog that invents a change to justify a number is worse
+  than one that says there was none. Anyone deciding whether to upgrade from 0.18.1 can stop
+  reading here: there is nothing in it for them.
+
 ## [0.18.1] - 2026-08-31
 
 ### Fixed
