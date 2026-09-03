@@ -4,6 +4,12 @@
 //! the database last used, then the per-user default. Anything else is the
 //! operator's choice on the database screen.
 
+// Without this, Windows links the binary as the default console subsystem, which
+// allocates and briefly shows a console window before the egui window appears.
+// Kept for debug builds so `--diagnose`/`--version`/`--help` stay visible in a
+// terminal during development.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use std::path::PathBuf;
 
 use yk_dist_manager::diagnostics::{self, Invocation};

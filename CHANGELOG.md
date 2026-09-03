@@ -16,6 +16,15 @@ Maintenance instructions (see AGENTS.md §5):
 * A database schema change also bumps store::SCHEMA_VERSION and ships a migration.
 -->
 
+## [0.18.3] - 2026-09-03
+
+### Fixed
+
+- **Windows: no more console window flash on launch.** The binary linked as the default
+  console subsystem, which briefly opened a console window before the egui window appeared.
+  Release builds now link as the `windows` subsystem; debug builds keep the console so
+  `--diagnose`/`--version`/`--help` stay visible in a terminal during development.
+
 ## [0.18.2] - 2026-09-03
 
 ### Changed
