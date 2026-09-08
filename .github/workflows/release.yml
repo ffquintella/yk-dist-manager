@@ -243,10 +243,20 @@ jobs:
       # privilege the running operator does not already have.
 
       # The same interrogation the other two platforms make: a binary that cannot
-      # start says so here rather than at somebody's desk.
+      # start says so here rather than at somebody's desk. Through Invoke-GuiExe,
+      # because the binary is a Windows-subsystem image and PowerShell neither
+      # waits for one nor reports its exit code — run directly, this step passes
+      # whatever the binary did.
       - name: Ask the binary about itself
         shell: pwsh
-        run: target\release\yk-dist-manager.exe --diagnose
+        run: |
+          . .\packaging\windows\gui-exe.ps1
+          $asked = Invoke-GuiExe -Exe 'target\release\yk-dist-manager.exe' -Arguments '--diagnose'
+          $asked.Output | ForEach-Object { Write-Host $_ }
+          $asked.Error  | ForEach-Object { Write-Host $_ }
+          if ($asked.ExitCode -ne 0) {
+            throw "the binary exited $($asked.ExitCode) when asked to diagnose itself"
+          }
 
       # Authenticode is phase 4 and is still blocked on a certificate, so the
       # installer ships unsigned and SmartScreen warns on first run. That used to be

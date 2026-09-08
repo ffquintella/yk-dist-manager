@@ -85,6 +85,15 @@ placeholder in place of the binary and deletes the result, which answers the one
 reader of the file cannot — does every reference resolve? — in seconds and without a release
 build. Two versions were spent learning that the alternative is finding out from a tag.
 
+Whenever a Windows script needs to *ask the binary something* — `--version`, `--diagnose` —
+it goes through `Invoke-GuiExe` in `packaging\windows\gui-exe.ps1`, never through `&`. The
+release binary is a Windows-subsystem image so that no console flashes at launch, and
+PowerShell does not wait for one of those and does not set `$LASTEXITCODE` for it: written
+the obvious way, the call captures nothing and the script then dies on an exit code that was
+never set. That is how the v0.18.3 and v0.19.0 Windows builds were lost.
+`tests/unit_packaging.rs` fails the build if the shape comes back. Console programs —
+`dotnet`, `wix`, `signtool` — are unaffected and keep `&` with `Assert-NativeSuccess`.
+
 `verify-msi.ps1` installs the package for real, checks what landed (including the Start Menu
 shortcut's target), interrogates the installed binary and uninstalls — so it needs an
 elevated shell. Without one it runs the static checks and warns; under

@@ -16,6 +16,36 @@ Maintenance instructions (see AGENTS.md §5):
 * A database schema change also bumps store::SCHEMA_VERSION and ships a migration.
 -->
 
+## [0.19.1] - 2026-09-08
+
+### Fixed
+
+- **The Windows release build, which has produced no artefact since 0.18.2.** Both the v0.18.3
+  and the v0.19.0 release builds died at "Build the installer", after the tag was pushed and
+  the other platforms had already built. The cause was one line, and it was not in the
+  installer authoring: 0.18.3 linked the release binary into the **Windows subsystem** so no
+  console flashes before the egui window appears, and PowerShell treats such an image
+  differently from a console program — it starts it, does **not** wait for it, and does not set
+  `$LASTEXITCODE`. `msi.ps1`'s version check, `$reported = & $exe --version`, therefore captured
+  nothing, tore the pipe down under a child that was still writing to it (which panicked with
+  *failed printing to stdout: The pipe is being closed*), and then died under `Set-StrictMode`
+  on a `$LASTEXITCODE` that was never set.
+
+  New [`packaging/windows/gui-exe.ps1`](packaging/windows/gui-exe.ps1) is how the binary is
+  asked anything from PowerShell now: `Invoke-GuiExe` uses `Start-Process -Wait -PassThru` with
+  file redirection, which waits whatever the subsystem is and hands back the child's real exit
+  code. `msi.ps1`, `verify-msi.ps1` and the workflow's "Ask the binary about itself" step all go
+  through it — and that last one was silently affected too: run directly, it passed whatever the
+  binary did, because PowerShell was not waiting for an exit code to check.
+
+  The regression is pinned by `nothing_asks_the_windows_binary_anything_without_waiting_for_it`
+  in [`tests/unit_packaging.rs`](tests/unit_packaging.rs), which reads the packaging scripts as
+  text on any platform and rejects `& $variable --version|--diagnose|--help`. It has to be a
+  text check: CI's per-commit Windows leg is `msi.ps1 -LinkOnly`, which packages a placeholder
+  and never asks the binary anything, and a debug build is a console image that would not
+  reproduce the failure anyway. Same argument, and same file, as the WiX checks added after
+  v0.16.0 (`features/packaging-and-release.md`).
+
 ## [0.19.0] - 2026-09-08
 
 ### Added
@@ -3045,7 +3075,8 @@ become rows.
 - Uploaded filenames are treated as data: any directory component is stripped, so a
   name like `../../etc/passwd.pdf` cannot escape.
 
-[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/releases/v0.17.4...HEAD
+[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/releases/v0.19.1...HEAD
+[0.19.1]: https://github.com/ffquintella/yk-dist-manager/compare/releases/v0.19.0...releases/v0.19.1
 [0.17.4]: https://github.com/ffquintella/yk-dist-manager/compare/releases/v0.17.3...releases/v0.17.4
 [0.16.3]: https://github.com/ffquintella/yk-dist-manager/compare/releases/v0.16.2...releases/v0.16.3
 [0.16.2]: https://github.com/ffquintella/yk-dist-manager/compare/releases/v0.16.1...releases/v0.16.2

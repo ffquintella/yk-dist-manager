@@ -34,6 +34,11 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# The installed binary is a Windows-subsystem image, which PowerShell starts
+# without waiting for and without setting $LASTEXITCODE. Invoke-GuiExe is how it
+# is asked anything.
+. (Join-Path $PSScriptRoot 'gui-exe.ps1')
+
 # The UpgradeCode is deliberately duplicated here. It is the identity by which every
 # future version recognises this product, so it must never change — and a check that
 # read it out of Package.wxs would agree with any edit, including the one that breaks
@@ -289,10 +294,11 @@ try {
             # installed binary is asked about itself.
             Write-Host ''
             Write-Host '  --diagnose, from the installed executable:'
-            $report = & $installedExe --diagnose
-            if ($LASTEXITCODE -ne 0) {
-                throw "the installed binary exited $LASTEXITCODE when asked to diagnose itself"
+            $asked = Invoke-GuiExe -Exe $installedExe -Arguments '--diagnose'
+            if ($asked.ExitCode -ne 0) {
+                throw "the installed binary exited $($asked.ExitCode) when asked to diagnose itself"
             }
+            $report = $asked.Output
             $report | ForEach-Object { Write-Host "    $_" }
             Write-Host ''
 

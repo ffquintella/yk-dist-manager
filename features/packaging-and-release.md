@@ -22,10 +22,35 @@ about itself, and each desktop platform now has an installer as well as a portab
 artefact. What is left is two code-signing certificates this project does not have.**
 
 **One artefact has never completed a release build**: the MSI failed on v0.16.0 (illegal XML
-in a comment) and again on v0.16.1 (a shortcut naming an undeclared icon), each time after
-the tag was pushed and the other three platforms had already built. Both are fixed, and as of
-v0.16.2 the authoring is linked on every commit rather than only on a tag — but until a
-release build gets past that step, treat "the MSI builds" as expected rather than observed.
+in a comment), on v0.16.1 (a shortcut naming an undeclared icon), and then on **v0.18.3 and
+v0.19.0** for a reason none of the earlier guards could see — each time after the tag was
+pushed and the other platforms had already built. All are fixed, and as of v0.16.2 the
+authoring is linked on every commit rather than only on a tag — but until a release build
+gets past that step, treat "the MSI builds" as expected rather than observed.
+
+The last two are worth naming, because the cause was not in the authoring at all. 0.18.3
+linked the release binary into the **Windows subsystem** so that no console flashes before
+the egui window appears (`src/main.rs`), which is invisible to everything except PowerShell:
+it starts a GUI-subsystem image, does **not** wait for it, and does not set `$LASTEXITCODE`.
+So `msi.ps1`'s version interrogation — `$reported = & $exe --version` — captured nothing,
+closed the pipe under a child that was still writing to it (the child panicked: *failed
+printing to stdout: The pipe is being closed*), and then died under `Set-StrictMode` on a
+`$LASTEXITCODE` that had never been set. Two releases, one line, no artefact.
+
+The fix is [`packaging/windows/gui-exe.ps1`](../packaging/windows/gui-exe.ps1): `Invoke-GuiExe`
+runs the binary through `Start-Process -Wait -PassThru` with file redirection, which waits
+whatever the subsystem is and returns the child's real exit code. `msi.ps1`, `verify-msi.ps1`
+and the workflow's "Ask the binary about itself" step all go through it. Console programs —
+`dotnet`, `wix`, `signtool` — are unaffected and keep `&` with `Assert-NativeSuccess`.
+
+**Why CI could not have caught it, and what now does.** The per-commit Windows check is
+`msi.ps1 -LinkOnly`, which packages a placeholder and therefore never asks the binary
+anything; and a debug build is a *console* image (`#![cfg_attr(not(debug_assertions), ...)]`),
+so it would not reproduce the failure even if one were built. The guard is therefore a text
+one: `nothing_asks_the_windows_binary_anything_without_waiting_for_it` in
+[`tests/unit_packaging.rs`](../tests/unit_packaging.rs) fails any `& $variable --version` /
+`--diagnose` / `--help` in `packaging/windows/*.ps1`, on any platform, in the `cargo test`
+that was going to run anyway — the same argument that put the WiX checks there after v0.16.0.
 
 - **The release workflow** ([`.github/workflows/release.yml`](../.github/workflows/release.yml))
   triggers on `v*`, re-runs the whole gate against the tag, builds macOS, Linux and Windows

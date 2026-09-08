@@ -82,9 +82,16 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# How to run the application's own executable and get an answer back. It is linked
+# into the Windows subsystem, which PowerShell does not wait for; `& $exe --version`
+# returns nothing and leaves $LASTEXITCODE unset. See the script for the whole
+# story — it cost the Windows leg of two releases.
+. (Join-Path $PSScriptRoot 'gui-exe.ps1')
+
 # PowerShell does not stop on a non-zero exit from a native program, so every call
 # to one is followed by this. Without it a failed `wix build` produces a cheerful
-# script and no MSI.
+# script and no MSI. For console programs only — dotnet, wix, signtool: the
+# application binary goes through Invoke-GuiExe, which is where its exit code is.
 function Assert-NativeSuccess {
     param([string]$What)
     if ($LASTEXITCODE -ne 0) {
@@ -118,8 +125,11 @@ try {
     # verifiers make. There is nothing to ask under -LinkOnly, where the version
     # is only what the authoring is linked against.
     if (-not $LinkOnly) {
-        $reported = & $exe --version
-        Assert-NativeSuccess "$binary --version"
+        $asked = Invoke-GuiExe -Exe $exe -Arguments '--version'
+        if ($asked.ExitCode -ne 0) {
+            throw "$binary --version failed with exit code $($asked.ExitCode)"
+        }
+        $reported = ($asked.Output -join ' ').Trim()
         if ($reported -notmatch [regex]::Escape($version)) {
             throw "version drift: Cargo.toml says $version, but the binary reports '$reported' — rebuild it"
         }

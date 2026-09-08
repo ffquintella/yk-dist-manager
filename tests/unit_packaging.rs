@@ -221,3 +221,106 @@ fn the_installer_and_the_code_agree_about_the_helper_service() {
          build's service running against the new protocol"
     );
 }
+
+/// Every code line of a PowerShell script, paired with its 1-based line number,
+/// with `<# ... #>` blocks and whole-line `#` comments removed. Both kinds of
+/// comment in these scripts *quote* the command lines they are explaining, so a
+/// check that read the file raw would find every pattern it forbids in the prose
+/// warning against it.
+fn powershell_code(script: &str) -> Vec<(usize, String)> {
+    let mut code = Vec::new();
+    let mut in_block = false;
+    for (index, line) in script.lines().enumerate() {
+        let trimmed = line.trim();
+        if in_block {
+            if trimmed.contains("#>") {
+                in_block = false;
+            }
+            continue;
+        }
+        if trimmed.starts_with("<#") {
+            in_block = !trimmed.contains("#>");
+            continue;
+        }
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        code.push((index + 1, line.to_string()));
+    }
+    code
+}
+
+/// The command token of each `&` call on a line: what comes after `& `, up to the
+/// next space. `& wix.exe --version` yields `wix.exe`; `& $exe --version` yields
+/// `$exe`.
+fn call_targets(line: &str) -> Vec<&str> {
+    let mut targets = Vec::new();
+    let mut rest = line;
+    while let Some(at) = rest.find("& ") {
+        let after = rest[at + 2..].trim_start();
+        targets.push(after.split_whitespace().next().unwrap_or(""));
+        rest = &rest[at + 2..];
+    }
+    targets
+}
+
+/// The application binary is linked into the Windows subsystem in release builds
+/// (`src/main.rs`), so that no console flashes before the egui window appears.
+/// PowerShell treats such an image differently from a console program: it starts
+/// it, does not wait for it, and does not set `$LASTEXITCODE`. So the obvious
+/// `$reported = & $exe --version` captures nothing, closes the pipe under a child
+/// that is still writing to it, and then dies under `Set-StrictMode` on a
+/// `$LASTEXITCODE` that was never set.
+///
+/// That is not a hypothesis: it is how the Windows leg of releases v0.18.3 and
+/// v0.19.0 died, both at "Build the installer", both after the tag existed. CI's
+/// per-commit check is `msi.ps1 -LinkOnly`, which packages a placeholder and so
+/// never asks the binary anything — which is exactly why the cost was two version
+/// numbers and why the guard belongs here, in a test that reads the scripts as
+/// text on any platform.
+///
+/// Console programs — `dotnet`, `wix`, `signtool` — are invoked by name and are
+/// not affected; the rule is only about calling a *variable* holding the
+/// application's own path. `packaging/windows/gui-exe.ps1` is how that is done.
+#[test]
+fn nothing_asks_the_windows_binary_anything_without_waiting_for_it() {
+    // The switches only the application answers. `wix.exe --version` is a console
+    // program invoked by name and is left alone by the rule below.
+    const APPLICATION_SWITCHES: [&str; 3] = ["--version", "--diagnose", "--help"];
+
+    for script in ["msi.ps1", "verify-msi.ps1", "gui-exe.ps1"] {
+        let relative = format!("packaging/windows/{script}");
+        let source = packaging_file(&relative);
+
+        for (line, text) in powershell_code(&source) {
+            let switch = APPLICATION_SWITCHES
+                .iter()
+                .find(|switch| text.contains(**switch));
+            let Some(switch) = switch else { continue };
+
+            for target in call_targets(&text) {
+                assert!(
+                    !target.starts_with('$'),
+                    "{relative}:{line}: `& {target} {switch}` runs the application binary \
+                     without waiting for it — PowerShell does not wait for a Windows-subsystem \
+                     image and leaves $LASTEXITCODE unset, which is how releases v0.18.3 and \
+                     v0.19.0 died. Use Invoke-GuiExe from packaging/windows/gui-exe.ps1."
+                );
+            }
+        }
+    }
+
+    // And the two scripts that do interrogate the binary reach it that way.
+    for script in ["msi.ps1", "verify-msi.ps1"] {
+        let relative = format!("packaging/windows/{script}");
+        let source = packaging_file(&relative);
+        assert!(
+            source.contains("gui-exe.ps1"),
+            "{relative} does not dot-source packaging/windows/gui-exe.ps1"
+        );
+        assert!(
+            source.contains("Invoke-GuiExe"),
+            "{relative} does not ask the binary about itself through Invoke-GuiExe"
+        );
+    }
+}
