@@ -89,11 +89,25 @@ substitute for the rest.
 ESI gate — is not, and phase 7 is unscheduled.**
 
 What that means concretely: the refusal, the protocol, the service, the client, the
-selection and the installer all exist and are covered by tests. **Nothing has been
-run against a Windows host or a key.** The failure this feature exists to fix is
-confirmed by inspection of the two call sites and of `hidclass`'s documented
-behaviour, not by observation, and the service has never accepted a connection.
-That is the same statement [`device::piv_session`](../src/device/piv_session.rs),
+selection and the installer all exist and are covered by tests.
+
+**One part of it is no longer only inspected.** The v0.19.1 release build
+(run 34257239017) is the first that got the MSI past its own build step, and
+`verify-msi.ps1` therefore installed it on a Windows runner for real: **YkDistManagerFido**
+was registered, was set to start automatically, was **running**, and was running the
+installed binary with `--windows-service` — and the uninstall removed it. That is worth
+recording because an MSI's `ServiceInstall` is *authored* rather than copied, and it is
+installed `Vital="no"` precisely so that a failure to register does not fail an operator's
+install: nothing short of an install on a real machine could have shown that Windows ended
+up with the service, and a regression here would otherwise be silent.
+
+**What is still unobserved is the part that needs a key.** The service has **never accepted
+a connection**: the verifier asks Windows about it, not the application, and no key is
+attached to a runner. So the failure this feature exists to fix — `hidclass` refusing an
+unelevated handle on usage page `0xF1D0` — is still confirmed by inspection of the two call
+sites and of the documented behaviour, not by observation, and no FIDO2 operation has been
+performed through the pipe. That is the same statement
+[`device::piv_session`](../src/device/piv_session.rs),
 [`device::mgmt`](../src/device/mgmt.rs) and [`device::ctaphid`](../src/device/ctaphid.rs)
 carry, for the same reason, and it is why phase 6 exists rather than being implied
 done by a green suite.

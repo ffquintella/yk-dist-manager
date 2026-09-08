@@ -21,12 +21,22 @@ version control and carries a tag. No hand-built binaries.
 about itself, and each desktop platform now has an installer as well as a portable
 artefact. What is left is two code-signing certificates this project does not have.**
 
-**One artefact has never completed a release build**: the MSI failed on v0.16.0 (illegal XML
-in a comment), on v0.16.1 (a shortcut naming an undeclared icon), and then on **v0.18.3 and
-v0.19.0** for a reason none of the earlier guards could see — each time after the tag was
-pushed and the other platforms had already built. All are fixed, and as of v0.16.2 the
-authoring is linked on every commit rather than only on a tag — but until a release build
-gets past that step, treat "the MSI builds" as expected rather than observed.
+**The MSI completed a release build for the first time on v0.19.1** (run 34257239017), after
+four attempts that did not: v0.16.0 (illegal XML in a comment), v0.16.1 (a shortcut naming an
+undeclared icon), v0.18.3 and v0.19.0 (the PowerShell subsystem problem below) — each of them
+after the tag was pushed and the other platforms had already built. So "the MSI builds" is
+**observed** now rather than expected, and observed all the way through: `verify-msi.ps1`
+installed the package on the runner, found the executable, the licence, the changelog, the
+install notes and the Start Menu shortcut, got `0.19.1` and commit `5f5bf119dbc0` out of the
+installed binary, found **YkDistManagerFido** registered, automatic and running against the
+installed path with `--windows-service`, and then found all of it gone after the uninstall.
+That last group is the first end-to-end evidence for `windows-elevated-helper.md`'s service
+at all — an MSI's `ServiceInstall` is *authored*, and it is installed `Vital="no"`, so nothing
+short of this run could show that Windows ended up with the service.
+
+Only the two signing certificates are outstanding now. The other guards stay where they are:
+as of v0.16.2 the authoring is linked on every commit rather than only on a tag, and as of
+v0.19.1 the way the scripts talk to the binary is checked as text.
 
 The last two are worth naming, because the cause was not in the authoring at all. 0.18.3
 linked the release binary into the **Windows subsystem** so that no console flashes before
