@@ -199,6 +199,26 @@ Touch policies: `never`, `always`, `cached` (15-second window after one touch).
   also the policy over NFC.
 - **`ykman` needs the PC/SC service running** on Windows, and `pcscd` on Linux; a
   "no device" error is often a stopped service rather than a missing key.
+- **Windows will not let an unelevated process open a FIDO2 interface.** Since Windows 10
+  1903 `hidclass` refuses read/write handles on the FIDO usage page (`0xF1D0`) to anything
+  that is not elevated, because the OS opens those interfaces for its own WebAuthn stack.
+  Enumeration still succeeds, so the failure presents as a key that is *listed* and then
+  will not answer — not as a missing key. It applies to `ykman fido` as much as to a native
+  HID transport, so there is no transport that goes around it, and the PIV and OTP applets
+  are unaffected because PC/SC and CCID reach them through the Smart Card service. There is
+  no Windows equivalent of the Linux udev rule: the only lever is elevation, which is
+  why the MSI registers a service (**YkDistManagerFido**) that holds the privilege so
+  the application does not have to. See
+  [`docs/operations.md`](operations.md#why-windows-needs-administrator-rights-for-the-fido2-applet)
+  and [`features/windows-elevated-helper.md`](../features/windows-elevated-helper.md).
+- **`webauthn.dll` is not a way round it for a provisioning tool.** The platform
+  WebAuthn API does own the device and would work unelevated, but it exposes only
+  `MakeCredential` and `GetAssertion`: there is **no reset entry point and no
+  PIN-management entry point**, and it collects the PIN itself, so a tool that has
+  just generated a transport PIN from a template cannot supply it. Five of the seven
+  FIDO2 operations this tool performs are not in it. It remains the right answer for
+  the one that is WebAuthn-shaped — an operator signing in with their own key, where
+  the OS asking for the PIN is correct rather than a compromise.
 
 ## References
 

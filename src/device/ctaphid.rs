@@ -242,6 +242,15 @@ pub fn reset(serial: u32, operation: &'static str) -> Result<()> {
 /// would be picking at random, and the operation is destructive.
 #[cfg(feature = "native-fido")]
 fn open(serial: u32, operation: &'static str) -> Result<hidapi::HidDevice> {
+    // Asked before the open, not diagnosed after it
+    // (`features/windows-elevated-helper.md` phase 1). On Windows `hidclass`
+    // enumerates this device and then refuses the handle, so the failure below
+    // would otherwise be reported as "another process may hold it" — advice that
+    // sends an operator closing browsers at a problem no process is causing.
+    if !super::elevation::direct_open_permitted() {
+        return Err(WriteError::ElevationRequired { operation });
+    }
+
     let api = hidapi::HidApi::new().map_err(|e| WriteError::Failed {
         operation,
         reason: format!("no USB HID access on this workstation: {e}"),

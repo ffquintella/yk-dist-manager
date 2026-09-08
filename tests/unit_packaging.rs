@@ -173,3 +173,51 @@ fn each_icon_id_carries_the_extension_of_its_source() {
         );
     }
 }
+
+/// The MSI and the code must agree on the service, in three places.
+///
+/// `features/windows-elevated-helper.md`: the installer registers the service, the
+/// application pings it, and the verifier asserts it was installed and removed.
+/// Nothing links those three but a string, and the failure modes are quiet ones —
+/// a renamed service leaves the previous one registered on every upgraded machine,
+/// and a lost argument starts a GUI with no window station that sits there doing
+/// nothing. Read off Windows, like every other check in this file, because the
+/// linker is the only other thing that would notice and it runs too late.
+#[test]
+fn the_installer_and_the_code_agree_about_the_helper_service() {
+    let wxs = packaging_file("packaging/windows/Package.wxs");
+    let verifier = packaging_file("packaging/windows/verify-msi.ps1");
+
+    let name = yk_dist_manager::device::helper::SERVICE_NAME;
+    let arg = yk_dist_manager::device::helper::SERVICE_ARG;
+
+    assert!(
+        wxs.contains(&format!("Name=\"{name}\"")),
+        "Package.wxs does not register a service called `{name}`"
+    );
+    assert!(
+        wxs.contains(&format!("Arguments=\"{arg}\"")),
+        "Package.wxs does not start the service with `{arg}`"
+    );
+    assert!(
+        verifier.contains(&format!("'{name}'")),
+        "verify-msi.ps1 does not check for a service called `{name}`"
+    );
+    assert!(
+        verifier.contains(arg),
+        "verify-msi.ps1 does not check the service command line for `{arg}`"
+    );
+
+    // Both halves of the lifecycle: registered on install, and gone on uninstall.
+    // The second is the one worth pinning — a LocalSystem service surviving an
+    // uninstall is the worst outcome this feature can produce.
+    assert!(
+        wxs.contains("Remove=\"uninstall\""),
+        "Package.wxs does not remove the service on uninstall"
+    );
+    assert!(
+        wxs.contains("Stop=\"both\""),
+        "Package.wxs does not stop the service on upgrade, so an upgrade would leave the previous \
+         build's service running against the new protocol"
+    );
+}

@@ -2541,6 +2541,22 @@ impl YkDistApp {
             self.record("db.sync.conflict_copies", "database", &detail);
             self.status = format!("WARNING: {detail}");
         }
+
+        // How this workstation reaches the FIDO2 applet, on the trail as well as in
+        // the log (`features/windows-elevated-helper.md`). Same argument as the
+        // conflict copies above: it is a property of the *machine* that changes what
+        // a run could do, and a later reader asking why a key was prepared the way
+        // it was needs it. Recorded only when it is not the plain answer — on macOS
+        // and Linux the applet is always reachable directly, and an entry saying so
+        // on every open would be noise in the one record that must stay readable.
+        let access = crate::device::elevation::access();
+        if access != crate::device::Fido2Access::Direct {
+            self.record(
+                "device.helper.selected",
+                "device",
+                &format!("access={}", access.describe()),
+            );
+        }
     }
 
     /// Keep the single-writer lock fresh, and stop working if it was taken away.
@@ -7922,9 +7938,32 @@ impl YkDistApp {
             key,
             applets: &applets,
             can_write: Self::can_write_to_a_key(),
+            fido2_access: crate::device::elevation::access(),
             applicability: &applicability,
         }
         .run();
+
+        // The one pre-flight finding that is a fact about the *workstation* rather
+        // than about the key or the template, and therefore the one worth a trail
+        // entry: without it, a key that was planned for and never prepared leaves
+        // nothing on record saying why (`features/windows-elevated-helper.md`).
+        let access = crate::device::elevation::access();
+        if !access.is_usable()
+            && self
+                .wizard
+                .findings
+                .iter()
+                .any(|finding| finding.severity == crate::bootstrap::preflight::Severity::Blocking)
+        {
+            self.record(
+                "device.helper.refused",
+                "device",
+                &format!(
+                    "access={} the FIDO2 steps of this procedure cannot run on this workstation",
+                    access.describe()
+                ),
+            );
+        }
 
         self.wizard.stage = crate::app::WizardStage::Confirming;
         self.status = crate::bootstrap::preflight::summarise(&self.wizard.findings);

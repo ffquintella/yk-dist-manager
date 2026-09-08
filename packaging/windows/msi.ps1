@@ -3,11 +3,16 @@
     Build the Windows installer from an already-compiled release binary.
 
 .DESCRIPTION
-    The MSI is the counterpart of the macOS .pkg, and it exists for the same reason:
-    the zip beside it can only be unzipped by the person sitting at the machine,
-    while an MSI installs to Program Files, registers in Programs and Features so a
-    fleet can be asked what version it has, upgrades in place, and can be pushed by
-    Group Policy or Intune with nobody at the keyboard.
+    The MSI is the counterpart of the macOS .pkg: it installs to Program Files,
+    registers in Programs and Features so a fleet can be asked what version it has,
+    upgrades in place, and can be pushed by Group Policy or Intune with nobody at
+    the keyboard.
+
+    On Windows it is also the *only* artefact, since 2026-09-08. A portable zip
+    shipped beside it until then; the elevated FIDO2 helper ended that, because a
+    service can only be installed by an installer and a zip could therefore never
+    perform a third of the standard procedure. See
+    features/windows-elevated-helper.md.
 
     Like packaging/macos/pkg.sh, this script builds no code. It packages
     target\release\yk-dist-manager.exe and fails if that is missing or is a
@@ -202,22 +207,41 @@ yk-dist-manager $version — what this needs to work on Windows
      It is present on every supported Windows and starts on demand; a disabled
      one makes the PIV applet unreachable and looks exactly like broken hardware.
 
-2. USB HID (FIDO2 and the OTP slots):
-     nothing to install and no driver to sign. Windows may require the
-     application to run elevated to talk to a FIDO2 device; if FIDO2 steps fail
-     while PIV works, that is the thing to try.
+2. The FIDO2 applet:
+     Windows does not let a program that is not elevated open a security key's
+     FIDO2 interface at all — since Windows 10 1903 the operating system keeps
+     those interfaces for its own WebAuthn stack. The key is still *found*, and
+     then will not answer.
 
-3. Camera scanning (optional):
+     So this installer registers a background service that does that work for
+     the application, and you do not need to be an administrator to use the
+     tool:
+       sc query YkDistManagerFido
+     If it is stopped, start it; if it is missing, reinstall. As a stop-gap you
+     can run the application itself as an administrator, but note that an
+     elevated program runs in a different logon session, so a register on a
+     mapped drive may not be reachable from it.
+
+     If a procedure needs the FIDO2 applet and neither is available, the
+     pre-flight refuses the run before it starts rather than stopping part-way
+     through a key.
+
+3. The OTP slots:
+     nothing to install. This tool reaches the OTP applet over the smartcard
+     interface rather than USB HID, so item 1 covers it and the FIDO2
+     restriction above does not apply.
+
+4. Camera scanning (optional):
      reading a serial from a barcode with a webcam uses the camera Windows
      already knows about. Check Settings > Privacy & security > Camera if it
      finds none. A USB barcode scanner needs nothing: it types into the field.
 
-4. SmartScreen:
+5. SmartScreen:
      until this project has an Authenticode certificate the installer and the
      executable are unsigned, so SmartScreen warns the first time each runs:
      *More info* > *Run anyway*.
 
-5. The register itself:
+6. The register itself:
      one SQLite file that you choose or create. It can sit on an SMB share,
      which this tool can connect for you, or in a synchronising folder. The
      installer writes nothing outside its own directory.

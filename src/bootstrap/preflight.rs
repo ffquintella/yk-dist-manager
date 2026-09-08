@@ -12,6 +12,7 @@
 //! state. It writes nothing and touches no hardware, so the wizard can call it as
 //! the operator changes the template.
 
+use crate::device::Fido2Access;
 use crate::domain::{StepKind, YubiKeyRecord};
 use crate::template::Applicability;
 use crate::template::plan::{PlannedCommand, Transport};
@@ -74,6 +75,16 @@ pub struct Preflight<'a> {
     pub applets: &'a AppletSnapshot,
     /// True when this build has a transport that can actually write.
     pub can_write: bool,
+    /// Whether the FIDO2 applet can be reached from this process at all
+    /// (`features/windows-elevated-helper.md` phase 1).
+    ///
+    /// A property of the **workstation**, not of the key or the build, which is
+    /// why it is here rather than inferred from a step: on Windows an ordinary
+    /// process is refused a handle to the FIDO2 interface, and the refusal has to
+    /// arrive before the run starts. A run that reaches step four and stops leaves
+    /// a key carrying a PIV PIN and a management key, and the decision of
+    /// 2026-08-13 says the only way back from that is a factory reset.
+    pub fido2_access: Fido2Access,
     /// Which keys the template says it is for
     /// (`features/bootstrap-templates.md` phase 3).
     ///
@@ -97,6 +108,11 @@ impl Preflight<'_> {
                  `--features native-device`",
             ));
         }
+
+        // Can this workstation reach the FIDO2 applet at all? Asked before
+        // anything about the key, because the answer does not depend on which key
+        // is attached and the operator should not have to select one to be told.
+        findings.extend(self.check_fido2_reachable());
 
         let Some(key) = self.key else {
             findings.push(Finding::new(
@@ -165,6 +181,41 @@ impl Preflight<'_> {
     /// the holder. That is the difference between a run and a reset, and it belongs
     /// on screen before the operator agrees to anything.
     ///
+    /// Can the FIDO2 steps in this plan run on this workstation?
+    ///
+    /// Silent when the plan has no FIDO2 step: a PIV-only procedure on a Windows
+    /// machine with no helper is perfectly able to run, and refusing it would be
+    /// refusing work over a capability it never needed.
+    fn check_fido2_reachable(&self) -> Vec<Finding> {
+        if self.fido2_access.is_usable() {
+            return Vec::new();
+        }
+        let steps: Vec<&str> = self
+            .commands
+            .iter()
+            .filter(|command| applet_of(command.kind) == Some("FIDO2"))
+            .map(|command| command.step_id.as_str())
+            .collect();
+        if steps.is_empty() {
+            return Vec::new();
+        }
+        vec![Finding::new(
+            Severity::Blocking,
+            "",
+            format!(
+                "the FIDO2 applet cannot be reached from this application: Windows does not let a \
+                 process that is not elevated open a security key's FIDO2 interface, and the \
+                 helper service is not answering. {} of this procedure's steps need it ({}). \
+                 Install with the MSI, which registers the helper service, or run this \
+                 application as an administrator. The run is refused rather than started, because \
+                 one that stops part-way leaves a key that has to be factory reset before it can \
+                 be prepared again",
+                steps.len(),
+                steps.join(", ")
+            ),
+        )]
+    }
+
     /// Zero left is **blocking**. Not because the run would damage the key — the
     /// applet is already locked — but because every step that authenticates would
     /// fail, and a confirmed run that could only fail is one nobody should be
@@ -336,19 +387,7 @@ impl Preflight<'_> {
         // one, and before the management read existed neither had a natively
         // identified key. Reading emptiness as a claim is what silently reduced an
         // eleven-step procedure to the PIV steps alone.
-        let applet = match command.kind {
-            StepKind::Fido2Pin
-            | StepKind::Fido2MinPinLength
-            | StepKind::Fido2ForcePinChange
-            | StepKind::Fido2Credential => Some("FIDO2"),
-            StepKind::OtpAccessCode | StepKind::OtpSlotConfig => Some("OTP"),
-            StepKind::PivPinPuk
-            | StepKind::PivManagementKey
-            | StepKind::PivKeygen
-            | StepKind::PivCsr
-            | StepKind::PivCertImport => Some("PIV"),
-            StepKind::Verify => None,
-        };
+        let applet = applet_of(command.kind);
         if let Some(applet) = applet {
             match self.applets.application_enabled(applet) {
                 // Read from the key, just now. This is the answer the pre-flight
@@ -541,6 +580,27 @@ impl Preflight<'_> {
 
 /// Most severe first, then by step, so the screen reads top-down in the order
 /// the operator should care.
+/// Which applet a step writes to, or `None` for one that spans them.
+///
+/// One mapping, read by the per-step application check and by the FIDO2
+/// reachability check. Two copies would drift the moment a step kind is added,
+/// and the consequence of drifting is a step that nothing checks.
+fn applet_of(kind: StepKind) -> Option<&'static str> {
+    match kind {
+        StepKind::Fido2Pin
+        | StepKind::Fido2MinPinLength
+        | StepKind::Fido2ForcePinChange
+        | StepKind::Fido2Credential => Some("FIDO2"),
+        StepKind::OtpAccessCode | StepKind::OtpSlotConfig => Some("OTP"),
+        StepKind::PivPinPuk
+        | StepKind::PivManagementKey
+        | StepKind::PivKeygen
+        | StepKind::PivCsr
+        | StepKind::PivCertImport => Some("PIV"),
+        StepKind::Verify => None,
+    }
+}
+
 fn sorted(mut findings: Vec<Finding>) -> Vec<Finding> {
     findings.sort_by(|a, b| {
         b.severity
@@ -619,6 +679,7 @@ mod tests {
             key: Some(key),
             applets,
             can_write: true,
+            fido2_access: Fido2Access::Direct,
             applicability,
         }
         .run()
@@ -803,6 +864,7 @@ mod tests {
             key: Some(&key),
             applets: &AppletSnapshot::default(),
             can_write: false,
+            fido2_access: Fido2Access::Direct,
             applicability: &Applicability::default(),
         }
         .run();
@@ -821,6 +883,7 @@ mod tests {
             key: None,
             applets: &AppletSnapshot::default(),
             can_write: true,
+            fido2_access: Fido2Access::Direct,
             applicability: &Applicability::default(),
         }
         .run();

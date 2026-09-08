@@ -9,7 +9,7 @@ Requirements per platform (the native transports link against system libraries):
 | Platform | Needs |
 |---|---|
 | macOS | Nothing extra for smartcards — PC/SC is a system framework. Camera scanning needs camera permission; a bundled app must declare `NSCameraUsageDescription` |
-| Windows | The **Smart Card** service running |
+| Windows | The **Smart Card** service running, and — for anything on the **FIDO2 applet** — administrator rights, for the reason [below](#why-windows-needs-administrator-rights-for-the-fido2-applet) |
 | Linux | `pcscd` running, `libpcsclite`, a udev rule granting your user access to the YubiKey HID device, and — for camera scanning — read access to the V4L2 device (usually the `video` group) |
 
 ### Installing a release
@@ -19,15 +19,17 @@ build says which commit it came from — `yk-dist-manager --version` prints
 `0.13.0 (a1b2c3d4e5f6)`, and a build from an uncommitted tree says `-dirty`. If a build on a
 workstation cannot name its commit, it did not come from a release.
 
-**Which artefact to take.** macOS and Windows each ship two, and they are the same build —
-what differs is how it gets onto the machine.
+**Which artefact to take.** macOS ships two, and they are the same build —
+what differs is how it gets onto the machine. **Windows ships one artefact**, the `.msi`: a
+portable zip shipped beside it until 0.18.3, and it went when the FIDO2 helper service arrived,
+because a service can only be installed by an installer and a zip could therefore never perform
+a third of the standard procedure. See below.
 
 | Take | When |
 |---|---|
 | macOS `.pkg` | The machine is managed, or you want the version recorded in a receipt. Installs to `/Applications`; a management tool can push it with nobody at the keyboard |
 | macOS `.dmg` | You administer this Mac yourself and would rather drag the app across |
-| Windows `.msi` | You have administrator rights. Installs to Program Files, adds a Start Menu entry, appears in Programs and Features, and upgrades in place |
-| Windows `.zip` | You have **no** administrator rights. Unzip anywhere and run it |
+| Windows `.msi` | The only Windows artefact. **Installing needs administrator rights**, and that is the only place this tool needs them: it installs to Program Files, adds a Start Menu entry, appears in Programs and Features, upgrades in place, and registers the FIDO2 helper service so that the operators who use it afterwards never need to be elevated |
 | Linux `.deb` / `.tar.gz` | The `.deb` puts the udev rule in place for you; the tarball works on any distribution |
 
 Match the architecture: the macOS `.pkg` names it (`arm64` for Apple silicon, `x86_64` for
@@ -69,9 +71,73 @@ reports *no device* (missing rule), or nothing works at all (`pcscd` not running
 requirements are also in `/usr/share/doc/yk-dist-manager/README.install`, which travels
 inside the artefact.
 
-**Windows.** With the `.msi`, double-click it; it installs per machine to Program Files, adds
-a Start Menu entry, and replaces any earlier version in place. With the `.zip`, unzip
-anywhere and run the executable — no administrator rights needed, and nothing is registered.
+**Windows.** Double-click the `.msi`; it installs per machine to Program Files, adds a Start
+Menu entry, registers the FIDO2 helper service described below, and replaces any earlier
+version in place. **Installing it needs administrator rights, and that is now the only place
+this tool needs them** — the point of the service is that the operators who use the tool
+afterwards do not.
+
+If nobody can install software on the workstation, this tool cannot be run on it. That is a
+deliberate trade rather than an oversight: read the next section for what it buys.
+
+#### Why Windows needs administrator rights for the FIDO2 applet
+
+Since Windows 10 1903 the `hidclass` driver refuses read and write handles to USB HID devices
+on the **FIDO usage page** (`0xF1D0`) to any process that is not elevated. The operating
+system opens those interfaces on behalf of its own WebAuthn stack and hands them to nobody
+else.
+
+The symptom is not the one you would expect. Enumeration **succeeds** — the key is found, and
+it is listed — and the *open* is what fails, with `ERROR_ACCESS_DENIED`. So this does not look
+like a missing key or a bad cable. It looks like a key that is plainly there and will not
+answer.
+
+**It affects the FIDO2 applet and nothing else.** PIV and the OTP slots are reached through
+the **Smart Card** service, over PC/SC and CCID, and the privileged part of that is the
+service's job rather than this application's. So on a Windows workstation where nobody is
+elevated, all of this works normally: the register, the inventory, the holders, the terms and
+receipts, reading a key's serial and firmware, every PIV step, and every OTP step. What fails
+is the whole of the FIDO2 applet:
+
+- the FIDO2 PIN, the minimum-PIN-length policy and the forced PIN change;
+- the initial discoverable credential;
+- signing in as an operator with a security key;
+- the **FIDO2 third of a factory reset** — which matters more than it sounds, because the
+  pre-flight refuses an already-configured key and names the reset as the only way past it.
+
+**Switching transport does not help.** `ykman fido` is refused by Windows for exactly the same
+reason, so *Settings → Device transport → ykman* changes which code is denied, not the answer.
+This is Windows' counterpart to the Linux udev rule — except that Windows has no per-device
+permission to grant, so the only lever is elevation.
+
+**What to do today.** Run the application as an administrator: right-click it, *Run as
+administrator*. One consequence of that is worth knowing before it costs you an afternoon —
+**an elevated process runs in a different logon session**, so a register on a mapped drive, or
+on a share connected as the signed-in user, may simply not be there when you elevate. Keep the
+register on a local path, or on a UNC path the elevated session can authenticate to on its
+own (the SMB card's *account and password* option, rather than *the account I am signed in
+with*).
+
+**What the MSI does about it.** Requiring every operator to run the whole application elevated
+is the wrong trade, so the installer registers a small background service —
+**YkDistManagerFido** — which performs the FIDO2 operations on the application's behalf. The
+elevation is spent **once, at install, by whoever administers the machine**, and never again by
+an operator. Check it with:
+
+```bat
+sc query YkDistManagerFido
+```
+
+`yk-dist-manager --diagnose` reports which of the three situations this workstation is in on its
+`fido2 access:` line: *FIDO2 via the elevated helper* (the normal answer), *FIDO2 direct* (an
+elevated application, or macOS and Linux), or *FIDO2 unavailable*. If a procedure needs the
+FIDO2 applet and none of them is available, the pre-flight **refuses the run before it starts**
+rather than failing at the fourth step — a run that stops part-way leaves a key that has to be
+factory reset before it can be prepared again.
+
+The service is why the Windows `.zip` was withdrawn: a service can only be installed by an
+installer. See
+[`features/windows-elevated-helper.md`](../features/windows-elevated-helper.md).
 
 Both are unsigned until the project has an Authenticode certificate, so SmartScreen warns on
 first run: *More info* → *Run anyway*. Check that the **Smart Card** service is running
@@ -736,7 +802,10 @@ acts on it. With **more than one**, nothing is chosen for you — deliberately:
 
 A device that appears in the list as **could not be read** enumerated but would not describe
 itself. That is a driver or a permission, not a missing key — on Linux check the udev rules,
-on macOS and Windows check that nothing else has the reader open.
+on macOS check that nothing else has the reader open. On **Windows** check that too, but check
+the elevation requirement first: a FIDO2 interface that enumerates and then refuses to open is
+the operating system, not another process, and no amount of closing browsers will change it
+([why](#why-windows-needs-administrator-rights-for-the-fido2-applet)).
 
 Two things worth knowing about the watching itself: it runs only while one of those two
 screens is open (a poll is cheap with the native transport and a subprocess without it, so polling for a
@@ -1078,17 +1147,26 @@ Restore is a file copy. Afterwards, open the copy and run **Audit → Verify cha
 | "… the server or the share name is wrong" | Typo, or the wrong network | Check the name, and that this workstation is on the network the server is on |
 | "Windows already has a connection to this server as another user" | An existing mapping conflicts | `net use \\server\share /delete`, or choose the signed-in account |
 | "… has to be mounted by the system on this platform" | Linux: CIFS needs privilege | Have it mounted from `/etc/fstab` or `autofs`, then open it by path |
+| Windows: the key is listed, and every FIDO2 step fails | `hidclass` refuses FIDO HID handles to a process that is not elevated, and the helper service is not answering | `sc query YkDistManagerFido`; start it if it is stopped, reinstall the MSI if it is absent. As a stop-gap run the application as administrator — and keep the register off a mapped drive while you do, because an elevated process is a different logon session ([why](#why-windows-needs-administrator-rights-for-the-fido2-applet)) |
+| Windows: "the helper service speaks a different protocol" in the log | An upgrade replaced the files and did not restart the service | Restart it: `sc stop YkDistManagerFido` then `sc start YkDistManagerFido`. The installer stops it on upgrade, so this means the stop did not take |
+| Windows: "another process may hold it" on a FIDO2 operation, and closing everything does not help | The message is wrong on Windows: nothing holds it, the OS refuses the handle | Same answer — elevation. Corrected in a later release |
 
 ## Runbook: no key detected
 
 1. Is exactly one key plugged in? Two attached keys are refused deliberately.
-2. Is the smartcard service running (Windows *Smart Card*, Linux `pcscd`)?
+2. Is the smartcard service running (Windows *Smart Card*, Linux `pcscd`)? On Windows, if the
+   key reads but every **FIDO2** step fails, that is a different service —
+   `sc query YkDistManagerFido` — and a different cause
+   ([why](#why-windows-needs-administrator-rights-for-the-fido2-applet)).
 3. Does `ykman list --serials` see it? If `ykman` sees it and the tool does not, that is a
    transport bug worth reporting with the log. Say which transport was live — the status
    bar's `via:` item — because "native does not see it and `ykman` does" and "neither
    sees it" are different faults. Switching transport in **Settings → Device transport**
    is the fastest way to tell them apart.
-4. On Linux, check the udev rule for HID access.
+4. On Linux, check the udev rule for HID access. **On Windows, if the key is listed but
+   FIDO2 operations fail**, that is the elevation requirement rather than a fault — see
+   [why Windows needs administrator rights](#why-windows-needs-administrator-rights-for-the-fido2-applet).
+   PIV and OTP working while FIDO2 does not is the signature of it.
 5. Is another application holding the reader exclusively (a browser mid-WebAuthn, GnuPG's
    scdaemon)? Close it and retry.
 

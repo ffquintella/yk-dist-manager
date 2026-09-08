@@ -41,6 +41,11 @@ $ErrorActionPreference = 'Stop'
 $ExpectedUpgradeCode = '{132275B3-F866-4BE4-BC2F-87090EAD2FB7}'
 $ExpectedProductName = 'YubiKey Distribution Manager'
 $ShortcutName = 'YubiKey Distribution Manager.lnk'
+# The service the MSI registers (features/windows-elevated-helper.md). Duplicated
+# here for the same reason as the UpgradeCode above: a check that read the name out
+# of Package.wxs would agree with any edit, including one that renames the service
+# and leaves the previous one behind on every upgraded machine.
+$ServiceName = 'YkDistManagerFido'
 $Binary = 'yk-dist-manager'
 
 $failed = $false
@@ -299,6 +304,45 @@ try {
                 Pass "the installed binary reports $cargoVersion"
             }
 
+            # The elevated FIDO2 helper service
+            # (features/windows-elevated-helper.md). Asserted here because an MSI's
+            # ServiceInstall is *authored*: a clean build proves the XML parsed, not
+            # that Windows ended up with a service. And it is installed Vital="no",
+            # so a failure to register it does not fail the install — which is the
+            # right behaviour for an operator and exactly what would let this
+            # regress silently.
+            $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+            if (-not $service) {
+                Fail "the install registered no $ServiceName service"
+            }
+            else {
+                Pass "the $ServiceName service is registered"
+                # Auto-start, or an operator who reboots loses FIDO2 until somebody
+                # starts it by hand.
+                $config = Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'"
+                if ($config.StartMode -ne 'Auto') {
+                    Fail "the service starts $($config.StartMode), not automatically"
+                }
+                else {
+                    Pass 'the service starts automatically'
+                }
+                # It must point at the installed executable with the service flag —
+                # a service whose ImagePath lost the argument would start a GUI with
+                # no window station and sit there.
+                if ($config.PathName -notmatch '--windows-service') {
+                    Fail "the service command line is missing --windows-service: $($config.PathName)"
+                }
+                else {
+                    Pass 'the service runs the installed binary with --windows-service'
+                }
+                if ($service.Status -ne 'Running') {
+                    Warn "the service is $($service.Status) rather than Running — expected on a host with no USB stack"
+                }
+                else {
+                    Pass 'the service is running'
+                }
+            }
+
             # Which commit it came from — a warning locally, a failure for a release,
             # the same rule the macOS and Linux verifiers apply.
             $commitLine = $report | Where-Object { $_ -match '^commit:' } | Select-Object -First 1
@@ -342,6 +386,16 @@ try {
         }
         else {
             Pass 'uninstall removed the Start Menu shortcut'
+        }
+
+        # The worst outcome available in this feature: a LocalSystem service that
+        # survives an uninstall. Nothing on the machine would point at it any more,
+        # and it would still be listening on its pipe.
+        if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
+            Fail "uninstall left the $ServiceName service registered"
+        }
+        else {
+            Pass 'uninstall removed the FIDO2 helper service'
         }
     }
 

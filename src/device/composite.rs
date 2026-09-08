@@ -24,6 +24,12 @@ pub struct NativeBackend {
     serial: u32,
     #[cfg(feature = "native-fido")]
     fido2: super::native_fido::NativeFido2,
+    /// The same applet, reached through the elevated service
+    /// (`features/windows-elevated-helper.md`). Built on Windows whether or not it
+    /// will be used, because deciding that per call is cheaper than deciding it
+    /// per construction and the object holds nothing but a serial.
+    #[cfg(all(windows, feature = "native-fido"))]
+    helper: super::helper::client::HelperFido2,
     #[cfg(feature = "native-piv")]
     piv: super::native_piv::NativePiv,
 }
@@ -34,6 +40,8 @@ impl NativeBackend {
             serial,
             #[cfg(feature = "native-fido")]
             fido2: super::native_fido::NativeFido2::for_key(serial),
+            #[cfg(all(windows, feature = "native-fido"))]
+            helper: super::helper::client::HelperFido2::for_key(serial),
             #[cfg(feature = "native-piv")]
             piv: super::native_piv::NativePiv::for_key(serial),
         }
@@ -42,6 +50,24 @@ impl NativeBackend {
     /// Does this build have any transport at all?
     pub const fn is_available() -> bool {
         cfg!(any(feature = "native-fido", feature = "native-piv"))
+    }
+
+    /// Which FIDO2 transport this session uses — **decided in one place**.
+    ///
+    /// Seven methods route through here rather than each choosing for itself, and
+    /// that is deliberate. `features/native-device-transport.md` phase 4a records
+    /// what the alternative costs: the OTP read had three call sites, two were
+    /// converted, and the third — the executor's — went on shelling out and failed
+    /// a real run three steps in. A transport that exists is not a transport that
+    /// is used, and the way to keep the two the same is to have one place where
+    /// the choice is made.
+    #[cfg(feature = "native-fido")]
+    fn fido(&mut self) -> &mut dyn Fido2Writer {
+        #[cfg(windows)]
+        if super::elevation::access() == super::elevation::Fido2Access::Helper {
+            return &mut self.helper;
+        }
+        &mut self.fido2
     }
 }
 
@@ -52,7 +78,7 @@ fn unavailable(operation: &'static str, feature: &'static str) -> WriteError {
 impl Fido2Writer for NativeBackend {
     fn fido2_state(&mut self, serial: u32) -> Result<Fido2State> {
         #[cfg(feature = "native-fido")]
-        return self.fido2.fido2_state(serial);
+        return self.fido().fido2_state(serial);
         #[cfg(not(feature = "native-fido"))]
         {
             let _ = serial;
@@ -62,7 +88,7 @@ impl Fido2Writer for NativeBackend {
 
     fn set_pin(&mut self, serial: u32, new: &Secret) -> Result<()> {
         #[cfg(feature = "native-fido")]
-        return self.fido2.set_pin(serial, new);
+        return self.fido().set_pin(serial, new);
         #[cfg(not(feature = "native-fido"))]
         {
             let _ = (serial, new);
@@ -72,7 +98,7 @@ impl Fido2Writer for NativeBackend {
 
     fn change_pin(&mut self, serial: u32, current: &Secret, new: &Secret) -> Result<()> {
         #[cfg(feature = "native-fido")]
-        return self.fido2.change_pin(serial, current, new);
+        return self.fido().change_pin(serial, current, new);
         #[cfg(not(feature = "native-fido"))]
         {
             let _ = (serial, current, new);
@@ -82,7 +108,7 @@ impl Fido2Writer for NativeBackend {
 
     fn set_min_pin_length(&mut self, serial: u32, length: u8, pin: &Secret) -> Result<()> {
         #[cfg(feature = "native-fido")]
-        return self.fido2.set_min_pin_length(serial, length, pin);
+        return self.fido().set_min_pin_length(serial, length, pin);
         #[cfg(not(feature = "native-fido"))]
         {
             let _ = (serial, length, pin);
@@ -92,7 +118,7 @@ impl Fido2Writer for NativeBackend {
 
     fn force_pin_change(&mut self, serial: u32, pin: &Secret) -> Result<()> {
         #[cfg(feature = "native-fido")]
-        return self.fido2.force_pin_change(serial, pin);
+        return self.fido().force_pin_change(serial, pin);
         #[cfg(not(feature = "native-fido"))]
         {
             let _ = (serial, pin);
@@ -107,7 +133,7 @@ impl Fido2Writer for NativeBackend {
         pin: &Secret,
     ) -> Result<CredentialEvidence> {
         #[cfg(feature = "native-fido")]
-        return self.fido2.make_credential(serial, request, pin);
+        return self.fido().make_credential(serial, request, pin);
         #[cfg(not(feature = "native-fido"))]
         {
             let _ = (serial, request, pin);
@@ -121,7 +147,7 @@ impl Fido2Writer for NativeBackend {
         pin: &Secret,
     ) -> Result<super::write::AssertionEvidence> {
         #[cfg(feature = "native-fido")]
-        return self.fido2.get_assertion(serial, request, pin);
+        return self.fido().get_assertion(serial, request, pin);
         #[cfg(not(feature = "native-fido"))]
         {
             let _ = (serial, request, pin);

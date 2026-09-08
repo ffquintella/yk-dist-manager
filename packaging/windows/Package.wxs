@@ -3,12 +3,19 @@
   The MSI, for WiX 6 (`wix build`; see msi.ps1, which is the only thing meant to
   invoke this).
 
-  Why an MSI and not only the zip: the zip stays, because it is the artefact for an
-  operator who cannot install software on their own machine — unzip it anywhere and
-  run it. The MSI is for the other half of that: it installs to Program Files with a
-  Start Menu entry, it appears in Programs and Features so a machine can be asked
-  what version it has, it upgrades in place, and it can be pushed by Group Policy or
-  Intune with nobody at the keyboard. Neither artefact can do the other's job.
+  Why an MSI: it installs to Program Files with a Start Menu entry, it appears in
+  Programs and Features so a machine can be asked what version it has, it upgrades
+  in place, and it can be pushed by Group Policy or Intune with nobody at the
+  keyboard.
+
+  **On Windows it is now the only artefact** (decided 2026-09-08). A portable zip
+  shipped beside it until then, for the operator who cannot install software on
+  their own machine. The elevated FIDO2 helper below ended that: a service can only
+  be installed by an installer, so the zip would be permanently unable to perform a
+  third of the standard procedure plus the factory reset. features/packaging-and-
+  release.md justifies two artefacts per platform on the grounds that they have
+  *identical capabilities*, and warns in the same bullet against shipping two that
+  do not — so withdrawing it is that rule applied. macOS and Linux keep both.
 
   Deliberate choices, each of which has a failure mode behind it:
 
@@ -27,9 +34,21 @@
     is what somebody double-clicking an installer expects. It is also what makes
     the silent install (`msiexec /qn INSTALLFOLDER=...`) meaningful, which is how
     verify-msi.ps1 checks the thing.
-  * No file association, no service, no PATH entry, no registry beyond what the
-    installer needs. The tool reads and writes one SQLite file that the operator
-    chooses; there is nothing here to configure.
+  * No file association, no PATH entry, no registry beyond what the installer
+    needs. The tool reads and writes one SQLite file that the operator chooses;
+    there is nothing here to configure.
+  * **One service** (features/windows-elevated-helper.md).
+    This bullet used to say "no service", and that was right until Windows made it
+    impossible: `hidclass` refuses a process that is not elevated any handle to a
+    security key's FIDO2 interface, so an ordinary operator running this
+    application cannot set a FIDO2 PIN, create the initial credential or perform
+    the FIDO2 third of a factory reset. There is no per-device permission to grant
+    the way Linux has, and `ykman fido` is refused for the same reason, so the only
+    lever is elevation. Demanding it of every operator, at every key, is the wrong
+    trade; spending it **once, here, by the account that is already installing
+    software** is the right one. That is also why the portable zip was withdrawn on
+    Windows (decided 2026-09-08): a service can only be installed by an installer,
+    so a zip could never do a third of the procedure.
 
   There is no `Manufacturer` naming an institution, and there cannot be: the
   application carries no organisation's name — that is the operator's setting
@@ -106,10 +125,56 @@
               WorkingDirectory="INSTALLFOLDER"
               Advertise="no" />
         </File>
+
+        <!-- The elevated FIDO2 helper (features/windows-elevated-helper.md).
+             The same executable as the GUI, started with a flag: two files would
+             mean the running service could be a different build from the
+             application that just replaced it, and would need a second
+             Authenticode signature.
+
+             Four attributes carry decisions rather than defaults:
+
+             * Account="LocalSystem" is what certainly holds the privilege. It is
+               more privilege than the job needs, and a virtual service account
+               (NT SERVICE\YkDistManagerFido) is the intended end state — whether
+               one can open the FIDO interface cannot be determined without a
+               Windows host and a key, so it is phase 6 rather than a guess here.
+             * Vital="no" so a service that will not install or start does not fail
+               the whole installation. The application is useful without it — the
+               register, PIV and OTP all work — and it says on the pre-flight
+               screen which steps it cannot perform. An installer that refuses to
+               put the tool on the machine at all would be a worse answer to the
+               same fault.
+             * Start="install" with Stop="both": started when installed, and
+               stopped on the way *out* of both an uninstall and the removal half
+               of a MajorUpgrade. That pairing is what restarts it on upgrade,
+               which is the one case the protocol's version handshake exists to
+               catch — a service left running from the previous build.
+             * Remove="uninstall". A LocalSystem service surviving an uninstall is
+               the worst outcome available here, and verify-msi.ps1 asserts it is
+               gone. -->
+        <ServiceInstall
+            Id="Fido2HelperService"
+            Name="YkDistManagerFido"
+            DisplayName="YubiKey Distribution Manager FIDO2 helper"
+            Description="Performs FIDO2 operations on an attached YubiKey for the YubiKey Distribution Manager, which Windows does not permit an unelevated application to do."
+            Type="ownProcess"
+            Start="auto"
+            Account="LocalSystem"
+            ErrorControl="normal"
+            Arguments="--windows-service"
+            Vital="no" />
+        <ServiceControl
+            Id="Fido2HelperControl"
+            Name="YkDistManagerFido"
+            Start="install"
+            Stop="both"
+            Remove="uninstall"
+            Wait="yes" />
       </Component>
 
       <!-- The licence and the changelog travel with the build, as they do in the
-           zip and in the Linux packages, and README.install is the Windows copy of
+           macOS and Linux packages, and README.install is the Windows copy of
            the notes that have to be in front of somebody at the machine rather
            than only in docs/operations.md. -->
       <Component>

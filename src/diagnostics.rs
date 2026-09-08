@@ -21,6 +21,13 @@ pub enum Invocation {
     Diagnose,
     /// Print usage and exit.
     Help,
+    /// Run as the elevated Windows FIDO2 helper service
+    /// (`features/windows-elevated-helper.md`).
+    ///
+    /// Accepted on every platform so that the parser has one behaviour to test
+    /// everywhere; `main` is what refuses it off Windows. A flag that only existed
+    /// on one platform would be a parser branch CI could not exercise.
+    WindowsService,
     /// An argument we do not understand; the text is echoed back.
     Unknown(&'static str),
 }
@@ -36,6 +43,11 @@ where
             "--version" | "-V" => return Invocation::Version,
             "--diagnose" | "--doctor" => return Invocation::Diagnose,
             "--help" | "-h" => return Invocation::Help,
+            // Deliberately absent from `USAGE`: it is not an option an operator
+            // chooses, it is how the service-control manager starts the service the
+            // MSI registered. Listing it would invite somebody to run it by hand,
+            // where there is no dispatcher to connect to.
+            crate::device::helper::SERVICE_ARG => return Invocation::WindowsService,
             other if other.starts_with('-') => {
                 // Leaked so the variant can stay `Copy`; this path ends the process.
                 return Invocation::Unknown(Box::leak(other.to_owned().into_boxed_str()));
@@ -173,6 +185,14 @@ pub struct Report {
     /// The first question about a register on a file server that will not open is
     /// which of the two situations the workstation is in: this build connects the
     /// share, or the share has to be there already.
+    /// How this process reaches the FIDO2 applet
+    /// (`features/windows-elevated-helper.md`).
+    ///
+    /// The first question about a Windows workstation where PIV works and every
+    /// FIDO2 step fails, and the one an operator cannot answer by looking at the
+    /// screen: whether they are elevated, whether the helper service is running,
+    /// or neither.
+    pub fido2_access: &'static str,
     pub smb_connector: String,
     pub smb_can_connect: bool,
     /// SMB shares this workstation has opened the register from, and as whom.
@@ -234,6 +254,7 @@ impl Report {
                 .map(|path| path.display().to_string())
                 .collect(),
             database: effective.display().to_string(),
+            fido2_access: crate::device::elevation::access().describe(),
             smb_connector: crate::store::smb::platform_connector().label().to_owned(),
             credential_store: credential_store_state(),
             smb_can_connect: crate::store::smb::can_connect(),
@@ -331,6 +352,7 @@ impl Report {
                 self.database_conflicts.join(", ")
             );
         }
+        let _ = writeln!(out, "fido2 access:      {}", self.fido2_access);
         let _ = writeln!(
             out,
             "smb shares:        {} ({})",
@@ -437,6 +459,7 @@ mod tests {
             database_on_cloud_sync: false,
             database_lock: None,
             database_conflicts: Vec::new(),
+            fido2_access: crate::device::Fido2Access::Direct.describe(),
             smb_connector: "NetFS (macOS)".into(),
             credential_store: "the macOS Keychain (reachable)".into(),
             smb_can_connect: true,

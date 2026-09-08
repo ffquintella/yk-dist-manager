@@ -16,6 +16,87 @@ Maintenance instructions (see AGENTS.md §5):
 * A database schema change also bumps store::SCHEMA_VERSION and ships a migration.
 -->
 
+## [0.19.0] - 2026-09-08
+
+### Added
+
+- **Windows: an elevated helper service, so FIDO2 works without an elevated operator**
+  (`features/windows-elevated-helper.md`, phases 1–5). Since Windows 10 1903 the `hidclass`
+  driver refuses read/write handles on the FIDO usage page (`0xF1D0`) to any process that is not
+  elevated, so **every FIDO2 operation and the FIDO2 third of a factory reset failed on
+  Windows** — the FIDO2 PIN, the minimum-length policy, the forced PIN change, the initial
+  discoverable credential and operator sign-in by security key. `ykman fido` is refused for the
+  same reason, so the labelled fallback rescued nothing, and Windows has no equivalent of the
+  Linux udev rule. The MSI now registers **YkDistManagerFido**, which performs those operations
+  for the application over a local named pipe: the elevation is spent once, at install, by
+  whoever administers the machine, and never again by an operator.
+
+  What keeps a `LocalSystem` service from being a way in: its request type is a **closed enum of
+  eight operations** — no APDU passthrough, no generic verb, no path, no database, no audit
+  chain, no network; the pipe sets `PIPE_REJECT_REMOTE_CLIENTS` **and** an SDDL descriptor that
+  denies `NETWORK` and `ANONYMOUS` and admits only an interactive logon session (a named pipe is
+  otherwise reachable as `\\host\pipe\name` over SMB); one caller is served at a time; the PIN
+  travels in the message, never in argv, redacts its `Debug`, is zeroised on both sides including
+  the receive buffer, and is **re-validated by the privileged side**. And every mutating
+  operation needs the operator to touch the key, which is the control the rest rests on —
+  asserted per variant so it cannot be quietly outgrown.
+
+  The service is this same executable started with a hidden `--windows-service`, not a second
+  file: two files could drift in version across an in-place upgrade, and would need a second
+  Authenticode signature.
+
+### Changed
+
+- **A procedure that needs FIDO2 is now refused before it starts** when nothing can reach the
+  applet, instead of failing at the fourth step. `WriteError::ElevationRequired` is asked from
+  the process token *before* the HID open rather than guessed from `hidapi`'s message
+  afterwards, and the pre-flight turns it into a blocking finding that names the steps that
+  cannot run. This is the failure shape recorded in `native-device-transport.md` phase 4a one
+  applet along: a run that stops part-way leaves a key carrying a PIV PIN and a management key,
+  and the decision of 2026-08-13 says the only way back is a factory reset. A PIV-only procedure
+  is **not** refused.
+- `--diagnose` reports a `fido2 access:` line — *via the elevated helper*, *direct*, or
+  *unavailable*. New audit entries `device.helper.selected` (on opening a register, when the
+  answer is not the plain one) and `device.helper.refused`.
+- **Documented why Windows needs administrator rights for the FIDO2 applet.** The failure had
+  never been written down and presents misleadingly: enumeration *succeeds* and the open is what
+  fails, so the key is listed and then will not answer — and `ctaphid`'s message blamed another
+  process when nothing held it. `docs/operations.md` now carries the mechanism, its exact scope
+  (PIV and the OTP slots are unaffected, because PC/SC and CCID reach them through the Smart
+  Card service), the interim answer, and the consequence of that which costs an afternoon: an
+  elevated process is a different logon session, so a register on a mapped drive may not be
+  reachable from it. Also in the requirements and artefact tables, the no-key-detected runbook,
+  the troubleshooting table and `docs/yubikey-reference.md`.
+
+### Removed
+
+- **The Windows portable `.zip`.** It shipped for the operator who cannot install software, on
+  the premise stated in `features/packaging-and-release.md` that the two artefacts per platform
+  have *identical capabilities* — and that bullet warns in the same breath against shipping two
+  that do not. The helper broke the premise on Windows: a service can only be installed by an
+  installer, so a zip could never perform a third of the standard procedure. Withdrawing it is
+  that rule applied. **On Windows the tool now requires somebody who can run the MSI once**;
+  macOS and Linux keep both artefacts, because nothing on either needs privilege the running
+  operator does not already have.
+
+### Security
+
+- The pipe's security descriptor is a single SDDL string in `device::helper`, compiled and
+  tested on **every** platform rather than only inside the `#[cfg(windows)]` module, because it
+  is the one line in this feature where a mistake is exploitable from another machine.
+
+---
+
+Core line coverage **86.50%** (85.91% region), up from 86.41% — `make coverage-core` on the
+full `--all-features` suite. Around 1,300 lines added, most of them Windows-only FFI no test
+can reach, and the figure still rose: the decisions are pure and covered on every platform,
+and the FFI is `#[cfg(windows)]` so a macOS measurement never compiles it. Validation: `cargo
+test` 1,167 passed / 0 failed / 7 ignored; `cargo clippy --all-targets --all-features -- -D
+warnings` clean. The Windows-only files were compiled and linted against
+`x86_64-pc-windows-msvc` in a scratch probe crate, since bundled SQLite blocks
+cross-compiling this crate — **not** run: nothing in this feature has met a Windows host or a
+key, which is phase 6 and the ESI gate.
+
 ## [0.18.3] - 2026-09-03
 
 ### Fixed

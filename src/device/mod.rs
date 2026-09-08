@@ -28,6 +28,11 @@ pub mod csr;
 /// The three CTAPHID frames a FIDO2 factory reset needs. Behind `native-fido`
 /// for the HID device; the framing itself is pure and always tested.
 pub mod ctaphid;
+/// Whether this process may open the FIDO2 interface at all
+/// (`features/windows-elevated-helper.md`).
+pub mod elevation;
+/// The elevated FIDO2 helper: protocol, client and Windows service.
+pub mod helper;
 /// The management applet — form factor, per-application enable flags, FIPS state.
 /// The parser is always compiled; only the card exchange needs `native-piv`.
 pub mod mgmt;
@@ -59,6 +64,7 @@ pub mod write;
 pub mod ykman;
 
 pub use applets::Snapshot as AppletStates;
+pub use elevation::Fido2Access;
 pub use mock::MockBackend;
 #[cfg(feature = "native-piv")]
 pub use native::NativeBackend;

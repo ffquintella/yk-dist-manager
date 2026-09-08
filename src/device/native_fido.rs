@@ -63,6 +63,14 @@ impl NativeFido2 {
     /// the operating system's own security-key UI from working for the whole
     /// hand-over.
     fn open(&self, operation: &'static str) -> Result<FidoKeyHid> {
+        // See [`super::ctaphid`]: on Windows the device enumerates and the open is
+        // refused, so the question is asked from the process token rather than
+        // guessed from whatever message the crate composes
+        // (`features/windows-elevated-helper.md` phase 1).
+        if !super::elevation::direct_open_permitted() {
+            return Err(WriteError::ElevationRequired { operation });
+        }
+
         FidoKeyHidFactory::create(&self.cfg).map_err(|e| {
             let message = e.to_string();
             if message.contains("not found") {

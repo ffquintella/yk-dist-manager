@@ -230,24 +230,17 @@ jobs:
         shell: pwsh
         run: cargo build --release --features $env:YKDM_FEATURES
 
-      # The zip is the portable artefact: it needs no administrator rights, which is
-      # the case an operator who cannot install software on their own workstation is
-      # in. It is built from its own staging directory, so nothing the MSI step
-      # writes into target\windows can end up inside it.
-      #
-      # Both artefacts land in target\windows so that the two upload globs below
-      # share an ancestor: `upload-artifact` roots an artefact at the least common
-      # ancestor of everything it matched, so target\*.zip plus
-      # target\windows\*.msi would have put the MSI in a subdirectory and the
-      # release step's glob would have quietly missed it.
-      - name: Package the portable zip
-        shell: pwsh
-        run: |
-          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"').Matches[0].Groups[1].Value
-          New-Item -ItemType Directory -Force -Path target\windows\portable | Out-Null
-          Copy-Item target\release\yk-dist-manager.exe target\windows\portable\
-          Copy-Item LICENSE, CHANGELOG.md target\windows\portable\
-          Compress-Archive -Path target\windows\portable\* -DestinationPath "target\windows\yk-dist-manager-$version-x86_64-windows.zip" -Force
+      # There is no portable zip on Windows any more (decided 2026-09-08,
+      # features/windows-elevated-helper.md). It shipped here until 0.18.3 for the
+      # operator who cannot install software on their own workstation, on the
+      # premise — stated in features/packaging-and-release.md — that the two
+      # artefacts have *identical capabilities*. The elevated FIDO2 helper ended
+      # that: Windows refuses an unelevated process any handle to a security key's
+      # FIDO2 interface, the answer is a service, and a service can only be
+      # installed by an installer. A zip would have been permanently unable to set a
+      # FIDO2 PIN, create the initial credential or perform the FIDO2 third of a
+      # factory reset. macOS and Linux keep both artefacts; nothing on either needs
+      # privilege the running operator does not already have.
 
       # The same interrogation the other two platforms make: a binary that cannot
       # start says so here rather than at somebody's desk.
@@ -257,10 +250,11 @@ jobs:
 
       # Authenticode is phase 4 and is still blocked on a certificate, so the
       # installer ships unsigned and SmartScreen warns on first run. That used to be
-      # the argument for shipping no installer at all; it is not, because the two
-      # artefacts answer to different people — a zip cannot be pushed to a fleet,
-      # cannot say in Programs and Features what version a machine has, and cannot
-      # upgrade in place.
+      # the argument for shipping no installer at all; it is not, and now less than
+      # ever — the installer is the only Windows artefact, it can be pushed to a
+      # fleet, it says in Programs and Features what version a machine has, it
+      # upgrades in place, and it is what registers the FIDO2 helper service. The
+      # certificate matters more for a privileged service than it did for a GUI.
       - name: Build the installer
         shell: pwsh
         env:
@@ -286,7 +280,6 @@ jobs:
         with:
           name: windows
           path: |
-            target/windows/*.zip
             target/windows/*.msi
 
   draft:

@@ -36,6 +36,27 @@ fn main() -> eframe::Result {
             print!("{}", diagnostics::Report::gather().render());
             return Ok(());
         }
+        Invocation::WindowsService => {
+            // The elevated FIDO2 helper
+            // (`features/windows-elevated-helper.md` phase 3). Logging first,
+            // because a service has no console to print to and the log is the
+            // only place its life is visible.
+            #[cfg(windows)]
+            {
+                logging::init();
+                let code = yk_dist_manager::device::helper::service::run();
+                std::process::exit(code);
+            }
+            #[cfg(not(windows))]
+            {
+                eprintln!(
+                    "yk-dist-manager: the FIDO2 helper service exists only on Windows, where the \
+                     operating system refuses an unelevated process a handle to a security key. \
+                     On this platform the application talks to the key directly."
+                );
+                std::process::exit(2);
+            }
+        }
         Invocation::Unknown(arg) => {
             eprintln!("yk-dist-manager: unrecognised option `{arg}`");
             eprint!("{}", diagnostics::USAGE);

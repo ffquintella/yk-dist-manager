@@ -778,6 +778,23 @@ impl Resetter for HardwareResetter {
 
         match applet {
             Applet::Fido2 => {
+                // On Windows an ordinary process is refused a handle to the FIDO2
+                // interface, so the frames are sent by the elevated helper instead
+                // (`features/windows-elevated-helper.md`). Still the same three
+                // CTAPHID frames, and still `Transport::Native` in the plan and the
+                // status bar: the helper is not a transport the operator chose, it
+                // is where this platform makes the native transport live.
+                #[cfg(windows)]
+                if native && super::elevation::access() == super::elevation::Fido2Access::Helper {
+                    return super::helper::client::HelperFido2::for_key(serial)
+                        .reset()
+                        .map(|()| {
+                            Done::written(
+                                "FIDO2 reset over CTAPHID, through the elevated helper: every \
+                                 credential and the PIN are gone",
+                            )
+                        });
+                }
                 if native {
                     return super::ctaphid::reset(serial, "fido2.reset").map(|()| {
                         Done::written(

@@ -60,6 +60,20 @@ pub enum WriteError {
         operation: &'static str,
         feature: &'static str,
     },
+    /// Windows refuses this process a handle to the FIDO2 interface, and no
+    /// elevated helper is answering
+    /// (`features/windows-elevated-helper.md` phase 1).
+    ///
+    /// A separate variant rather than a [`Self::Failed`] with a good message,
+    /// because the pre-flight has to be able to *recognise* it: this is the one
+    /// refusal that must be raised before a run starts rather than discovered at
+    /// the fourth step, with a PIV PIN already written to the key.
+    #[error(
+        "{operation} cannot run: Windows does not allow this process to open the security key's \
+         FIDO2 interface. Install with the MSI, which registers the helper service that can, or \
+         run this application as an administrator"
+    )]
+    ElevationRequired { operation: &'static str },
     #[error("the key was removed during {operation}")]
     Detached { operation: &'static str },
     #[error("{operation} failed: {reason}")]
@@ -93,8 +107,10 @@ impl WriteError {
     ///   the value will be just as wrong the second time. Three attempts at a
     ///   mistyped PIV PIN is how a PIN gets blocked.
     /// * [`Self::Locked`] — the applet needs a reset, not another go.
-    /// * [`Self::Unsupported`] and [`Self::TransportUnavailable`] — deterministic
-    ///   facts about this key and this build.
+    /// * [`Self::Unsupported`], [`Self::TransportUnavailable`] and
+    ///   [`Self::ElevationRequired`] — deterministic facts about this key, this
+    ///   build and this workstation. A second attempt from the same process meets
+    ///   the same operating system.
     /// * [`Self::NotAttached`] and [`Self::Detached`] — there is nothing to retry
     ///   against, and these already stop the run outright.
     ///

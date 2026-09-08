@@ -35,6 +35,7 @@ Dependency direction is downward only: `ui` → `app` → {`bootstrap`, `templat
 | `store::{backup,import,presence}` | `src/store/` | Backups, import, who else has the file open | `store` | `behaviour_storage`, `unit_store` |
 | `audit` | `src/audit/` | Hash-chained entries, verification, file sink | — (bottom of the chain; `store` uses it, never the reverse) | `unit_audit`, `property_audit_and_escaping` |
 | `device` | `src/device/` | Hardware behind `YubiKeyBackend` / `WriteBackend`; `select` picks the transport | `domain`, `secret` | `unit_device_backends`, `unit_ykman_parse`, `behaviour_key_reset`, `behaviour_applet_state_and_refusal`, `behaviour_app_transport` |
+| `device::{elevation,helper}` | `src/device/elevation.rs`, `src/device/helper/` | Whether this process may open the FIDO2 interface, and the elevated Windows service that can when it may not | `device`, `secret` | `unit_device_helper`, `behaviour_windows_helper` |
 | `device::{certificate,csr,tlv}` | `src/device/` | X.509 read/check, PKCS#10 build, BER-TLV walk — pure, no card | `domain` | `behaviour_certificate_import`, `interop_csr_san` *(ignored)* |
 | `template` | `src/template/` | Templates, rendering, draft, applicability, diff, plan, Ed25519 signature | `domain` | `unit_template`, `behaviour_templates`, `behaviour_app_template_signing`, `interop_template_signing` *(ignored)* |
 | `bootstrap` | `src/bootstrap/` | Pre-flight findings and the step executor | `device`, `template`, `domain` | `behaviour_executor`, `behaviour_bootstrap`, `behaviour_applet_state_and_refusal` |
@@ -334,14 +335,26 @@ make coverage-core     # THE GATE: cargo llvm-cov --all-features --fail-under-li
 make coverage-html     # browsable, when you need to find the gap
 ```
 
-Current: **86.41%** core line coverage (85.82% region), measured 2026-08-31 by
-`make coverage-core` on the full `--all-features` suite — the run that gated
-0.18.1.
+Current: **86.50%** core line coverage (85.91% region), measured 2026-09-08 by
+`make coverage-core` on the full `--all-features` suite — the run that gated the
+Windows elevated FIDO2 helper.
 
-Two thirds of a point *above* the figure this replaces, and nothing in 0.18.1
-earned it: that release is a paint-only fix in `src/ui/`, which the measurement
-excludes. The operator-authentication work in 0.18.0 earned it and did not restate
-it — drift upwards is still drift, and §4 asks for the number either way.
+Up a tenth of a point, and the *shape* of that is the interesting part rather than
+the size. `features/windows-elevated-helper.md` added around 1,300 lines, most of
+them Windows-only FFI that no test can reach — and it moved the number **up**,
+because the split it was designed around is the one §4 asks for: the decisions are
+pure (the request enum, the frame bounds, the access decision, the security
+descriptor's text) and are covered on every platform, while the pipe, the service
+dispatcher and the token query are `#[cfg(windows)]` and are therefore not compiled
+by a macOS measurement at all. Untestable code that is *elsewhere* does not dilute
+this figure; untestable code mixed into a covered module does. That is the argument
+for the boundary, and the number is the evidence.
+
+The 86.41% this replaces was two thirds of a point above the figure before *it*,
+and nothing in 0.18.1 earned that: the release was a paint-only fix in `src/ui/`,
+which the measurement excludes. The operator-authentication work in 0.18.0 earned
+it and did not restate it — drift upwards is still drift, and §4 asks for the
+number either way.
 
 The 85.76% this replaces was itself half a point below the figure before it, for
 the usual reason in this repository: `piv.create_csr` and `piv.import_certificate`

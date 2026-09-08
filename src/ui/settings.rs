@@ -731,6 +731,34 @@ fn transport_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
         ui.add_space(8.0);
         super::faint(ui, &format!("Now using: {}.", app.transport.describe()));
 
+        // How this process reaches the **FIDO2 applet**, which on Windows is a
+        // different question from which transport reads the key
+        // (`features/windows-elevated-helper.md`). Shown here rather than folded
+        // into `Choice::describe`, because that string is audited as
+        // `device.transport.selected` and it answers a question this does not: the
+        // transport is the operator's choice, and this is the operating system's.
+        let access = crate::device::elevation::access();
+        ui.add_space(4.0);
+        super::faint(ui, &format!("FIDO2 applet: {}.", access.describe()));
+
+        if !access.is_usable() {
+            ui.add_space(8.0);
+            super::notice(
+                ui,
+                CalloutTone::Warning,
+                "Windows does not let a program that is not elevated open a security key's FIDO2 \
+                 interface, and the helper service the installer registers is not answering. The \
+                 register, PIV and the OTP slots work normally; the FIDO2 PIN, the initial \
+                 credential, signing in with a security key and the FIDO2 part of a factory \
+                 reset do not, and a procedure that needs them is refused before it starts \
+                 rather than stopped part-way through a key. Check the service \
+                 (`sc query YkDistManagerFido`) or reinstall with the MSI. Running this \
+                 application as an administrator also works, but an elevated program is a \
+                 different logon session, so a register on a mapped drive may not be reachable \
+                 from it.",
+            );
+        }
+
         if app.transport.disabled {
             ui.add_space(8.0);
             super::notice(

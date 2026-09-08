@@ -16,6 +16,7 @@ use yk_dist_manager::bootstrap::{
     Transports,
 };
 use yk_dist_manager::device::DeviceInfo;
+use yk_dist_manager::device::Fido2Access;
 use yk_dist_manager::device::write::{Fido2State, MockWriter, OtpState, PivState};
 use yk_dist_manager::domain::{BootstrapRun, StepStatus, YubiKeyRecord};
 use yk_dist_manager::template::plan::{PlannedCommand, plan};
@@ -90,6 +91,10 @@ fn preflight(applets: &AppletSnapshot) -> Vec<yk_dist_manager::bootstrap::Findin
         key: Some(&key),
         applets,
         can_write: true,
+        // These scenarios are about what the *applets* say, so the FIDO2 applet is
+        // reachable — the workstation's own ability to reach it is
+        // `behaviour_windows_helper`'s subject.
+        fido2_access: Fido2Access::Direct,
         applicability: &Applicability::default(),
     }
     .run()
@@ -225,6 +230,10 @@ fn scenario_a_key_whose_enabled_applications_were_never_read_still_runs_every_st
         key: Some(&key),
         applets: &applets,
         can_write: true,
+        // These scenarios are about what the *applets* say, so the FIDO2 applet is
+        // reachable — the workstation's own ability to reach it is
+        // `behaviour_windows_helper`'s subject.
+        fido2_access: Fido2Access::Direct,
         applicability: &Applicability::default(),
     }
     .run();

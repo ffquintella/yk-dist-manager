@@ -1,6 +1,6 @@
 [package]
 name = "yk-dist-manager"
-version = "0.18.3"
+version = "0.19.0"
 edition = "2024"
 description = "YubiKey distribution and bootstrap manager (egui desktop app)"
 license = "MIT"
@@ -152,10 +152,22 @@ keyring = "4"
 # password in this process's memory, while a command line puts it in an argument
 # vector every other process can read.
 [target.'cfg(windows)'.dependencies]
-# `WNetAddConnection2W` / `WNetCancelConnection2W`.
+# `WNetAddConnection2W` / `WNetCancelConnection2W` for the SMB share, and the
+# elevated FIDO2 helper (`features/windows-elevated-helper.md`): the process
+# token, the named pipe, its SDDL security descriptor and the service dispatcher.
+# `Win32_System_IO` is not a typo for something unused: `ReadFile`, `WriteFile` and
+# `ConnectNamedPipe` each take an `*mut OVERLAPPED`, so windows-sys gates them on
+# that feature even though they are declared in the file and pipe modules.
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_NetworkManagement_WNet",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_Services",
+    "Win32_System_Threading",
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
