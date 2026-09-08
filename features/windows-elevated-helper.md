@@ -134,6 +134,20 @@ its keep immediately, catching four things a clean local build could not see:
 `cargo clippy --target x86_64-pc-windows-msvc --all-targets -- -D warnings` is
 clean on the probe.
 
+**The scratch crate was run in one feature set, and the one it was not run in is the
+one CI failed.** Every check above was made with the transports on, so
+`Fido2StateWire`'s import in [`helper::service`](../src/device/helper/service.rs)
+looked used — it is, but only by the `#[cfg(feature = "native-fido")]` half of
+`perform`. The Windows leg's `cargo check --no-default-features --features
+file-dialog,camera` therefore failed on `unused_imports` under `-D warnings`, on
+every run from v0.19.0 to `e314354`, while the macOS and Linux legs of the same runs
+stayed green because `service.rs` is `#[cfg(windows)]` and they never compiled it.
+Fixed by gating the import with its use site. The lesson is about the harness, not
+the line: a probe crate answers a lint question **per feature set**, so give it the
+repository's feature flags and check the `ykman`-only combination too — this one was
+re-run both ways, and its liveness proved the way the technique asks, by confirming
+it reproduces CI's error on the pre-fix file.
+
 ## Design
 
 ### The shape of the decision: a service, not a prompt

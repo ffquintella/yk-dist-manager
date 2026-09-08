@@ -16,6 +16,19 @@ Maintenance instructions (see AGENTS.md §5):
 * A database schema change also bumps store::SCHEMA_VERSION and ships a migration.
 -->
 
+## [Unreleased]
+
+### Fixed
+
+- **The `ykman`-only build on Windows, which CI has failed since 0.19.0.** `device::helper::service`
+  imported `protocol::Fido2StateWire` unconditionally, but the only thing that builds one is the
+  `#[cfg(feature = "native-fido")]` half of `perform` — so with `--no-default-features --features
+  file-dialog,camera` the import is unused, and CI's `RUSTFLAGS: -D warnings` makes that an error.
+  The import now carries the same `native-fido` gate as its use site. Nothing else in the file
+  changes, and the default (native) build is unaffected. The configuration is Windows-only, which
+  is why the macOS and Linux jobs of the same run were green: `service.rs` is `#[cfg(windows)]` and
+  they never compiled it.
+
 ## [0.19.1] - 2026-09-08
 
 ### Fixed

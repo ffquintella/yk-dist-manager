@@ -48,9 +48,11 @@ use windows_sys::Win32::System::Services::{
 use zeroize::Zeroize;
 
 use super::PIPE_SDDL;
+// Only [`perform`] builds one, and that is the `native-fido` half of this file.
+#[cfg(feature = "native-fido")]
+use super::protocol::Fido2StateWire;
 use super::protocol::{
-    Fido2StateWire, PROTOCOL_VERSION, Request, Response, WireError, declared_length, decode,
-    encode, frame,
+    PROTOCOL_VERSION, Request, Response, WireError, declared_length, decode, encode, frame,
 };
 
 /// One pending connection at a time. There is one key; two callers racing an
