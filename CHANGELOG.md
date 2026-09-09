@@ -16,9 +16,60 @@ Maintenance instructions (see AGENTS.md §5):
 * A database schema change also bumps store::SCHEMA_VERSION and ships a migration.
 -->
 
-## [Unreleased]
+## [0.19.2] - 2026-09-09
+
+### Added
+
+- **A log file, so a start that fails leaves something to read** (`features/logging.md`
+  phase 2). Until now every log line went to stderr, and a desktop application that logs
+  to stderr has in practice no log: the Windows release binary is linked into the *windows*
+  subsystem precisely so no console appears, and on Linux and macOS the operator launches
+  from a desktop entry or the Dock. The complaint this leaves you with — *"I click it and
+  nothing happens"* — came with no evidence at all.
+
+  Every line now goes to three places at once, all carrying the same G-002 line: the file,
+  the in-app **Show log** panel, and stderr for whoever did launch from a terminal.
+
+  | Platform | Directory |
+  |---|---|
+  | Windows | `%APPDATA%\yk-dist-manager\logs\` |
+  | Linux | `~/.local/share/yk-dist-manager/logs/` |
+  | macOS | `~/Library/Application Support/yk-dist-manager/logs/` |
+
+  `yk-dist-manager.log` plus up to five rotated generations at 1 MiB each, so the ceiling is
+  about six megabytes however long the application is left open. Writes are unbuffered on
+  purpose — the line this exists for is the last one before the process dies.
+  `$YKDM_LOG_DIR` moves it; `--diagnose` prints the path, the size and how many generations
+  are behind it, without creating anything.
+
+- **The start-up procedure now records itself, stage by stage** (`features/logging.md`
+  phase 2). Three mechanisms, because the three ways a launch can fail leave different
+  amounts behind:
+
+  - a **panic hook** writes `app.panic` with the location and message before the process
+    goes, which covers everything the application fails at on its own terms — including
+    `YkDistApp::new`, where the register is opened;
+  - `eframe::run_native` returning an error is logged as `app.window.failed` rather than
+    disappearing into `main`'s return value;
+  - a **start-up marker** in the log directory names the last stage entered — `start`,
+    `camera-preflight`, `settings`, `window`, `app-construction` — and is removed only once
+    a window exists and the application behind it is built. It is the sole evidence of a
+    launch that died too abruptly to log anything at all: a graphics driver fault, an
+    `abort`, the operating system killing the process. The next launch reads it, reports
+    `app.start.previous_incomplete` at `Erro` with the stage *and a sentence saying what
+    usually causes a failure there*, and `--diagnose` prints the same as an `ALARM`.
+
+  New runbook: **the application will not start**, in
+  [`docs/operations.md`](docs/operations.md).
 
 ### Fixed
+
+- **The *Show log* panel, which has been empty since it shipped.** `features/gui-shell.md`
+  phase 8 built the panel and the ring behind it, but nothing ever connected the two: the
+  logging layer wrote to stderr and `YkDistApp` held a `LogBuffer::new()` of its own, so
+  ⌘/Ctrl + L opened onto a panel that could only ever say "0 log lines". Both ends now ask
+  `logbuf::shared()` for the same ring. The panel was reported as done in two specs and had
+  never shown a line.
 
 - **The `ykman`-only build on Windows, which CI has failed since 0.19.0.** `device::helper::service`
   imported `protocol::Fido2StateWire` unconditionally, but the only thing that builds one is the
@@ -3088,7 +3139,8 @@ become rows.
 - Uploaded filenames are treated as data: any directory component is stripped, so a
   name like `../../etc/passwd.pdf` cannot escape.
 
-[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/releases/v0.19.1...HEAD
+[Unreleased]: https://github.com/ffquintella/yk-dist-manager/compare/releases/v0.19.2...HEAD
+[0.19.2]: https://github.com/ffquintella/yk-dist-manager/compare/releases/v0.19.1...releases/v0.19.2
 [0.19.1]: https://github.com/ffquintella/yk-dist-manager/compare/releases/v0.19.0...releases/v0.19.1
 [0.17.4]: https://github.com/ffquintella/yk-dist-manager/compare/releases/v0.17.3...releases/v0.17.4
 [0.16.3]: https://github.com/ffquintella/yk-dist-manager/compare/releases/v0.16.2...releases/v0.16.3

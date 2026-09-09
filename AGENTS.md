@@ -45,7 +45,7 @@ Dependency direction is downward only: `ui` → `app` → {`bootstrap`, `templat
 | `secret`, `password` | `src/secret.rs`, `src/password.rs` | Generated-then-wiped secrets; DB password strength and unlock throttle | — | `behaviour_app_unlock_throttle`, `unit_accessibility` |
 | `vault` | `src/vault.rs` | The workstation's own credential store (Keychain / Credential Manager / Secret Service), for a database password the operator chose to save | — | in-source, `behaviour_app_saved_password` |
 | `settings` | `src/settings.rs` | Which database to open, and the recent ones | — | `unit_settings` |
-| `logging`, `logbuf`, `status` | `src/` | The one log entry point, the copyable panel, status severity | — | `unit_logging_format`, `unit_accessibility` |
+| `logging`, `logfile`, `logbuf`, `status` | `src/` | The one log entry point, the rotating file it writes to and the start-up marker beside it, the copyable panel, status severity | — | `unit_logging_format`, `unit_logfile`, `behaviour_startup_logging`, `unit_accessibility` |
 | `incident`, `san`, `envelope`, `paths`, `versioning`, `browse`, `branding`, `diagnostics` | `src/*.rs` | Small headless helpers | — | `unit_accessibility`, `behaviour_key_lifecycle` |
 | `app` | `src/app.rs` (7 k lines) | State, cached views, **every mutation together with its audit entry** | all of the above | `behaviour_app_*` |
 | `ui` | `src/ui/` | Painting, and only painting | `app` | none — outside the coverage gate by contract (§4) |
@@ -335,9 +335,25 @@ make coverage-core     # THE GATE: cargo llvm-cov --all-features --fail-under-li
 make coverage-html     # browsable, when you need to find the gap
 ```
 
-Current: **86.50%** core line coverage (85.91% region), measured 2026-09-08 by
+Current: **86.52%** core line coverage (85.95% region), measured 2026-09-09 by
 `make coverage-core` on the full `--all-features` suite — the run that gated the
-Windows elevated FIDO2 helper.
+log file and the start-up record (`features/logging.md` phase 2).
+
+Two hundredths of a point, which is the *point*: the change added ~330 lines and
+moved the number by nothing, because it was split the way this section asks for.
+[`logfile`](src/logfile.rs) is 97.03% — rotation, retention, the marker and the
+stage explanations are all pure enough to test against a temporary directory.
+[`logging`](src/logging.rs) fell to **73.33%**, and that one is worth reading
+rather than fixing: what is uncovered there is `init`, `install` and
+`install_panic_hook` — three functions that install *process-global* state (the
+subscriber, the panic hook) and open the real per-user directory. A test cannot
+run them without deciding what every other test in the binary logs, and there is
+nowhere lower to move them to; the decisions they are made of were moved out
+instead, into `Sinks`, `panel_level`, `panic_fields` and the whole of `logfile`,
+which is why the total went up rather than down.
+
+The 86.50% (85.91% region) this replaces was measured 2026-09-08, on the run that
+gated the Windows elevated FIDO2 helper.
 
 Up a tenth of a point, and the *shape* of that is the interesting part rather than
 the size. `features/windows-elevated-helper.md` added around 1,300 lines, most of

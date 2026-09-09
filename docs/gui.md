@@ -620,8 +620,16 @@ Two deliberate departures from the crate's defaults:
 
 Search and filtering (the tables will not scale past a few dozen rows), sortable columns, a
 run view with live per-step status and touch prompts, secret prompt panels, a pre-flight
-confirmation, window-state persistence, a log panel, pt-BR localisation, and an accessibility
+confirmation, window-state persistence, pt-BR localisation, and an accessibility
 pass (contrast measured against the four palettes, font scaling).
+
+**The log panel is no longer planned** — it shipped as `features/gui-shell.md` phase 8 and
+was connected to the logging layer in `features/logging.md` phase 2, which is when it first
+showed a line. ⌘/Ctrl + L opens a resizable bottom panel over the last 500 lines with a
+level filter and *Copy all*; the header says how many errors and warnings are in there
+without opening it. It shows exactly what the log file holds, so what an operator copies is
+what you will read in [`operations.md`](operations.md#logs) — and it is a *view*, not a
+record: it is not persisted, and nothing in it is evidence of anything.
 
 See [`../features/gui-shell.md`](../features/gui-shell.md) and
 [`../features/gui-bootstrap-wizard.md`](../features/gui-bootstrap-wizard.md).

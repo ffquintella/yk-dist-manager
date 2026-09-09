@@ -471,7 +471,8 @@ decides. Do not invent a period.
 ## 5. Logs
 
 G-002 fixes the format and the levels; both are implemented in
-[`src/logging.rs`](../src/logging.rs).
+[`src/logging.rs`](../src/logging.rs), and what reaches the disk is
+[`src/logfile.rs`](../src/logfile.rs).
 
 | Requirement | Status |
 |---|---|
@@ -481,7 +482,9 @@ G-002 fixes the format and the levels; both are implemented in
 | Every error logged, no swallowed exception | Met by rule and review; `Result` is never discarded |
 | Errors to the log, not to the screen alone | Met — errors go to both, deliberately: the operator needs to see the refusal |
 | Never log a secret | Met by design (no secret exists in a loggable field) |
-| File sink | **Gap** — output goes to stderr, which a GUI user never sees ([`../features/logging.md`](../features/logging.md) Phase 2) |
+| File sink | Met — `logs/` under the per-user data directory (`%APPDATA%\yk-dist-manager\logs\` on Windows, `~/.local/share/yk-dist-manager/logs/` on Linux, `~/Library/Application Support/yk-dist-manager/logs/` on macOS), rotated at 1 MiB × 5 generations. Every line also reaches the in-app panel and stderr |
+| A start-up failure is recorded | Met — a panic hook, `app.window.failed`, and a stage marker the next launch reports as `app.start.previous_incomplete`. A launch that produces no window is the one case where the file sink is the *only* evidence |
+| Log **retention** | **Open** — not fixed by the norm; the ESI decides, as for the audit trail. Rotation currently bounds the log by size (about 6 MiB) and not by age, so the period the file covers depends on how much the workstation does |
 
 ---
 
@@ -573,7 +576,9 @@ everything that does not depend on it, and say plainly what is pending. That is 
    parameters and the lockout's applicability are **ESI** ratifications, not implementer's
    choices.
 3. **AD integration** — required by the norm, not built. *Feature specified.*
-4. **Log file sink** — stderr only today.
+4. **Log retention** — the log file sink is built (see §5), but for how long its contents
+   are kept is an **ESI** decision, the same one as audit retention. Rotation bounds it by
+   size, which is a disk-space answer and not a retention policy.
 5. **G-002 v2.0 (July 2026)** — could carry more specific requirements (OWASP ASVS, NIST
    SSDF, DevSecOps). The copy available when this was written was IRM-protected and could not
    be read. **Ask the ESI for the current text before homologation**; where it conflicts with

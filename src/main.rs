@@ -13,7 +13,8 @@
 use std::path::PathBuf;
 
 use yk_dist_manager::diagnostics::{self, Invocation};
-use yk_dist_manager::{YkDistApp, logging};
+use yk_dist_manager::logfile::stage;
+use yk_dist_manager::{YkDistApp, logfile, logging};
 
 fn main() -> eframe::Result {
     // Answer the informational switches before doing anything else: `--diagnose` in
@@ -44,6 +45,11 @@ fn main() -> eframe::Result {
             #[cfg(windows)]
             {
                 logging::init();
+                // A service has even less to print to than a windows-subsystem
+                // GUI: no console, no window, and a service-control manager that
+                // reports only an exit code. The hook is the only way a panic in
+                // here says anything at all.
+                logging::install_panic_hook();
                 let code = yk_dist_manager::device::helper::service::run();
                 std::process::exit(code);
             }
@@ -64,13 +70,25 @@ fn main() -> eframe::Result {
         }
     }
 
-    logging::init();
+    // Read before `logging::init()` writes the new one: this is the only
+    // evidence of a previous start that died outright — a driver fault, an
+    // `abort`, the operating system killing the process — none of which reaches
+    // the panic hook installed below.
+    let unfinished = logfile::previous_attempt();
 
-    // macOS requires this before *anything* touches AVFoundation, and it has to
-    // happen on the main thread while the operator is present to answer the
-    // permission prompt. A no-op on other platforms and in builds without the
-    // `camera` feature.
-    yk_dist_manager::scan::preflight::initialise();
+    logging::init();
+    logging::install_panic_hook();
+    logfile::note_stage(stage::START);
+
+    if let Some(marker) = &unfinished {
+        let stage = logfile::stage_of(marker).unwrap_or("(unknown)");
+        tracing::error!(
+            event = "app.start.previous_incomplete",
+            stage = stage,
+            marker = marker.as_str(),
+            explanation = logfile::explain(stage),
+        );
+    }
 
     let explicit = std::env::var("YKDM_DB")
         .ok()
@@ -81,16 +99,28 @@ fn main() -> eframe::Result {
     tracing::info!(
         event = "app.start",
         version = yk_dist_manager::VERSION,
+        commit = yk_dist_manager::COMMIT,
+        // Where this line was written, in the line itself: an operator reading
+        // it in the panel can then be told a path they can open.
+        log = logfile::path().display().to_string(),
         database = explicit
             .as_ref()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "(remembered or default)".into())
     );
 
+    // macOS requires this before *anything* touches AVFoundation, and it has to
+    // happen on the main thread while the operator is present to answer the
+    // permission prompt. A no-op on other platforms and in builds without the
+    // `camera` feature.
+    logfile::note_stage(stage::CAMERA_PREFLIGHT);
+    yk_dist_manager::scan::preflight::initialise();
+
     // Reopen where the operator left it. `size()` clamps, so a value from a
     // monitor that is no longer attached — or a NaN from a half-written settings
     // file — produces a usable window rather than one with no dimensions or one
     // whose close button is off-screen.
+    logfile::note_stage(stage::SETTINGS);
     let remembered = yk_dist_manager::settings::AppSettings::load().window;
     let (width, height) = remembered.size();
 
@@ -115,9 +145,38 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
 
-    eframe::run_native(
+    // Everything from here is out of this process's hands — the windowing
+    // system, the graphics driver, then the register — and it is where a launch
+    // that produces no window dies. Each stage is on disk before it is entered,
+    // so the next start can say which one it was.
+    logfile::note_stage(stage::WINDOW);
+    let started = eframe::run_native(
         "yk-dist-manager",
         options,
-        Box::new(move |_cc| Ok(Box::new(YkDistApp::new(explicit)))),
-    )
+        Box::new(move |_cc| {
+            logfile::note_stage(stage::APP);
+            let app = YkDistApp::new(explicit);
+            // A window exists and the application behind it is built: this
+            // start finished, whatever happens to the session now.
+            logfile::finished();
+            tracing::info!(event = "app.ready");
+            Ok(Box::new(app))
+        }),
+    );
+
+    match &started {
+        Ok(()) => tracing::info!(event = "app.stopped"),
+        Err(problem) => tracing::error!(
+            event = "app.window.failed",
+            // The one failure `main` can still report: `run_native` returns
+            // rather than panicking when there is no display, no usable
+            // graphics backend, or no permission to open a window.
+            detail = problem.to_string()
+        ),
+    }
+    // A start that got no window is over too; leaving the marker would make the
+    // *next* launch report a failure that this line already recorded properly.
+    logfile::finished();
+
+    started
 }

@@ -73,6 +73,9 @@ Environment:
   YKDM_SETTINGS                Settings file (recent databases, operator identity)
   YKDM_DATA_DIR                Per-user data directory
   YKDM_LOG                     Log filter, e.g. `debug`
+  YKDM_LOG_DIR                 Directory for the rotating log file and the
+                               start-up marker (default: `logs/` under the
+                               per-user data directory)
   YKDM_ALLOW_UNBUNDLED_CAMERA  Attempt the camera outside an app bundle (may abort)
   YKDM_NO_SAVED_PASSWORD       Never keep a database password in the workstation's
                                credential store: the option is offered nowhere and
@@ -199,6 +202,21 @@ pub struct Report {
     /// Never a password — there is none stored to report.
     pub smb_shares: Vec<String>,
     pub settings: String,
+    /// Where the rotating log file is, and how much of it there is
+    /// (`features/logging.md` phase 2).
+    ///
+    /// The first thing a support request needs and the hardest thing to say over
+    /// the telephone: the path differs per platform, is under a hidden or
+    /// awkwardly named directory on two of the three, and a GUI application
+    /// launched from the Dock or a Start Menu shortcut has no console where the
+    /// operator could have seen any of it.
+    pub log: String,
+    /// A previous start that never reached a window, if one is on record.
+    ///
+    /// The single most useful line in this report when the complaint is "it does
+    /// not open": everything else here describes a process that *did* start,
+    /// because it is the one printing the report.
+    pub unfinished_start: Option<String>,
     /// The credential store this build would keep a saved database password in,
     /// and whether it can be reached right now
     /// (`features/db-password-and-encryption.md` phase 8).
@@ -273,6 +291,10 @@ impl Report {
                 })
                 .collect(),
             settings: crate::settings::AppSettings::path().display().to_string(),
+            // Read-only, like everything else here: `describe` stats the file and
+            // creates nothing, so asking where the log is cannot make one.
+            log: crate::logfile::describe(),
+            unfinished_start: crate::logfile::previous_attempt(),
             // Probed, because the compiled feature list cannot answer this. Read-only:
             // enumerating readers opens a PC/SC context and writes nothing, which is
             // the same rule the hardware tests hold to.
@@ -367,6 +389,17 @@ impl Report {
             let _ = writeln!(out, "                   {share}");
         }
         let _ = writeln!(out, "settings:          {}", self.settings);
+        let _ = writeln!(out, "log file:          {}", self.log);
+        if let Some(marker) = &self.unfinished_start {
+            let stage = crate::logfile::stage_of(marker).unwrap_or("(unknown)");
+            let _ = writeln!(
+                out,
+                "                   ALARM: a previous start never reached a window \
+                 ({marker}) — {}. The log file above holds the lines it \
+                 managed to write.",
+                crate::logfile::explain(stage)
+            );
+        }
         let _ = writeln!(out, "credential store:  {}", self.credential_store);
         let _ = writeln!(out, "device transport:  {}", self.transport);
         let _ = writeln!(
@@ -465,6 +498,8 @@ mod tests {
             smb_can_connect: true,
             smb_shares: Vec::new(),
             settings: "/tmp/settings.json".into(),
+            log: "/tmp/logs/yk-dist-manager.log (4 KiB, 0 rotated)".into(),
+            unfinished_start: None,
             transport: "native — a reader answered, and this build talks to it in process".into(),
             ykman: Some("/opt/homebrew/bin/ykman".into()),
             cameras: vec!["0: FaceTime HD Camera".into()],
@@ -673,6 +708,31 @@ mod tests {
     }
 
     #[test]
+    fn the_report_names_the_log_file_and_any_start_that_never_finished() {
+        // The two lines an operator is asked for when the complaint is "it does
+        // not open": where the record is, and what the last attempt managed.
+        let rendered = report().render();
+        assert!(
+            rendered.contains("log file:"),
+            "an operator cannot be told a path this report does not print: {rendered}"
+        );
+        assert!(rendered.contains("yk-dist-manager.log"), "{rendered}");
+        assert!(
+            !rendered.contains("ALARM: a previous start"),
+            "a build that started cleanly must not accuse itself: {rendered}"
+        );
+
+        let mut unfinished = report();
+        unfinished.unfinished_start = Some("stage=window version=0.0.0-test".into());
+        let rendered = unfinished.render();
+        assert!(rendered.contains("ALARM: a previous start"), "{rendered}");
+        assert!(
+            rendered.contains("graphics driver"),
+            "and it explains the stage rather than only naming it: {rendered}"
+        );
+    }
+
+    #[test]
     fn a_missing_ykman_is_stated_not_omitted() {
         let mut report = report();
         report.ykman = None;
@@ -688,6 +748,7 @@ mod tests {
             "YKDM_DB",
             "YKDM_SETTINGS",
             "YKDM_ALLOW_UNBUNDLED_CAMERA",
+            "YKDM_LOG_DIR",
             crate::vault::DISABLE_ENV,
         ] {
             assert!(USAGE.contains(expected), "USAGE omits {expected}");

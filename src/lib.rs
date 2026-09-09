@@ -31,6 +31,7 @@
 //! | [`operator`] | Who is signed in, and what their role lets them do |
 //! | [`status`] | How loudly the status bar reports the last outcome |
 //! | [`logbuf`] | The last N log lines, for the panel an operator can copy from |
+//! | [`logfile`] | The rotating log file on disk, and the start-up crash marker |
 //! | [`logging`] | The single logging entry point for the whole app |
 //! | [`app`] / [`ui`] | egui shell and screens |
 //!
@@ -49,6 +50,7 @@ pub mod domain;
 pub mod envelope;
 pub mod incident;
 pub mod logbuf;
+pub mod logfile;
 pub mod logging;
 pub mod operator;
 pub mod password;

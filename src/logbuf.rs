@@ -167,6 +167,21 @@ impl LogBuffer {
     }
 }
 
+/// The one buffer the logging layer writes to and the panel reads from.
+///
+/// Process-global rather than threaded through `YkDistApp::new`, because the
+/// two ends are installed at different times and by different code: the
+/// subscriber is global state that [`crate::logging::init`] sets up before the
+/// window exists, and the panel is a field of an application built afterwards —
+/// possibly more than once in the same process, as the test binaries do. A
+/// handle both ends can ask for by name is what makes the panel show anything
+/// at all; before this, [`LogBuffer::new`] in the application meant the layer
+/// and the panel each held their own empty ring.
+pub fn shared() -> LogBuffer {
+    static SHARED: std::sync::OnceLock<LogBuffer> = std::sync::OnceLock::new();
+    SHARED.get_or_init(LogBuffer::new).clone()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,6 +265,21 @@ mod tests {
         assert!(Level::Error > Level::Warn);
         assert!(Level::Warn > Level::Info);
         assert!(Level::Info > Level::Debug);
+    }
+
+    #[test]
+    fn the_shared_ring_is_the_same_one_every_caller_gets() {
+        // The logging layer asks for it at start-up and the panel asks for it
+        // when the window is built; a second ring would be an empty panel.
+        let one = shared();
+        let two = shared();
+        one.push(Level::Info, "written through the layer's handle");
+        assert!(
+            two.lines(Level::Debug)
+                .iter()
+                .any(|l| l.text.contains("the layer's handle")),
+            "the panel reads what the layer wrote"
+        );
     }
 
     #[test]

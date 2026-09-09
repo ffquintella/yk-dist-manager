@@ -5,7 +5,8 @@
 ```
                         ┌──────────────────────────────┐
                         │  src/main.rs                 │
-                        │  logging::init, eframe::run  │
+                        │  logging::init, panic hook,  │
+                        │  stage marker, run_native    │
                         └──────────────┬───────────────┘
                                        │
                         ┌──────────────▼───────────────┐
@@ -52,7 +53,8 @@
 | `store::cloud` | Making a database in a sync folder (OneDrive, Dropbox, …) strictly sequential: the settle wait, the `<database>.lock` single-writer lock, conflict-copy detection | Pretend to be a distributed lock, or hold anything secret |
 | `store::smb` | Reaching an SMB share: parsing a location, the identity to present, connecting and releasing (`WNetAddConnection2W`, `NetFSMountURLSync`), and reporting a local path | Open a database — it hands back a path and a `StoreConfig`, and `Store` never learns what SMB is. Keep a password anywhere but a zeroed-on-drop `Secret`, or put one in an argument vector |
 | `audit` | The chain: entry shape, hashing, verification, the file sink | Depend on `store` (so `store` can use it, not the reverse) |
-| `logging` | The one logging entry point | Be bypassed by a hand-formatted line |
+| `logging` | The one logging entry point, and the fan-out that sends each line to the file, the panel and stderr alike | Be bypassed by a hand-formatted line |
+| `logfile` | The rotating log file under the per-user data directory, and the start-up marker beside it that says a launch never reached a window | Stop the application from starting. A log directory it cannot open costs the file sink and nothing else |
 | `branding` | The embedded application icon, and refusing a malformed one | Depend on an optional feature — the icon exists in every build |
 | `app` | State, cached views, and every mutation together with its audit entry | Paint |
 | `ui` | Painting, and only painting | Do I/O inside a paint closure |

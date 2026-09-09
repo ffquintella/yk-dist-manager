@@ -1185,11 +1185,107 @@ Restore is a file copy. Afterwards, open the copy and run **Audit → Verify cha
 
 ## Logs
 
-Currently written to stderr, so launch from a terminal when diagnosing:
+Every line goes to three places at once: a **file**, the in-app **Show log** panel
+(⌘/Ctrl + L, with a level filter and *Copy all*), and stderr for whoever launched the
+application from a terminal. All three carry the same line, so what an operator pastes
+into a ticket is what you will read in the file.
 
-```bash
-YKDM_LOG=debug cargo run 2> ~/ykdm.log
+Format: `[dd/mm/aaaa] hh:mm:ss ; evento ; nivel=… detalhes`.
+
+### Where the file is
+
+| Platform | Directory |
+|---|---|
+| **Windows** | `%APPDATA%\yk-dist-manager\logs\` — that is `C:\Users\<you>\AppData\Roaming\yk-dist-manager\logs\` |
+| **Linux** | `~/.local/share/yk-dist-manager/logs/` |
+| macOS | `~/Library/Application Support/yk-dist-manager/logs/` |
+
+The current file is `yk-dist-manager.log`; behind it are up to five rotated
+generations, `yk-dist-manager.log.1` … `.5`. Each is capped at 1 MiB, so the log can
+never take more than about six megabytes however long the application is left open.
+
+Paste this into Explorer's address bar to open the directory on Windows:
+
+```text
+%APPDATA%\yk-dist-manager\logs
 ```
 
-Format: `[dd/mm/aaaa] hh:mm:ss ; evento ; nivel=… detalhes`. A file sink and an in-app log
-panel are planned ([`../features/logging.md`](../features/logging.md)).
+Or on Linux:
+
+```bash
+tail -f ~/.local/share/yk-dist-manager/logs/yk-dist-manager.log
+```
+
+Never guess the path — ask the binary, which prints it along with the size and how many
+generations are behind it:
+
+```bash
+yk-dist-manager --diagnose | grep "log file"
+```
+
+`$YKDM_LOG_DIR` puts the log somewhere else (a deployment that collects logs centrally);
+`$YKDM_LOG=debug` raises the level.
+
+**The Windows FIDO2 helper service writes its own log, somewhere else.** It runs as
+`LocalSystem`, so its `%APPDATA%` is the system profile's, and its lines are in:
+
+```text
+C:\Windows\System32\config\systemprofile\AppData\Roaming\yk-dist-manager\logs\
+```
+
+That is the file to read when the symptom is on the service's side — *"the helper service
+speaks a different protocol"*, or FIDO2 steps failing while PIV works. The operator's own
+log will show the application's half of the conversation and nothing of the service's.
+
+### What is in it, and what is not
+
+The log is **operational**: it is for diagnosis, it rotates away, and nothing in it is
+evidence of anything. The **audit trail** is the record of what was done to whom, it
+lives in the register, and it never changes — see
+[`security-and-compliance.md`](security-and-compliance.md). No PIN, PUK, management key,
+access code or database password is ever written to either.
+
+## Runbook: the application will not start
+
+Nothing appears when the icon is double-clicked, or a window flashes and goes. There is
+no console on Windows and none under a desktop launcher on Linux or macOS, so the log
+file above is the whole story — and the application is written to leave one even when it
+dies before painting a single pixel.
+
+1. **Ask the binary first.** From a terminal, or `cmd` on Windows:
+
+   ```bash
+   yk-dist-manager --diagnose
+   ```
+
+   If the previous launch never reached a window, this prints an `ALARM` line naming the
+   stage it died at and what usually causes that. `--diagnose` opens no database, needs
+   no key and no window, so it answers even when nothing else does.
+
+2. **Read the end of the log file.** The last lines of the failed attempt are there: an
+   `app.start` line, then whatever it managed before it stopped. Two events are worth
+   grepping for by name:
+
+   | Event | Means |
+   |---|---|
+   | `app.panic` | The application failed on its own terms; `location=` names the source file and line, `message=` what it said |
+   | `app.window.failed` | The windowing system or the graphics driver refused a window — remote session, no GPU, a display that went away |
+   | `app.start.previous_incomplete` | *This* launch found the wreckage of the last one; `stage=` says how far it got, `explanation=` says what that usually is |
+   | no `app.ready` line at all | It never finished starting; the stage in the marker is the only clue, which is what the line above reports |
+
+3. **Match the stage to the cause.**
+
+   | Stage | It stopped … | Usual cause |
+   |---|---|---|
+   | `start` | before doing anything | the binary itself — a bad install, a missing runtime library |
+   | `camera-preflight` | asking the platform about the camera | the barcode camera or its permission prompt |
+   | `settings` | reading the settings file | a half-written settings file; move it aside and relaunch |
+   | `window` | asking for a window | graphics driver, a remote or headless session, an unplugged display |
+   | `app-construction` | opening the register | an unreachable share, a locked or corrupt database file |
+
+4. **A register that cannot be reached** (stage `app-construction`) is the common one, and
+   it does not need a reinstall: set `$YKDM_DB` to a path that does exist, or move the
+   settings file aside so the chooser comes up on a clean slate.
+
+5. Send the log file and the `--diagnose` output with the report. Between them they name
+   the build, the commit, every path involved and the stage that failed.

@@ -1415,7 +1415,7 @@ impl YkDistApp {
             key_status_filter: None,
             outstanding_only: false,
             about: None,
-            log: crate::logbuf::LogBuffer::new(),
+            log: crate::logbuf::shared(),
             log_panel_open: false,
             log_min_level: crate::logbuf::Level::Info,
         };
