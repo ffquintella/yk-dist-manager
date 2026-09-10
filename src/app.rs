@@ -709,6 +709,15 @@ pub struct OperatorPanel {
     pub registering: Option<uuid::Uuid>,
     pub key_serial: String,
     pub key_pin: String,
+    /// The operator whose password is being replaced, and the two typed copies
+    /// of it. Kept apart from the enrolment fields so a half-typed enrolment
+    /// cannot be submitted as somebody else's new password.
+    pub resetting: Option<uuid::Uuid>,
+    pub reset_password: String,
+    pub reset_password_again: String,
+    /// The operator a deletion has been proposed for. A destructive act is
+    /// previewed and confirmed, never done by one click (`AGENTS.md` §2).
+    pub removing: Option<uuid::Uuid>,
 }
 
 impl OperatorPanel {
@@ -718,6 +727,8 @@ impl OperatorPanel {
         self.first_password.clear();
         self.first_password_again.clear();
         self.key_pin.clear();
+        self.reset_password.clear();
+        self.reset_password_again.clear();
     }
 }
 
@@ -6361,8 +6372,9 @@ impl YkDistApp {
         }
     }
 
-    /// Enable or disable an operator. Never a delete — that would orphan every
-    /// audit entry they wrote.
+    /// Enable or disable an operator. The answer for somebody who used this
+    /// register and is leaving it: their history stays, and stays attributable.
+    /// [`YkDistApp::remove_operator`] is the other case.
     pub fn set_operator_active(&mut self, id: uuid::Uuid, active: bool) {
         let by = self.operator.clone();
         let outcome = match &self.store {
@@ -6376,6 +6388,76 @@ impl YkDistApp {
                 } else {
                     "operator disabled — their history stays on the register".to_owned()
                 };
+                self.refresh_operators();
+            }
+            Err(e) => self.report_authorisation(crate::operator::Action::ManageOperators, e),
+        }
+    }
+
+    /// Delete an operator who never wrote anything.
+    ///
+    /// The store draws the line, not this method: an account that is the actor
+    /// on any audit entry is refused here and can only be disabled.
+    pub fn remove_operator(&mut self, id: uuid::Uuid) {
+        let by = self.operator.clone();
+        let who = self
+            .operator_panel
+            .operators
+            .iter()
+            .find(|operator| operator.id == id)
+            .map(|operator| operator.username.clone())
+            .unwrap_or_default();
+        let outcome = match &self.store {
+            Some(store) => store.remove_operator(id, &by),
+            None => Err(crate::store::StoreError::NotFound("no register".into())),
+        };
+        match outcome {
+            Ok(()) => {
+                self.operator_panel.removing = None;
+                self.operator_panel.error = None;
+                self.status = format!("{who} removed from this register");
+                self.refresh_operators();
+            }
+            Err(e) => self.report_authorisation(crate::operator::Action::ManageOperators, e),
+        }
+    }
+
+    /// Set another operator's password.
+    ///
+    /// The password is wiped in this call whatever the outcome, exactly as every
+    /// other one this application handles. What reaches the register is an
+    /// Argon2id hash, and what reaches the audit trail is that a credential
+    /// changed and by which method — never the password, never its length.
+    pub fn set_operator_password(&mut self, id: uuid::Uuid) {
+        let (password, again) = (
+            self.operator_panel.reset_password.clone(),
+            self.operator_panel.reset_password_again.clone(),
+        );
+        if password != again {
+            self.operator_panel.wipe();
+            self.operator_panel.error = Some("the two passwords do not match".into());
+            return;
+        }
+        let by = self.operator.clone();
+        let who = self
+            .operator_panel
+            .operators
+            .iter()
+            .find(|operator| operator.id == id)
+            .map(|operator| operator.username.clone())
+            .unwrap_or_default();
+        let outcome = match &self.store {
+            Some(store) => store.set_operator_password(id, &password, &by),
+            None => Err(crate::store::StoreError::NotFound("no register".into())),
+        };
+        self.operator_panel.wipe();
+        match outcome {
+            Ok(()) => {
+                self.operator_panel.resetting = None;
+                self.operator_panel.error = None;
+                self.status = format!(
+                    "{who} has a new password — tell them in person, and they should change it"
+                );
                 self.refresh_operators();
             }
             Err(e) => self.report_authorisation(crate::operator::Action::ManageOperators, e),

@@ -454,8 +454,21 @@ the register is in:
   how long it has been idle, when it locks and ends, and how long a re-verification has
   left — with **Lock** and **Sign out**. An administrator additionally gets *Enrol an
   operator* and the list, where a role can be changed, an operator enabled or disabled, a
-  lockout cleared, and a security key registered or replaced. Never deleted: that would
-  orphan every audit entry they wrote.
+  lockout cleared, a security key registered or replaced, a **password set** and an
+  account **removed**.
+
+  *Set password* is for the operator who forgot theirs, since there is no reset by
+  e-mail. The panel says out loud that from then until they change it an administrator
+  knows their password, and that it should be given in person; setting one lifts their
+  lockout with it.
+
+  *Remove* is offered on every row and refused on most of them, which is the honest
+  shape: an operator who is the `actor` on even one audit entry can only be **disabled**,
+  because deleting them would leave those entries naming somebody the register has never
+  heard of. An account that wrote nothing — a mistyped enrolment, a person who did not
+  join — is deleted outright, with its password, its registered key and its lockout, and
+  the username becomes free again. Neither the account you are signed in as nor the
+  register's last administrator can go either way. The button asks first, by name.
 
   Registering a key asks for its **serial** as well as its PIN, which is the same
   confirmation the factory reset asks for and for the same reason: a credential written to

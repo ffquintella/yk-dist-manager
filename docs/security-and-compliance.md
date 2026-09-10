@@ -233,7 +233,21 @@ Authorisation is switched on by a deliberate, audited act at the keyboard: creat
 first administrator, recorded as `operator.enrolled … first=true`, after which the path
 closes. This is the same shape as the database password and the template-signature policy
 — off until a deployment turns it on, and honest on screen about being off. The last
-administrator can be neither demoted nor disabled.
+administrator can be neither demoted, disabled nor removed.
+
+### Deleting an operator, and when it is refused
+
+An operator is **disabled rather than deleted**, because the audit `actor` is text: an
+entry whose actor no longer exists on the register names somebody nobody can ask about,
+which is the question the trail exists to answer. The rule is enforced as that reasoning
+and not as a summary of it — `Store::remove_operator` counts the entries the username is
+the actor on and refuses if there are any, naming disabling as the alternative. An account
+that is on none of them is an enrolment that never became a person's history, and is
+deleted outright together with its password hash, its registered credential and its
+failure history. A failed sign-in is recorded against `(not signed in)`, so an attempt at
+a username cannot make an account permanent — nor can it be used to establish that the
+account exists. Audited as `operator.removed`, and refused for the account the session is
+signed in as.
 
 ### The credential
 
@@ -434,7 +448,7 @@ records, **guaranteed by database restrictions**; and inserts kept cheap.
 | Cheap inserts | **Met** — one `INSERT`, single index (the primary key), no triggers on the insert path |
 | Audit never silently fails | **Met** — logged at `error` and shown as `AUDIT FAILURE:` in the status bar |
 | Separate instance | **Gap** — see below |
-| Login / account events audited | **Met** — `operator.login`, `operator.login.failed`, `operator.enrolled`, `operator.role.changed`, `operator.enabled`/`operator.disabled`, `operator.credential.changed`, plus `operator.authorisation.refused`. Only on a register whose operators have been enrolled; see [§2a](#2a-operator-authentication-and-roles) |
+| Login / account events audited | **Met** — `operator.login`, `operator.login.failed`, `operator.enrolled`, `operator.role.changed`, `operator.enabled`/`operator.disabled`, `operator.removed`, `operator.credential.changed`, plus `operator.authorisation.refused`. Only on a register whose operators have been enrolled; see [§2a](#2a-operator-authentication-and-roles) |
 | Mechanisms documented | **Met** — [`../features/audit-trail.md`](../features/audit-trail.md) |
 
 ### Declared gap 1 — segregation

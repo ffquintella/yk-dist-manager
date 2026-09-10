@@ -25,6 +25,12 @@ covered by tests. Phase 4 (AD) is not, and is not the implementer's** —
 `AGENTS.md` §8 makes every corporate-system integration the ESI's decision, and
 this spec already says the mechanism needs their approval.
 
+Phase 7 gained two things in 2026-09-10 that the screen was missing: an
+administrator can **set another operator's password** (the store method existed
+and had no caller) and can **remove an account that is the actor on no audit
+entry**. See *Disabling, and the one case it answers badly* below for where that
+line is drawn and why it is not simply "administrators may delete".
+
 `YkDistApp::operator` is no longer a public, editable field: it is private,
 derived from the session, and the Settings text input is gone. Roles are enforced
 by `Store` — a SQLite authorizer on the connection plus `Store::require` for what
@@ -105,6 +111,46 @@ itself an audited change.
 
 Option 1 for daily use with option 2 for identity, if both are available, is the target.
 
+### Disabling, and the one case it answers badly
+
+An operator is **disabled, not deleted**, and the reason is the audit trail: every
+entry names its actor as text, so deleting the account behind one leaves an entry
+naming somebody the register has never heard of. Nobody can then ask who that was,
+which is the question an audit trail exists to answer.
+
+That reasoning covers everybody who *used* the register. It does not cover an
+account enrolled by mistake — a mistyped username, somebody who turned out not to
+be joining — which has no entries behind it and, under a blanket rule, sits in the
+list for the life of the register with nothing standing behind it.
+
+So the rule is the reasoning rather than a summary of it: **an operator who is the
+`actor` on any audit entry cannot be removed, and one who is on none can.** The
+refusal names disabling as the alternative. A failed sign-in is recorded against
+`(not signed in)` and therefore does not count, which is deliberate — a typo at the
+sign-in box must not be able to make an account permanent. Two further refusals,
+both the same ones `set_operator_active` already makes: the account the session is
+signed in as, and the register's last administrator.
+
+Removing takes the password, the registered credential and the `operator_sign_ins`
+row with it. The lockout row in particular: one left behind would be waiting on a
+username that no longer exists, and would apply to whoever is enrolled under it
+next.
+
+### Replacing somebody else's password
+
+An operator who forgot their password has no other way back into a register that
+may have no second administrator. `Store::set_operator_password` was written for
+this from the start and had **no caller** until phase 7's second pass; it is now on
+the row, behind the same re-verification as every other change there.
+
+Two things are said on the screen rather than only here, because both are the kind
+of weakness that is only compensated for if somebody knows about it: from the
+moment the password is set until the operator changes it, **an administrator knows
+their password**, and the new one should be given in person rather than by e-mail.
+The audit entry says a credential changed, by which method, and who changed it —
+never the password, never its length. Setting one clears the failure history,
+because the credential those failures were counted against is gone.
+
 ### Consequences elsewhere
 
 - The audit `actor` becomes an authenticated identity, and the Settings field disappears.
@@ -126,7 +172,7 @@ Option 1 for daily use with option 2 for identity, if both are available, is the
 | 4 | AD authentication and group→role mapping | Todo | **ESI's, not the implementer's** (`AGENTS.md` §8). Deliberately not guessed at |
 | 5 | Re-verification for sensitive operations | **Done** | 2-minute window. Enforced at the write: `Store::require` for the applet reset, the re-key and the three export paths; `Store::require_fresh_credential` for a procedure or a term, which leaves the *role* refusal to the authorizer that already covers those tables |
 | 6 | Session lock, timeout, explicit logout | **Done** | locks at 5 min idle, ends at 30, and the clock is run from the frame loop — an idle session asks for a repaint every 15 s, because egui sleeps when idle |
-| 7 | Operator management screen (admins only), fully audited | **Done** | plus the first-run administrator path |
+| 7 | Operator management screen (admins only), fully audited | **Done** | plus the first-run administrator path, replacing another operator's password, and removing an account that wrote nothing |
 | 8 | Remove the editable operator field | **Done** | `YkDistApp::operator` is private and derived; the Settings input is gone |
 
 ### The first-run answer
@@ -160,6 +206,7 @@ so on screen while they are off.
 | `operator.reverified` | `operator=… action=… method=…` |
 | `operator.enrolled` | `role=… method=… first=<bool>` — account creation, which the norm requires always |
 | `operator.enabled` / `operator.disabled` | `operator=… role=… by=…` — account change |
+| `operator.removed` | `operator=… role=… by=…` — the account is gone; only ever written for one that is the actor on no entry, so the trail it leaves behind names nobody |
 | `operator.credential.changed` | `operator=… method=local\|fido2 by=…` — never the password, never a length |
 | `operator.lockout.cleared` | `operator=… by=…` — an administrator lifted a lockout |
 | `operator.session.locked` | `operator=… reason=idle\|explicit` |
@@ -204,6 +251,19 @@ not called:
 | An export is refused, prompts, and goes through once the credential is given — and the refusal is recorded as `reason=reverification` rather than `reason=role` | `tests/behaviour_operator_auth.rs` |
 | A registered key's counter that does not advance is refused as a clone | `tests/behaviour_operator_auth.rs` |
 | The whole trail contains no password and no PIN, in every scenario | `tests/behaviour_operator_auth.rs` |
+
+Added with removal and the password reset:
+
+| Test | Where |
+|---|---|
+| An operator who wrote nothing is deleted, audited, and their username freed | `tests/unit_store_operators.rs` |
+| An operator who wrote an audit entry can only be disabled, and the refusal says so | `tests/unit_store_operators.rs` |
+| A failed sign-in does not make an account permanent | `tests/unit_store_operators.rs` |
+| Neither the last administrator nor the signed-in account can be removed | `tests/unit_store_operators.rs` |
+| A distributor can neither remove an operator nor set anybody's password | `tests/unit_store_operators.rs` |
+| A replacement password works, lifts the lockout, and leaves nothing of itself on the trail | `tests/unit_store_operators.rs`, `tests/behaviour_operator_auth.rs` |
+| Both new writes ask for the credential again | `tests/unit_store_operators.rs` |
+| End to end: a mistyped enrolment is removed and an operator with history is disabled instead | `tests/behaviour_operator_auth.rs` |
 
 ## Open questions and gates
 

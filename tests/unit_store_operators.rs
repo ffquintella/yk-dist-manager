@@ -382,6 +382,286 @@ fn the_last_administrator_cannot_be_demoted_or_disabled() {
     assert!(!store.operator_by_id(bruno.id).unwrap().unwrap().active);
 }
 
+/// An account enrolled by mistake — a mistyped username, somebody who did not
+/// join — is the case disabling answers badly: the list carries a name nothing
+/// stands behind for the life of the register.
+#[test]
+fn an_operator_who_wrote_nothing_can_be_removed_outright() {
+    // Given an operator who has never signed in
+    let store = enrolled();
+    let bruno = store
+        .enrol_operator(
+            &NewOperator {
+                username: "bruno".into(),
+                display_name: "Bruno Costa".into(),
+                role: Role::Distributor,
+            },
+            Some(PASSWORD),
+            "ana",
+        )
+        .unwrap();
+
+    // When an administrator removes them
+    store.remove_operator(bruno.id, "ana").unwrap();
+
+    // Then the account is gone, the removal is on the trail, and the username is
+    // free again
+    assert!(store.operator_by_id(bruno.id).unwrap().is_none());
+    let entry = store
+        .audit_entries(40)
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.event == "operator.removed")
+        .expect("the removal is on the trail");
+    assert!(entry.details.contains("operator=bruno"), "{entry:?}");
+    assert!(entry.details.contains("role=distributor"), "{entry:?}");
+    assert!(entry.details.contains("by=ana"), "{entry:?}");
+    store
+        .enrol_operator(
+            &NewOperator {
+                username: "bruno".into(),
+                display_name: "Bruno Nunes".into(),
+                role: Role::Auditor,
+            },
+            Some(PASSWORD),
+            "ana",
+        )
+        .expect("the username is free again");
+}
+
+/// The line this feature is drawn on: an entry whose actor the register cannot
+/// name is an entry nobody can act on, so history is what makes an account
+/// permanent.
+#[test]
+fn an_operator_who_wrote_an_audit_entry_can_only_be_disabled() {
+    // Given an operator who has signed in, which is one audit entry
+    let store = enrolled();
+    let bruno = store
+        .enrol_operator(
+            &NewOperator {
+                username: "bruno".into(),
+                display_name: "Bruno Costa".into(),
+                role: Role::Distributor,
+            },
+            Some(PASSWORD),
+            "ana",
+        )
+        .unwrap();
+    store
+        .sign_in_with_password("bruno", PASSWORD, Utc::now())
+        .expect("bruno signs in");
+    store.act_as(Authority::SignedIn(Role::Administrator));
+    store.mark_reverified(Utc::now());
+
+    // When an administrator tries to remove them
+    let refused = store.remove_operator(bruno.id, "ana");
+
+    // Then it is refused, in words that name the alternative, and the account is
+    // still there to disable
+    let Err(StoreError::Forbidden { what, .. }) = &refused else {
+        panic!("{refused:?}");
+    };
+    assert!(what.contains("disable"), "{what}");
+    assert!(store.operator_by_id(bruno.id).unwrap().is_some());
+    store.set_operator_active(bruno.id, false, "ana").unwrap();
+}
+
+/// A failed sign-in is recorded against `(not signed in)` rather than against
+/// the username that was typed, so an account that never got in is still
+/// removable — and a typo at the sign-in box cannot make one permanent.
+#[test]
+fn a_failed_sign_in_does_not_make_an_account_permanent() {
+    let store = enrolled();
+    let bruno = store
+        .enrol_operator(
+            &NewOperator {
+                username: "bruno".into(),
+                display_name: "Bruno Costa".into(),
+                role: Role::Distributor,
+            },
+            Some(PASSWORD),
+            "ana",
+        )
+        .unwrap();
+    let refused = store.sign_in_with_password("bruno", "the wrong one", Utc::now());
+    assert!(refused.is_err());
+    store.act_as(Authority::SignedIn(Role::Administrator));
+    store.mark_reverified(Utc::now());
+
+    store
+        .remove_operator(bruno.id, "ana")
+        .expect("a failed attempt is not history of their own");
+}
+
+#[test]
+fn the_last_administrator_and_the_signed_in_account_cannot_be_removed() {
+    let store = enrolled();
+    let ana = store.operator_by_username("ana").unwrap().unwrap();
+
+    // The last administrator: the same lockout `set_operator_active` refuses.
+    let last = store.remove_operator(ana.id, "felipe");
+    assert!(
+        matches!(last, Err(StoreError::Forbidden { .. })),
+        "{last:?}"
+    );
+
+    // And with a second administrator enrolled, ana still cannot remove herself:
+    // an administrator who deletes their own account mid-session leaves a
+    // session signed in as nobody.
+    store
+        .enrol_operator(
+            &NewOperator {
+                username: "bruno".into(),
+                display_name: "Bruno Costa".into(),
+                role: Role::Administrator,
+            },
+            Some(PASSWORD),
+            "ana",
+        )
+        .unwrap();
+    let herself = store.remove_operator(ana.id, "ana");
+    assert!(
+        matches!(herself, Err(StoreError::Forbidden { .. })),
+        "{herself:?}"
+    );
+}
+
+#[test]
+fn a_distributor_cannot_remove_an_operator() {
+    let store = enrolled();
+    let bruno = store
+        .enrol_operator(
+            &NewOperator {
+                username: "bruno".into(),
+                display_name: "Bruno Costa".into(),
+                role: Role::Distributor,
+            },
+            Some(PASSWORD),
+            "ana",
+        )
+        .unwrap();
+    store.act_as(Authority::SignedIn(Role::Distributor));
+    store.mark_reverified(Utc::now());
+
+    let refused = store.remove_operator(bruno.id, "bruno");
+    assert!(
+        matches!(refused, Err(StoreError::Forbidden { .. })),
+        "{refused:?}"
+    );
+    assert!(store.operator_by_id(bruno.id).unwrap().is_some());
+}
+
+/// An operator who forgot their password is otherwise locked out of a register
+/// that has no other way back in.
+#[test]
+fn an_administrator_can_replace_another_operators_password() {
+    // Given an operator whose password nobody remembers, and a lockout on top
+    let store = enrolled();
+    let bruno = store
+        .enrol_operator(
+            &NewOperator {
+                username: "bruno".into(),
+                display_name: "Bruno Costa".into(),
+                role: Role::Distributor,
+            },
+            Some(PASSWORD),
+            "ana",
+        )
+        .unwrap();
+    for _ in 0..3 {
+        let _ = store.sign_in_with_password("bruno", "not it", Utc::now());
+    }
+    store.act_as(Authority::SignedIn(Role::Administrator));
+    store.mark_reverified(Utc::now());
+    assert!(store.lockout_for("bruno").unwrap().failures > 0);
+
+    // When an administrator sets a new one
+    const REPLACEMENT: &str = "a different long enough passphrase";
+    store
+        .set_operator_password(bruno.id, REPLACEMENT, "ana")
+        .unwrap();
+
+    // Then the new password works, the old one does not, the failure history is
+    // gone with the credential it counted failures against, and the entry says a
+    // credential changed without saying anything about the password
+    store.act_as(Authority::SignedOut);
+    store
+        .sign_in_with_password("bruno", REPLACEMENT, Utc::now())
+        .expect("bruno signs in with the new password");
+    assert_eq!(store.lockout_for("bruno").unwrap().failures, 0);
+    let entry = store
+        .audit_entries(40)
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.event == "operator.credential.changed")
+        .expect("the change is on the trail");
+    assert!(entry.details.contains("operator=bruno"), "{entry:?}");
+    assert!(entry.details.contains("method=local"), "{entry:?}");
+    assert!(entry.details.contains("by=ana"), "{entry:?}");
+    assert!(!entry.details.contains(REPLACEMENT), "{entry:?}");
+    assert!(!entry.details.contains(PASSWORD), "{entry:?}");
+    assert!(!entry.details.contains("length"), "{entry:?}");
+}
+
+#[test]
+fn a_replacement_password_is_held_to_the_same_floor_and_a_distributor_cannot_set_one() {
+    let store = enrolled();
+    let bruno = store
+        .enrol_operator(
+            &NewOperator {
+                username: "bruno".into(),
+                display_name: "Bruno Costa".into(),
+                role: Role::Distributor,
+            },
+            Some(PASSWORD),
+            "ana",
+        )
+        .unwrap();
+
+    let weak = store.set_operator_password(bruno.id, "short", "ana");
+    assert!(matches!(weak, Err(StoreError::WeakPassword(_))), "{weak:?}");
+
+    store.act_as(Authority::SignedIn(Role::Distributor));
+    store.mark_reverified(Utc::now());
+    let refused = store.set_operator_password(bruno.id, "another long enough passphrase", "bruno");
+    assert!(
+        matches!(refused, Err(StoreError::Forbidden { .. })),
+        "{refused:?}"
+    );
+}
+
+/// Both new writes are sensitive operations, and both are refused on a session
+/// whose credential is no longer live (`features/operator-auth-and-roles.md`
+/// phase 5).
+#[test]
+fn removing_an_operator_and_setting_a_password_need_the_credential_again() {
+    let store = enrolled();
+    let bruno = store
+        .enrol_operator(
+            &NewOperator {
+                username: "bruno".into(),
+                display_name: "Bruno Costa".into(),
+                role: Role::Distributor,
+            },
+            Some(PASSWORD),
+            "ana",
+        )
+        .unwrap();
+    // The re-verification window closes.
+    store.mark_reverified(Utc::now() - Duration::hours(1));
+
+    let removal = store.remove_operator(bruno.id, "ana");
+    assert!(
+        matches!(removal, Err(StoreError::NeedsReverification { .. })),
+        "{removal:?}"
+    );
+    let password = store.set_operator_password(bruno.id, "another long enough passphrase", "ana");
+    assert!(
+        matches!(password, Err(StoreError::NeedsReverification { .. })),
+        "{password:?}"
+    );
+}
+
 #[test]
 fn an_operator_password_is_held_to_the_same_floor_as_the_database_password() {
     let store = enrolled();

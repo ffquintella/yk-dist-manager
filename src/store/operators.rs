@@ -554,6 +554,97 @@ impl Store {
         Ok(())
     }
 
+    /// Delete an operator who never wrote anything.
+    ///
+    /// Disabling is still the answer for somebody who *used* this register
+    /// ([`Store::set_operator_active`]), and this is the answer for the other
+    /// case: an account enrolled by mistake — a mistyped username, a person who
+    /// turned out not to be joining — which would otherwise sit in the list for
+    /// the life of the register with nothing behind it.
+    ///
+    /// The line between the two is drawn where the audit trail is: an operator
+    /// who is the `actor` on even one entry cannot be deleted, because the entry
+    /// would then name somebody the register has never heard of. A failed
+    /// sign-in does not count — those are recorded against `(not signed in)`, on
+    /// purpose — so an account that never got in is still removable.
+    ///
+    /// Three refusals, in the order they are cheapest to explain: the account
+    /// this session is signed in as, the register's last administrator, and an
+    /// operator with history.
+    pub fn remove_operator(&self, id: Uuid, by: &str) -> Result<()> {
+        self.require(Action::ManageOperators)?;
+        let operator = self
+            .operator_by_id(id)?
+            .ok_or_else(|| StoreError::NotFound(format!("operator {id}")))?;
+
+        if operator.username == by.trim().to_lowercase() {
+            return Err(StoreError::Forbidden {
+                who: "an administrator".to_owned(),
+                what: "delete the account they are signed in as — ask another administrator"
+                    .to_owned(),
+            });
+        }
+        // Only an *active* administrator is holding the register open; a disabled
+        // one is not in the count and deleting it costs nothing.
+        if operator.role == Role::Administrator
+            && operator.active
+            && self.administrator_count()? <= 1
+        {
+            return Err(StoreError::Forbidden {
+                who: "this register".to_owned(),
+                what: "delete its last administrator — enrol another one first".to_owned(),
+            });
+        }
+        let wrote = self.audit_entries_by(&operator.username)?;
+        if wrote > 0 {
+            return Err(StoreError::Forbidden {
+                who: "this register".to_owned(),
+                what: format!(
+                    "delete {}, who is the actor on {wrote} audit entr{} — disable the account \
+                     instead, which keeps the trail readable",
+                    operator.username,
+                    if wrote == 1 { "y" } else { "ies" }
+                ),
+            });
+        }
+
+        // The sign-in bookkeeping goes with the account: a lockout row left
+        // behind would be waiting for a username that no longer exists, and
+        // would apply to whoever is enrolled under it next.
+        self.conn.execute(
+            "DELETE FROM operator_sign_ins WHERE username = ?1",
+            params![operator.username],
+        )?;
+        self.conn.execute(
+            "DELETE FROM operators WHERE id = ?1",
+            params![id.to_string()],
+        )?;
+        self.append_audit(
+            by,
+            "operator.removed",
+            &format!("operator:{}", operator.username),
+            &format!(
+                "operator={} role={} by={by}",
+                operator.username,
+                operator.role.slug()
+            ),
+        )?;
+        Ok(())
+    }
+
+    /// How many audit entries name this username as the actor.
+    ///
+    /// The question [`Store::remove_operator`] asks, and the only thing the audit
+    /// trail is read for outside `report` and the verifier.
+    fn audit_entries_by(&self, username: &str) -> Result<usize> {
+        let count: i64 = self.conn.query_row(
+            "SELECT count(*) FROM audit WHERE actor = ?1",
+            params![username],
+            |row| row.get(0),
+        )?;
+        Ok(count as usize)
+    }
+
     /// Set or replace an operator's password.
     ///
     /// The audit entry says a credential changed and names the method. It does

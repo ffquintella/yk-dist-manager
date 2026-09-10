@@ -652,6 +652,153 @@ fn scenario_a_distributor_is_refused_a_template_edit_and_the_refusal_is_recorded
     );
 }
 
+/// An operator who forgot their password is otherwise shut out of a register
+/// that has no other way back in — and the person who lets them back in must
+/// not be able to do it quietly.
+#[test]
+fn scenario_an_administrator_gives_an_operator_a_new_password() {
+    isolated_home();
+    let dir = tempfile::tempdir().unwrap();
+    let database = dir.path().join("reset-password.sqlite3");
+    enrolled_register(&database);
+
+    // Given a distributor who has locked themselves out
+    let mut app = YkDistApp::new(Some(database.clone()));
+    for _ in 0..3 {
+        app.sign_in.username = "bruno".into();
+        app.sign_in.password = "not the one".into();
+        app.sign_in_with_password();
+    }
+    assert_eq!(app.session.authority(), Authority::SignedOut);
+
+    // And an administrator at the keyboard
+    app.sign_in.username = "ana".into();
+    app.sign_in.password = PASSWORD.into();
+    app.sign_in_with_password();
+    assert_eq!(
+        app.session.authority(),
+        Authority::SignedIn(Role::Administrator)
+    );
+    app.refresh_operators();
+    let bruno = app
+        .operator_panel
+        .operators
+        .iter()
+        .find(|operator| operator.username == "bruno")
+        .expect("bruno is on the list")
+        .id;
+
+    // When they choose a new password for them
+    const REPLACEMENT: &str = "eleven quiet lanterns in march";
+    app.operator_panel.resetting = Some(bruno);
+    app.operator_panel.reset_password = REPLACEMENT.into();
+    app.operator_panel.reset_password_again = REPLACEMENT.into();
+    assert!(app.require_reverification(Action::ManageOperators));
+    app.set_operator_password(bruno);
+
+    // Then the change is on the trail, naming who made it and by what method,
+    // the typed password is gone from the form, and the panel has closed
+    let changed = entries(&app, "operator.credential.changed");
+    assert_eq!(changed.len(), 1, "{changed:?}");
+    assert!(changed[0].contains("operator=bruno"), "{}", changed[0]);
+    assert!(changed[0].contains("method=local"), "{}", changed[0]);
+    assert!(changed[0].contains("by=ana"), "{}", changed[0]);
+    assert!(app.operator_panel.reset_password.is_empty());
+    assert!(app.operator_panel.resetting.is_none());
+
+    // And bruno can sign in with it, lockout and all, while the old password
+    // cannot
+    app.sign_out("explicit");
+    app.sign_in.username = "bruno".into();
+    app.sign_in.password = OTHER_PASSWORD.into();
+    app.sign_in_with_password();
+    assert_eq!(app.session.authority(), Authority::SignedOut);
+    app.sign_in.username = "bruno".into();
+    app.sign_in.password = REPLACEMENT.into();
+    app.sign_in_with_password();
+    assert_eq!(
+        app.session.authority(),
+        Authority::SignedIn(Role::Distributor)
+    );
+
+    // And nothing anybody typed is anywhere on the trail
+    let trail = whole_trail(&app);
+    assert!(!trail.contains(REPLACEMENT));
+    assert!(!trail.contains(OTHER_PASSWORD));
+    assert!(!trail.contains(PASSWORD));
+}
+
+/// The two halves of removing somebody, in one register: an account enrolled by
+/// mistake goes, and an account with history stays and is disabled instead.
+#[test]
+fn scenario_an_operator_enrolled_by_mistake_is_removed_and_one_with_history_is_not() {
+    isolated_home();
+    let dir = tempfile::tempdir().unwrap();
+    let database = dir.path().join("remove-operator.sqlite3");
+    enrolled_register(&database);
+
+    // Given an administrator who has also enrolled somebody by mistake
+    let mut app = YkDistApp::new(Some(database.clone()));
+    app.sign_in.username = "ana".into();
+    app.sign_in.password = PASSWORD.into();
+    app.sign_in_with_password();
+    app.operator_panel.new_username = "brunno".into();
+    app.operator_panel.new_display_name = "Bruno Costa".into();
+    app.operator_panel.new_role = Role::Distributor;
+    app.operator_panel.new_password = OTHER_PASSWORD.into();
+    app.operator_panel.new_password_again = OTHER_PASSWORD.into();
+    assert!(app.require_reverification(Action::ManageOperators));
+    app.enrol_operator();
+    let id_of = |app: &YkDistApp, username: &str| {
+        app.operator_panel
+            .operators
+            .iter()
+            .find(|operator| operator.username == username)
+            .map(|operator| operator.id)
+    };
+    let typo = id_of(&app, "brunno").expect("the mistyped account exists");
+
+    // When it is removed
+    app.operator_panel.removing = Some(typo);
+    app.remove_operator(typo);
+
+    // Then it is gone from the list, the removal is on the trail, and the panel
+    // has closed
+    assert!(
+        id_of(&app, "brunno").is_none(),
+        "the account is still there"
+    );
+    let removed = entries(&app, "operator.removed");
+    assert_eq!(removed.len(), 1, "{removed:?}");
+    assert!(removed[0].contains("operator=brunno"), "{}", removed[0]);
+    assert!(removed[0].contains("by=ana"), "{}", removed[0]);
+    assert!(app.operator_panel.removing.is_none());
+
+    // And when the operator who has actually used this register is removed
+    let bruno = id_of(&app, "bruno").expect("bruno is on the list");
+    app.sign_out("explicit");
+    app.sign_in.username = "bruno".into();
+    app.sign_in.password = OTHER_PASSWORD.into();
+    app.sign_in_with_password();
+    app.sign_out("explicit");
+    app.sign_in.username = "ana".into();
+    app.sign_in.password = PASSWORD.into();
+    app.sign_in_with_password();
+    app.refresh_operators();
+    app.remove_operator(bruno);
+
+    // Then it is refused, the account is still there, and the refusal is on the
+    // trail like every other one
+    assert!(id_of(&app, "bruno").is_some(), "bruno was deleted");
+    assert_eq!(entries(&app, "operator.removed").len(), 1);
+    let refusals = entries(&app, "operator.authorisation.refused");
+    assert!(!refusals.is_empty(), "the refusal was not recorded");
+
+    // And disabling them works, which is what the screen says to do instead
+    app.set_operator_active(bruno, false);
+    assert_eq!(entries(&app, "operator.disabled").len(), 1);
+}
+
 /// Phase 5, end to end through the application: an export is refused once the
 /// sign-in's own re-verification has lapsed, the prompt opens, and presenting
 /// the credential again lets it through.

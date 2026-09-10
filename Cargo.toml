@@ -1,6 +1,6 @@
 [package]
 name = "yk-dist-manager"
-version = "0.20.1"
+version = "0.21.0"
 edition = "2024"
 description = "YubiKey distribution and bootstrap manager (egui desktop app)"
 license = "MIT"
@@ -12,6 +12,15 @@ path = "src/lib.rs"
 [[bin]]
 name = "yk-dist-manager"
 path = "src/main.rs"
+
+# `build.rs` compiles `packaging/windows/app.rc` into the executable so it carries
+# the application icon (`features/application-icon.md`, AGENTS.md §1). Not gated on
+# `cfg(windows)`: a build-dependency's `cfg` is evaluated against the *host*, which
+# would drop it on a cross-compile to Windows — the one build that needs it. The
+# crate answers `NotWindows` and does nothing everywhere else, so the cost off
+# Windows is compiling the build script's dependencies once.
+[build-dependencies]
+embed-resource = "3"
 
 [dependencies]
 eframe = "0.36"

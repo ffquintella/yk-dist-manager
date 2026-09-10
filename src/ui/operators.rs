@@ -15,7 +15,7 @@
 //! by a SQLite authorizer and by `Store::require`, so a button painted by mistake
 //! still cannot change the register.
 
-use elegance::{Button, CalloutTone, Select};
+use elegance::{Accent, Button, CalloutTone, Select};
 
 use crate::app::YkDistApp;
 use crate::domain::MAX_TEXT;
@@ -438,6 +438,11 @@ fn list_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
     let mut unlock: Option<String> = None;
     let mut register: Option<uuid::Uuid> = None;
     let mut confirm_register: Option<(uuid::Uuid, u32)> = None;
+    let mut reset: Option<uuid::Uuid> = None;
+    let mut confirm_reset: Option<uuid::Uuid> = None;
+    let mut remove: Option<uuid::Uuid> = None;
+    let mut confirm_remove: Option<uuid::Uuid> = None;
+    let mut cancel_panels = false;
 
     super::titled_card(ui, "Operators on this register", |ui| {
         if operators.is_empty() {
@@ -490,6 +495,12 @@ fn list_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
                     };
                     if super::row_button(ui, label).clicked() {
                         register = Some(operator.id);
+                    }
+                    if super::row_button(ui, "Set password").clicked() {
+                        reset = Some(operator.id);
+                    }
+                    if super::row_button(ui, "Remove").clicked() {
+                        remove = Some(operator.id);
                     }
                 }
             });
@@ -547,11 +558,108 @@ fn list_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
             });
         }
 
+        // Replacing somebody else's password is how an operator who forgot
+        // theirs gets back in. It is not a way to read the old one — there is
+        // nothing to read — and the audit trail says a credential changed and
+        // who changed it, which is the part that has to be true.
+        if let Some(id) = app.operator_panel.resetting {
+            let who = display_name_of(&operators, id);
+            ui.add_space(12.0);
+            super::notice(
+                ui,
+                CalloutTone::Info,
+                &format!(
+                    "Choose a new password for {who}. Tell them in person rather than by \
+                     e-mail, and have them change it: from this moment until they do, an \
+                     administrator knows their password. The change is recorded on the audit \
+                     trail, and their lockout is lifted with it."
+                ),
+            );
+            ui.add_space(10.0);
+            super::form_columns(ui, |left, right, _width| {
+                super::capped_input(
+                    left,
+                    &mut app.operator_panel.reset_password,
+                    MAX_TEXT,
+                    |i| {
+                        i.label("New password")
+                            .password(true)
+                            .id_salt("reset-password")
+                    },
+                );
+                super::capped_input(
+                    right,
+                    &mut app.operator_panel.reset_password_again,
+                    MAX_TEXT,
+                    |i| {
+                        i.label("New password again")
+                            .password(true)
+                            .id_salt("reset-password-again")
+                    },
+                );
+            });
+            ui.add_space(8.0);
+            let assessment = super::password_meter(ui, &app.operator_panel.reset_password);
+            if let Some(error) = &app.operator_panel.error {
+                ui.add_space(10.0);
+                super::error_label(ui, error);
+            }
+            ui.add_space(12.0);
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add(Button::new("Set it").enabled(assessment.is_acceptable()))
+                    .clicked()
+                {
+                    confirm_reset = Some(id);
+                }
+                if ui.add(Button::new("Cancel").outline()).clicked() {
+                    cancel_panels = true;
+                }
+            });
+        }
+
+        // Deleting is the one act on this screen that removes rather than
+        // records, so it is previewed and confirmed by name. The store refuses
+        // it for anybody with history whatever this panel offers.
+        if let Some(id) = app.operator_panel.removing {
+            let who = display_name_of(&operators, id);
+            ui.add_space(12.0);
+            super::notice(
+                ui,
+                CalloutTone::Warning,
+                &format!(
+                    "Remove {who} from this register? The account, its password and its \
+                     registered security key go, and the username becomes free again. It is \
+                     refused for an operator who is the actor on any audit entry — if they \
+                     have used this register, disable them instead."
+                ),
+            );
+            if let Some(error) = &app.operator_panel.error {
+                ui.add_space(10.0);
+                super::error_label(ui, error);
+            }
+            ui.add_space(12.0);
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add(Button::new("Remove them").accent(Accent::Red))
+                    .clicked()
+                {
+                    confirm_remove = Some(id);
+                }
+                if ui.add(Button::new("Cancel").outline()).clicked() {
+                    cancel_panels = true;
+                }
+            });
+        }
+
         ui.add_space(10.0);
         super::hint(
             ui,
-            "An operator is disabled, never deleted: deleting one would orphan every audit entry \
-             they wrote. A register's last administrator can be neither demoted nor disabled.",
+            "An operator who has used this register is disabled rather than deleted: deleting \
+             one would leave every audit entry they wrote naming somebody the register has \
+             never heard of. An account that never wrote anything — a mistyped enrolment, a \
+             person who did not join — can be removed outright. A register's last administrator \
+             can be neither demoted, disabled nor removed.",
         );
     });
 
@@ -581,6 +689,43 @@ fn list_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
     {
         app.register_key_for_operator_on_hardware(id, serial);
     }
+    if let Some(id) = reset {
+        app.operator_panel.resetting = Some(id);
+        app.operator_panel.removing = None;
+        app.operator_panel.wipe();
+        app.operator_panel.error = None;
+    }
+    if let Some(id) = confirm_reset
+        && app.require_reverification(crate::operator::Action::ManageOperators)
+    {
+        app.set_operator_password(id);
+    }
+    if let Some(id) = remove {
+        app.operator_panel.removing = Some(id);
+        app.operator_panel.resetting = None;
+        app.operator_panel.wipe();
+        app.operator_panel.error = None;
+    }
+    if let Some(id) = confirm_remove
+        && app.require_reverification(crate::operator::Action::ManageOperators)
+    {
+        app.remove_operator(id);
+    }
+    if cancel_panels {
+        app.operator_panel.resetting = None;
+        app.operator_panel.removing = None;
+        app.operator_panel.wipe();
+        app.operator_panel.error = None;
+    }
+}
+
+/// The name to put in a sentence about an operator, by id.
+fn display_name_of(operators: &[crate::operator::Operator], id: uuid::Uuid) -> String {
+    operators
+        .iter()
+        .find(|operator| operator.id == id)
+        .map(|operator| operator.display_name.clone())
+        .unwrap_or_default()
 }
 
 fn humanise(duration: std::time::Duration) -> String {

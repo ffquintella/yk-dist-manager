@@ -21,10 +21,13 @@ icon is how you tell two windows apart at a glance.
 
 ## Current state
 
-**Done for Wave 0.** The mark reads at 32 px and up; below that it degrades to a
-light shape with a gold dot, which is still distinguishable from every other icon
-on the dock. What is left — a Windows `.ico` and a Linux `hicolor` install — is
-**Wave 3**, with the packaging it attaches to.
+**Done for Wave 0, and phase 5 landed with Wave 3's packaging.** The mark reads
+at 32 px and up; below that it degrades to a light shape with a gold dot, which is
+still distinguishable from every other icon on the dock. The Linux `hicolor`
+install (phase 6) shipped with the `.deb`, and the **Windows `.ico` resource
+inside the executable** (phase 5) went in on 2026-09-10 — reported after an
+install as the icon having disappeared, which it had not: it had never been in the
+binary at all. See *The Windows executable's own icon* below.
 
 - `assets/logo.svg` — the only hand-edited artwork in the repository.
 - `assets/render-icons.sh` (`make icons`) renders everything else.
@@ -97,11 +100,43 @@ bundle with an icon on a machine that has neither librsvg nor ImageMagick, and
 |---|---|
 | macOS, bundled | `CFBundleIconFile` → `packaging/macos/icon.icns` |
 | macOS, `cargo run` | the embedded blob |
-| Windows, Linux | the embedded blob |
+| Windows, the running window | the embedded blob |
+| Windows, Explorer / taskbar / Alt-Tab | `packaging/windows/app.rc` → `packaging/windows/icon.ico`, compiled into the `.exe` by `build.rs` |
+| Windows, Start Menu + Programs and Features | the MSI's Icon table, from the same `.ico` |
+| Linux | the embedded blob, plus the `hicolor` install for the launcher |
 | Documentation | `assets/icons/icon-*.png` |
 
-A Windows `.ico` resource and a Linux `hicolor` install are Todo; both are
-packaging work that has no packaging to attach to yet.
+### The Windows executable's own icon
+
+Windows reads an application's icon from **two unrelated places**, and having one
+of them right looks exactly like having both:
+
+* the MSI's `Icon` table, which the Start Menu shortcut and the Programs-and-
+  Features row use — shipped since the installer existed;
+* an icon **resource inside the `.exe`**, which is what Explorer, a pinned taskbar
+  button, Alt-Tab and the window class read — which was never there.
+
+So an operator who installed the tool got an icon on the Start Menu entry and a
+generic one everywhere they actually looked at the file, and nothing in the build
+or the verifier said a word. `build.rs` now compiles `packaging/windows/app.rc`,
+which is one line — `1 ICON "icon.ico"` — through `embed-resource`. Resource id 1
+is deliberate: the shell shows the icon with the *lowest* numeric id, so the mark
+has to hold it rather than merely be present.
+
+Three decisions in that build step, all the same shape as the ones above:
+
+* **Not gated on `cfg(windows)` in `Cargo.toml`.** A build-dependency's `cfg` is
+  evaluated against the *host*, so gating it would drop the crate on exactly the
+  build that needs it — a cross-compile to Windows. `embed_resource::compile`
+  answers `NotWindows` and does nothing elsewhere.
+* **`rustc-link-arg-bins`, not the library.** The resource belongs to
+  `yk-dist-manager.exe`, not to `yk_dist_manager` or to forty-three test binaries.
+* **A missing resource compiler is a `cargo:warning`, not a failed build.** The
+  same call `window_icon()` makes: an icon is cosmetic and the operator has work to
+  do. A warning in a CI log is easy to miss, so the check that is *not* optional
+  lives in `packaging/windows/verify-msi.ps1`, which asks the installed executable
+  how many icon groups it carries (`ExtractIconEx` with an index of −1) and fails
+  on zero.
 
 ### Inside the application (Phase 7)
 
@@ -152,7 +187,7 @@ happens between them, with nothing held.
 | 2 | Render script + `make icons` | 0 | Done | PNGs 16–1024, RGBA blob, `.icns` |
 | 3 | Window / dock icon | 0 | Done | `src/branding.rs`, wired in `src/main.rs` |
 | 4 | macOS bundle icon | 0 | Done | the bundle script already looked for the file |
-| 5 | Windows `.ico` resource | 3 | Todo | needs a `build.rs` resource step; no Windows packaging exists yet |
+| 5 | Windows `.ico` resource | 3 | **Done** | `packaging/windows/app.rc` compiled by `build.rs` through `embed-resource`; `verify-msi.ps1` fails an installed executable with no icon group |
 | 6 | Linux `hicolor` + `.desktop` entry | 3 | Todo | same: no Linux packaging exists yet |
 | 7 | In-application use | 0 | **Done** | three placements: the top bar beside the name, the database chooser at 96 px, and an **About box** opened from the version badge — which carries the `--diagnose` report, copyable |
 

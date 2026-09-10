@@ -1,0 +1,18 @@
+// Windows resources compiled into the executable
+// (`features/application-icon.md`, the Windows half of the platform table).
+//
+// Without this, the installed `yk-dist-manager.exe` carries no icon of its own:
+// the MSI's Icon table gives the Start Menu shortcut and the Programs-and-
+// Features row one, but Explorer, a pinned taskbar button, Alt-Tab and the
+// window class all read the *executable*, and an executable with no icon
+// resource gets the generic one. That is the icon an operator reported missing
+// after an install, and it was missing because it was never there — the .ico
+// existed only in the installer.
+//
+// Resource id 1 on purpose: the shell shows the icon with the **lowest**
+// numeric id as an executable's icon, so the application's mark has to hold it
+// rather than merely be present.
+//
+// The path is relative to this file, which is how both `rc.exe` and `llvm-rc`
+// resolve it, so this stays correct whatever directory the build runs from.
+1 ICON "icon.ico"

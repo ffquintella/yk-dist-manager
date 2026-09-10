@@ -294,6 +294,28 @@ Two things to say out loud to the unit before doing this:
   somebody who forgets theirs. If every administrator forgets theirs at once, the register
   cannot be administered from inside the application.
 
+### If somebody forgets their password
+
+**Operators** → the row → *Set password*. Any administrator can do it, it asks for your
+own credential again first, and it lifts their lockout at the same time. Give the new
+password in person rather than by e-mail, and have them change it: until they do, an
+administrator knows it. Audited as `operator.credential.changed`, which says the method
+and who made the change and nothing about the password itself.
+
+### If somebody should not be on the register any more
+
+**Disable them.** *Operators* → the row → *Disable*. Their account stays, so every audit
+entry they wrote still names somebody the register can identify, and they cannot sign in.
+This is the answer for anybody who has actually used the tool, and the application will
+insist on it: *Remove* is refused for an operator who is the actor on any audit entry, and
+says so.
+
+*Remove* exists for the other case — an account enrolled by mistake, a mistyped username,
+somebody who never started. It deletes the account, its password, its registered key and
+its failure history, frees the username, and is audited as `operator.removed`. A failed
+sign-in attempt does not make an account permanent; a successful one does. Neither the
+account you are signed in as nor the register's last administrator can be removed.
+
 ### If somebody is locked out
 
 Three wrong attempts lock an account for a minute, five for a quarter of an hour, seven for

@@ -21,6 +21,11 @@
 //!    characters a commit id and a `-dirty` suffix are made of, so a hostile or
 //!    broken `git` on `PATH` cannot inject `cargo:` directives into the build.
 //!
+//! It also compiles the **Windows resources** into the executable — today, the
+//! application icon (`features/application-icon.md`). Same three rules: it is a
+//! no-op off Windows, a toolchain that cannot compile a resource costs a warning
+//! and not a build, and nothing is interpolated into anything.
+//!
 //! One limitation, stated rather than discovered: the `-dirty` marker is as of the
 //! last time this script ran, and it re-runs when the commit moves rather than
 //! when a source file changes — so an incremental developer build can carry a
@@ -29,6 +34,7 @@
 //! checkout in CI (`.github/workflows/release.yml`), where this runs once against
 //! exactly the tree being shipped.
 
+use embed_resource::CompilationResult;
 use std::process::Command;
 
 /// The value used when nothing can be determined. Not an empty string: an
@@ -46,6 +52,35 @@ fn main() {
     }
 
     println!("cargo:rustc-env=YKDM_COMMIT={}", commit());
+    windows_resources();
+}
+
+/// Compile `packaging/windows/app.rc` into the binaries.
+///
+/// A no-op on every other platform: `embed_resource::compile` answers
+/// `NotWindows` without running anything, so this costs a macOS or Linux build
+/// nothing but the build script's own compile. On Windows it emits
+/// `rustc-link-arg-bins`, so the resource lands in `yk-dist-manager.exe` and not
+/// in the library or in a test binary.
+///
+/// **A missing resource compiler is a warning, never a failure.** That is the
+/// same call `src/main.rs` makes about the window icon: the icon is cosmetic and
+/// the operator has work to do, so a workstation whose Windows SDK is not where
+/// `rc.exe` is expected gets a generic icon and a line saying so, rather than a
+/// build that will not produce a tool at all. The release build is the one that
+/// must not be missing it, and `packaging/windows/verify-msi.ps1` checks the
+/// installed executable really carries an icon — a warning in a CI log is easy
+/// to miss, and that check is not.
+fn windows_resources() {
+    println!("cargo:rerun-if-changed=packaging/windows/app.rc");
+    println!("cargo:rerun-if-changed=packaging/windows/icon.ico");
+    // Matched rather than `manifest_optional()`, which treats *no compiler* as
+    // success and would therefore say nothing in the one case worth hearing
+    // about: a Windows build that quietly produced an icon-less executable.
+    match embed_resource::compile("packaging/windows/app.rc", embed_resource::NONE) {
+        CompilationResult::NotWindows | CompilationResult::Ok => {}
+        other => println!("cargo:warning=no Windows icon in this executable: {other}"),
+    }
 }
 
 /// `<short commit>`, `<short commit>-dirty`, or `unknown`.

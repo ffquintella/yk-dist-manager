@@ -16,6 +16,54 @@ Maintenance instructions (see AGENTS.md §5):
 * A database schema change also bumps store::SCHEMA_VERSION and ships a migration.
 -->
 
+## [0.21.0] - 2026-09-10
+
+### Added
+
+- **An administrator can remove an operator who never wrote anything, and can set another
+  operator's password** (`features/operator-auth-and-roles.md` phase 7). Two gaps in the
+  same screen, both reported from a real register.
+
+  *Removing.* Disabling was the only answer the Operators screen had, and it is the right
+  one for somebody who used the register and is leaving it: the audit entries they wrote
+  keep naming an account that still exists. It is the wrong one for an account enrolled by
+  mistake — a mistyped username, a person who did not join — which under that rule sits in
+  the list for the life of the register with nothing behind it. **The line is drawn where
+  the audit trail is**: an operator who is the `actor` on even one entry is refused, in
+  words that name disabling as the alternative, and one who is on none is deleted outright
+  along with their password, their registered key and their lockout row. A failed sign-in
+  does not count — those are recorded against `(not signed in)`, which is what makes an
+  account that never got in still removable. Also refused: the account the session is
+  signed in as, and the register's last administrator. Audited as `operator.removed`.
+
+  *Setting a password.* `Store::set_operator_password` had been written, tested and left
+  with **no caller** — so an operator who forgot their password had no way back into a
+  register whose only other administrator might be themselves. It is now on the row, behind
+  the same re-verification as every other change there, held to the same strength floor as
+  every other password in this tool, and it lifts the lockout with the credential the
+  failures were counted against. The audit entry says a credential changed, by which method
+  and who changed it — never the password, never its length. The panel says out loud that
+  an administrator now knows that password and that the operator should change it, because
+  a control whose weakness is not stated is one nobody compensates for.
+
+  Both are refused below the screen and not only at the button, like everything else on it.
+
+### Fixed
+
+- **The installed Windows executable carries its own icon** (`features/application-icon.md`).
+  Reported after an install as "the icon disappeared", and it had never been there: the MSI's
+  Icon table gives the Start Menu shortcut and the Programs-and-Features row an icon, but
+  Explorer, a pinned taskbar button, Alt-Tab and the window class all read the **executable**,
+  and `yk-dist-manager.exe` had no icon resource in it — the `.ico` existed only in the
+  installer. `build.rs` now compiles `packaging/windows/app.rc` into the binaries, which is
+  the build-script change the roadmap said this was waiting for.
+
+  It is a no-op on macOS and Linux, and a **warning rather than a failure** when a Windows
+  toolchain cannot compile a resource — the same call `src/main.rs` already makes about the
+  window icon, because an icon is cosmetic and a build that will not produce a tool is not.
+  A warning in a CI log is easy to miss, so `packaging/windows/verify-msi.ps1` now asks the
+  *installed* executable how many icon groups it carries and fails on zero.
+
 ## [0.20.1] - 2026-09-10
 
 ### Changed

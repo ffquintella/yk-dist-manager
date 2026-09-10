@@ -336,7 +336,23 @@ make coverage-core     # THE GATE: cargo llvm-cov --all-features --fail-under-li
 make coverage-html     # browsable, when you need to find the gap
 ```
 
-Current: **86.76%** core line coverage (86.22% region), measured 2026-09-10 by
+Current: **86.88%** core line coverage (86.34% region), measured 2026-09-10 by
+`make coverage-core` on the full `--all-features` suite — the run that gated
+0.21.0: removing an operator and setting another operator's password
+(`features/operator-auth-and-roles.md` phase 7), and the Windows icon resource
+(`features/application-icon.md` phase 5).
+
+Up an eighth of a point, and the split is the ordinary one this section keeps
+asking for rather than anything new: the two decisions — *may this account be
+deleted*, which is three refusals and a count of audit entries, and *is this
+password strong enough for this account* — are in
+[`store::operators`](src/store/operators.rs) and are covered case by case, while
+what went into `app.rs` and `src/ui/operators.rs` is a caller, a panel and a
+confirmation, which the measurement excludes by contract. The Windows half moved
+nothing at all and should not have: it is a `build.rs` step that answers
+`NotWindows` on the machine doing the measuring.
+
+The 86.76% (86.22% region) this replaces was measured 2026-09-10 by
 `make coverage-core` on the full `--all-features` suite — the run that gated 0.20.1:
 Direct3D 12 as the first rung of the Windows renderer ladder, and the `app.build`
 line at the head of every session and every rotated generation of the log

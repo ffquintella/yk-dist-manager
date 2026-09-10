@@ -290,6 +290,31 @@ try {
                 Fail "no Start Menu shortcut at $shortcut"
             }
 
+            # The icon *inside* the executable (features/application-icon.md).
+            # Nothing above catches its absence: the shortcut and the
+            # Programs-and-Features row take theirs from the MSI's Icon table and
+            # look right whether or not the binary has one, while Explorer, a
+            # pinned taskbar button and Alt-Tab read the executable — which is
+            # how an install shipped with a generic icon and nothing said so.
+            #
+            # ExtractIconEx with an index of -1 returns the number of icon groups
+            # in the file and extracts nothing, so this is a question rather than
+            # a side effect. Zero means build.rs did not compile app.rc in, which
+            # is a cargo:warning that scrolled past in a CI log.
+            if (-not ('Ykdm.IconCount' -as [type])) {
+                Add-Type -Namespace Ykdm -Name IconCount -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern int ExtractIconExW(string file, int index, System.IntPtr[] large, System.IntPtr[] small, int count);
+'@
+            }
+            $icons = [Ykdm.IconCount]::ExtractIconExW($installedExe, -1, $null, $null, 0)
+            if ($icons -gt 0) {
+                Pass "the installed executable carries its own icon ($icons group(s))"
+            }
+            else {
+                Fail 'the installed executable has no icon resource — Explorer and the taskbar will show the generic one'
+            }
+
             # The decisive check, and the same one the other two platforms make: the
             # installed binary is asked about itself.
             Write-Host ''
