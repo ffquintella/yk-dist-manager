@@ -156,6 +156,13 @@ pub struct LogFile {
     handle: File,
     /// Bytes in the current file, carried across runs from its length at open.
     written: u64,
+    /// A line written at the head of every generation this file starts, if the
+    /// caller gave one — see [`LogFile::with_header`].
+    ///
+    /// A function rather than a string because it is called once per rotation,
+    /// possibly hours apart, and its timestamp has to be the timestamp of the
+    /// generation it opens.
+    header: Option<fn() -> String>,
 }
 
 impl LogFile {
@@ -176,7 +183,22 @@ impl LogFile {
             keep,
             handle,
             written,
+            header: None,
         })
+    }
+
+    /// Write `header()` at the head of every generation this file starts.
+    ///
+    /// [`crate::logging::metadata_line`] is what the application passes: the
+    /// build, the platform and the process id. Not written on *open*, because
+    /// the session that opens a file writes the same line to every sink as it
+    /// starts — but written on every rotation, because a generation that
+    /// rotated in the middle of an afternoon would otherwise carry no version
+    /// anywhere in it, and it is exactly the generations behind the current one
+    /// that get collected for a ticket.
+    pub fn with_header(mut self, header: fn() -> String) -> Self {
+        self.header = Some(header);
+        self
     }
 
     /// The file currently being written.
@@ -216,6 +238,14 @@ impl LogFile {
         }
         self.handle = append_to(&self.path)?;
         self.written = 0;
+        // Straight to the handle rather than through `write_line`: this is the
+        // line that opens a generation, and it must not be able to trigger the
+        // rotation it is the consequence of.
+        if let Some(header) = self.header {
+            let line = header();
+            self.handle.write_all(line.as_bytes())?;
+            self.written = line.len() as u64;
+        }
         Ok(())
     }
 }
@@ -398,6 +428,80 @@ mod tests {
             std::fs::read_to_string(home.path().join(rotated_name(1))).unwrap(),
             "0123456789\n",
             "and the previous one moved to .1"
+        );
+    }
+
+    /// A header a test can recognise on sight, standing in for
+    /// [`crate::logging::metadata_line`].
+    fn test_header() -> String {
+        "HEADER version=0.0.0-test\n".to_owned()
+    }
+
+    #[test]
+    fn every_generation_a_rotation_opens_starts_by_saying_what_wrote_it() {
+        // The reason this exists: the log collected from the workstation that
+        // would not open had rotated three times, and not one generation of it
+        // said which build, which platform or which of the processes writing to
+        // it had produced any given line. The current file gets that line from
+        // the session that opened it; a generation opened by a rotation, hours
+        // later, has to write its own.
+        let home = temp();
+        let mut log = LogFile::with_limits(home.path(), 24, 2)
+            .unwrap()
+            .with_header(test_header);
+
+        log.write_line(b"first\n").unwrap();
+        // Enough to pass the limit twice, so a rotated generation is inspected
+        // as well as the current one.
+        log.write_line(b"0123456789012345678\n").unwrap();
+        log.write_line(b"0123456789012345678\n").unwrap();
+
+        let current = std::fs::read_to_string(home.path().join(FILE_NAME)).unwrap();
+        assert!(
+            current.starts_with("HEADER "),
+            "the generation now being written opens with the metadata: {current}"
+        );
+        let previous = std::fs::read_to_string(home.path().join(rotated_name(1))).unwrap();
+        assert!(
+            previous.starts_with("HEADER "),
+            "and so does the one behind it: {previous}"
+        );
+    }
+
+    #[test]
+    fn the_header_counts_against_the_budget_like_any_other_line() {
+        // Otherwise the ceiling this module promises is off by one header per
+        // generation, and a header longer than the limit would loop.
+        let home = temp();
+        let mut log = LogFile::with_limits(home.path(), 40, 2)
+            .unwrap()
+            .with_header(test_header);
+        log.write_line(b"0123456789\n").unwrap();
+        log.write_line(b"0123456789\n").unwrap();
+        // 11 + 11 = 22 in the first generation, then the rotation writes a
+        // 26-byte header: one more line of 11 must not fit.
+        log.write_line(b"0123456789\n").unwrap();
+        log.write_line(b"0123456789\n").unwrap();
+
+        let current = std::fs::read_to_string(home.path().join(FILE_NAME)).unwrap();
+        assert_eq!(
+            current,
+            format!("{}0123456789\n", test_header()),
+            "the header is part of what filled the previous generation"
+        );
+    }
+
+    #[test]
+    fn a_file_with_no_header_rotates_exactly_as_before() {
+        // The header is opt-in: nothing else in the application writes one, and
+        // the tests of rotation above must keep measuring rotation alone.
+        let home = temp();
+        let mut log = LogFile::with_limits(home.path(), 16, 2).unwrap();
+        log.write_line(b"0123456789\n").unwrap();
+        log.write_line(b"abcdefghij\n").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(home.path().join(FILE_NAME)).unwrap(),
+            "abcdefghij\n"
         );
     }
 

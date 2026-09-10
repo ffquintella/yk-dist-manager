@@ -211,18 +211,34 @@ fn main() -> eframe::Result {
     );
 
     match &started {
-        Ok(()) => tracing::info!(event = "app.stopped"),
+        Ok(()) => {
+            tracing::info!(event = "app.stopped");
+            // The session is over. The marker was removed the moment the window
+            // existed, so this is only belt and braces.
+            logfile::finished();
+        }
         Err(problem) => tracing::error!(
             event = "app.window.failed",
             // The one failure `main` can still report: `run_native` returns
             // rather than panicking when there is no display, no usable
             // graphics backend, or no permission to open a window.
+            //
+            // The marker is deliberately *not* removed here (it was, until
+            // Direct3D 12 became the first rung on Windows): asking wgpu for one
+            // backend means a workstation with no driver for it gets an error
+            // rather than a dead process, and for the purpose of choosing the
+            // next backend a refused window and a window that killed the process
+            // are the same fact. Leaving it is what makes the next start step
+            // down. If the window was created and `run_native` failed later, the
+            // marker is already gone and nothing here can accuse the next start.
+            //
+            // The cost is one extra `app.start.previous_incomplete` line at that
+            // next start, saying what this line has already said. That is a
+            // duplicate sentence in a log, weighed against an application that
+            // never opens.
             detail = problem.to_string()
         ),
     }
-    // A start that got no window is over too; leaving the marker would make the
-    // *next* launch report a failure that this line already recorded properly.
-    logfile::finished();
 
     started
 }

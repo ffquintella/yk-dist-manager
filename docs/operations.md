@@ -1192,6 +1192,25 @@ into a ticket is what you will read in the file.
 
 Format: `[dd/mm/aaaa] hh:mm:ss ; evento ; nivel=… detalhes`.
 
+**The first line of every session — and of every rotated generation — is an `app.build`
+line saying what wrote the rest of it:**
+
+```text
+[10/09/2026] 09:45:59 ; app.build ; nivel=Informacao version=0.21.0 commit=abc1234 build=release os=windows arch=x86_64 pid=8124 features=file-dialog+camera+native-piv+native-fido+native-otp
+```
+
+Read it before anything else in a file that arrives in a ticket. It answers the three
+questions that otherwise cost a round trip: **which build** this really is (a workstation
+believed to have been upgraded, still on the version whose fault is being reported),
+**which platform**, and **which process** — one log file holds the lines of every instance
+writing to it, so an application left open all morning and three failed launches are
+interleaved in it, and `pid=` is what tells them apart.
+
+Third-party noise is filtered by default: the card library reports `connected to reader`
+at every poll, once or twice a second, which is enough to rotate a day's diagnostics out
+of the file. Errors and warnings from it are kept. `$YKDM_LOG=debug` raises everything,
+including that; `$YKDM_LOG=info,yubikey=warn` is the default.
+
 ### Where the file is
 
 | Platform | Directory |
@@ -1227,7 +1246,9 @@ yk-dist-manager --diagnose | grep "log file"
 `$YKDM_LOG=debug` raises the level.
 
 The marker beside the log — `startup-in-progress` — is written while a start is under way
-and removed once there is a window. Finding one means that start never finished, and it
+and removed once there is a window (or left behind when the window was *refused*, so the
+next launch knows to ask for a different backend). Finding one means that start never
+produced a window, and it
 names the stage and the graphics backend that start was asking for, which is what lets the
 *next* launch try a different one (*"the application will not start"*, below).
 
@@ -1292,9 +1313,11 @@ dies before painting a single pixel.
    it does not need a reinstall: set `$YKDM_DB` to a path that does exist, or move the
    settings file aside so the chooser comes up on a clean slate.
 
-5. **Stage `window` usually needs nothing from you.** The application steps down to the
-   next graphics backend by itself on the launch after — Direct3D 12, then OpenGL on
-   Windows — remembers whichever one produces a window, and says which it used:
+5. **Stage `window` usually needs nothing from you.** On Windows the application asks
+   for **Direct3D 12 first** — every report of this failure has been wgpu preferring a
+   Vulkan driver that takes the process down, and Direct3D 12 is the one that then
+   works — and steps down to OpenGL by itself on the launch after if that fails too. It
+   remembers whichever one produces a window, and says which it used:
 
    ```bash
    yk-dist-manager --diagnose | grep renderer
@@ -1320,4 +1343,7 @@ dies before painting a single pixel.
 
 6. Send the log file and the `--diagnose` output with the report. Between them they name
    the build, the commit, every path involved, the stage that failed and the graphics
-   backend it failed on.
+   backend it failed on. Check the `app.build` line at the head of the file against the
+   version you believe is installed **before** reading anything else: a log full of a
+   fault that was fixed two releases ago is usually a workstation that was never
+   upgraded.

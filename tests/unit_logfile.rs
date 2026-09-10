@@ -13,7 +13,7 @@ use std::path::Path;
 
 use yk_dist_manager::logbuf::{Level, LogBuffer};
 use yk_dist_manager::logfile::{self, LogFile};
-use yk_dist_manager::logging::{FgvFormat, Sinks};
+use yk_dist_manager::logging::{self, FgvFormat, Sinks};
 
 fn temp() -> tempfile::TempDir {
     tempfile::tempdir().expect("a temporary directory")
@@ -236,5 +236,64 @@ fn a_panic_message_cannot_break_the_line_format() {
         message.chars().count() < 500,
         "an unbounded payload is capped, not written whole: {} chars",
         message.chars().count()
+    );
+}
+
+#[test]
+fn every_generation_of_the_log_says_which_build_and_process_wrote_it() {
+    // Given the composition `logging::init` makes: a file that writes the build
+    // metadata at the head of every generation it opens, and a session that
+    // writes the same line to every sink before the subscriber exists.
+    let home = temp();
+    let buffer = LogBuffer::new();
+    let file = LogFile::with_limits(home.path(), 512, 2)
+        .expect("the log file opens")
+        .with_header(logging::metadata_line);
+    let sinks = Sinks::new(Some(file), buffer.clone());
+    sinks.note(Level::Info, &logging::metadata_line());
+
+    // When the session runs long enough to rotate — an afternoon at a reception
+    // desk, which is how the file that prompted this arrived three generations
+    // deep with no version anywhere in it
+    let subscriber = tracing_subscriber::fmt()
+        .event_format(FgvFormat)
+        .with_writer(sinks)
+        .with_max_level(tracing::Level::TRACE)
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        for n in 0..40 {
+            tracing::info!(event = "key.detected", serial = n);
+        }
+    });
+
+    // Then the generation being written and the one behind it both open with the
+    // build, the platform and the process id
+    let expected = format!("pid={}", std::process::id());
+    for file in [
+        home.path().join(logfile::FILE_NAME),
+        home.path().join(logfile::rotated_name(1)),
+    ] {
+        let body = std::fs::read_to_string(&file).expect("the generation is readable");
+        let first = body.lines().next().expect("it is not empty");
+        assert!(
+            first.contains("app.build") && first.contains(&expected),
+            "{} does not say what wrote it: {first}",
+            file.display()
+        );
+        assert!(
+            first.contains(&format!("version={}", yk_dist_manager::VERSION)),
+            "{first}"
+        );
+    }
+
+    // And the panel the operator copies from was told as well, because a support
+    // call that starts in the panel must not have to end in the file.
+    let panel = buffer.lines(Level::Debug);
+    assert!(
+        panel
+            .first()
+            .is_some_and(|line| line.text.contains("app.build")),
+        "the panel opens with the same line: {:?}",
+        panel.first()
     );
 }

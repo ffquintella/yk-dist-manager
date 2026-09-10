@@ -19,7 +19,7 @@ operator which step got there.
 
 ## Current state
 
-**Done — phases 1, 2 and 3.** `src/logging.rs` is the entry point and the format,
+**Done — phases 1, 2, 3, 6 and 7.** `src/logging.rs` is the entry point and the format,
 `src/logfile.rs` is what reaches the disk, and `src/logbuf.rs` is what the panel
 shows. One formatted line, three sinks, because a panel or a file showing a
 different shape of line from the one in the ticket is how a support conversation
@@ -39,7 +39,13 @@ goes wrong.
   tracing::info!(event = "key.detected", serial = 20423633);
   // [10/08/2026] 14:32:05 ; key.detected ; nivel=Informacao serial=20423633
   ```
-- Filtering via the `YKDM_LOG` environment variable (`EnvFilter`), default `info`.
+- Filtering via the `YKDM_LOG` environment variable (`EnvFilter`), default
+  `DEFAULT_FILTER` = `info,yubikey=warn`. The crate-level exception is phase 7's,
+  and is argued for there.
+- `metadata()`, `metadata_line()` and `render_line()`: what identifies this build
+  and this process, the G-002 line it is written as, and the one function every
+  line in this application is formatted by — including `FgvFormat`'s, so the
+  hand-written first line of a file cannot drift from the rest of it.
 - `try_init` so a second call in a test binary is harmless.
 - `Sinks` is the `MakeWriter` every line goes through: the rotating file, the
   in-memory ring, and stderr. `make_writer_for` is what carries the severity into
@@ -67,6 +73,10 @@ goes wrong.
 - The **start-up marker**: `note_stage`, `finished`, `previous_attempt`,
   `stage_of`, and `explain`, which turns a stage into the sentence an operator can
   act on.
+- `with_header`: a line written at the head of every generation a **rotation**
+  opens. Not on open, because the session that opens a file writes the same line
+  to every sink as it starts; on rotation, because a generation that turned over
+  in the middle of an afternoon would otherwise carry no version anywhere in it.
 
 `src/logbuf.rs`:
 
@@ -121,12 +131,23 @@ into a sentence — *"it stopped asking the windowing system for a window — us
 the graphics driver, a remote or headless session, or a display that is no longer
 attached"*.
 
-Two deliberate non-behaviours. The panic hook does **not** touch the marker: a
-panic during start-up is already covered by the stage on disk, and one three
-hours into a session would otherwise accuse the next launch of a start-up failure
-that never happened. And a launch that gets no window still clears the marker
-before returning, because `app.window.failed` has already recorded that properly
-and a second report of the same failure is noise.
+One deliberate non-behaviour, and one decision reversed. The panic hook does
+**not** touch the marker: a panic during start-up is already covered by the stage
+on disk, and one three hours into a session would otherwise accuse the next launch
+of a start-up failure that never happened.
+
+The reversal: a launch whose window was **refused** — `run_native` returning `Err`
+— used to clear the marker before returning, on the argument that
+`app.window.failed` had already recorded the failure properly and a second report
+of it was noise. That argument was right about the log and wrong about the ladder.
+Since Direct3D 12 became the first rung a Windows start asks for
+(`features/renderer-fallback.md`), a workstation with no driver for the backend
+being asked for gets an error rather than a dead process — and for the purpose of
+choosing which backend to try next, a refused window and a window that killed the
+process are the same fact. The marker is therefore left where it is, and the price
+is one duplicate `app.start.previous_incomplete` line at the next start. A window
+that was created and failed later is unaffected: the marker was removed the moment
+the window existed, so there is nothing there to leave.
 
 `--diagnose` prints both the log path and any unfinished start, which matters
 because every other line in that report describes a process that *did* start — it
@@ -148,6 +169,7 @@ entry.
 | 3 | "Show log" panel in the GUI | 0 | **Done** | shipped as `features/gui-shell.md` phase 8: [`crate::logbuf`](../src/logbuf.rs) keeps the last N lines and a resizable bottom panel shows them with a level filter and *Copy all* (⌘/Ctrl + L). Recorded here because this spec is where somebody looks for it |
 | 4 | Structured (JSON) sink option | — | Todo | keep the same three fields; needs ESI agreement before diverging from the text format |
 | 5 | Correlation id per bootstrap run | 2 | Todo | one id threading every step's log lines and audit entries |
+| 7 | The log says which build, platform and process wrote it | 3 | **Done** | `app.build` at the head of every session and every rotated generation: `version`, `commit`, `build`, `os`, `arch`, `pid`, `features`. Plus the default filter that keeps the card library's per-poll line out of the file. Both came from one log collected in the field on 2026-09-10 — see below |
 | 6 | The start-up procedure records itself | 3 | **Done** | panic hook, `app.window.failed`, and the stage marker a launch leaves behind when it dies too abruptly to log. Its first use in the field found a Windows workstation whose Vulkan driver killed the process inside `request_device`, which is now recovered from automatically (`features/renderer-fallback.md`) — the marker carries the graphics backend as well as the stage. Added with phase 2 rather than specified ahead of it: the file sink is what made the question answerable, and the question — "it does not open and there is nothing to look at" — is the one that motivated the phase |
 
 Phase 2 mattered more than it looked, and the evidence is that finishing it
@@ -156,6 +178,40 @@ connected to the logging layer and could only ever show "0 log lines" (phase 3 w
 recorded as done in two specs), and the whole start-up path had no way of
 reporting a failure at all — `run_native`'s error went into `main`'s return value
 and a panic went to a stderr that does not exist in a windows-subsystem binary.
+
+### What one log file could not answer (phase 7)
+
+A log collected from a workstation that would not open, 976 KiB, three failed
+launches in it. Everything the previous phases promised was there — the stage, the
+explanation, the adapter list — and the file still could not answer two questions
+that had to be asked over the telephone:
+
+**Which build is this?** Every `app.start` line in it said `version=0.19.2`, on a
+workstation everybody involved believed was running 0.20.0 — the release that
+fixes precisely the fault the log was collected for. The version was in the file,
+in one event, near the top of a generation that had rotated three times: whoever
+reads a log next should not have to know that `app.start` is where to look, nor
+find a generation that still has one.
+
+**Which process wrote which line?** 3,500 of the file's lines were the `yubikey`
+crate's `connected to reader`, at one to two a second, from an instance opened
+that morning that was *still running* — interleaved line by line with three
+launches that never got a window. Nothing in the file said there were two
+processes, and reading it as one process is nonsense: it appears to poll a card
+continuously while simultaneously failing to start.
+
+So: `app.build` at the head of every session *and* every rotated generation, with
+`pid` in it, and the polling filtered down to `warn`. The metadata is the build,
+the platform and a process id — no personal data and no secret (§2 of
+`AGENTS.md`), which is what makes it safe to put at the top of a file that gets
+e-mailed into a ticket.
+
+Deliberately *not* in it: the log path (already in `app.start`, and the file
+naming its own path is circular), the database path (in `app.start`, and it is the
+one field here that could name a person's share), and the renderer (chosen after
+logging is up, and `app.renderer` records it — a rotated generation loses that
+line, and the metadata line is not the place to duplicate a decision made
+elsewhere).
 
 ## Audit events
 
@@ -168,10 +224,19 @@ Unit tests in `src/logging.rs`:
 - `levels_map_to_three_categories`
 - `first_event_field_wins_and_rest_become_details`
 
+In-source tests in `src/logging.rs` for phase 7:
+
+- `the_metadata_line_names_the_build_the_platform_and_the_process`
+- `the_metadata_line_has_the_same_shape_as_every_other_line`
+- `the_default_filter_keeps_the_card_polling_out_of_the_log`
+
 In-source tests in `src/logfile.rs`: rotation (that it happens, that the
 generations move along in order, that the oldest is dropped), that a second run
 appends rather than truncating, that a line longer than the whole budget is still
-written whole, that `describe` creates nothing, and the marker's lifecycle.
+written whole, that `describe` creates nothing, the marker's lifecycle, and the
+header — `every_generation_a_rotation_opens_starts_by_saying_what_wrote_it`,
+`the_header_counts_against_the_budget_like_any_other_line`,
+`a_file_with_no_header_rotates_exactly_as_before`.
 
 `tests/unit_logfile.rs` — the parts that need the real subscriber or the real
 environment:
@@ -184,6 +249,8 @@ environment:
 - `a_long_session_cannot_fill_the_disk`
 - `the_environment_decides_where_the_log_goes`
 - `a_panic_message_cannot_break_the_line_format`
+- `every_generation_of_the_log_says_which_build_and_process_wrote_it` — the
+  composition `init` makes, run long enough to rotate
 
 `tests/behaviour_startup_logging.rs` reproduces `main`'s sequence, which the real
 one cannot be tested through because it ends in `eframe::run_native` and a test
@@ -194,6 +261,8 @@ binary has no display:
 - `the_marker_names_the_last_stage_the_launch_reached`
 - `what_the_dying_launch_managed_to_log_is_on_disk_afterwards`
 - `the_diagnostic_report_names_a_start_that_never_finished`
+- `a_window_the_platform_refused_leaves_the_marker_so_the_next_start_steps_down`
+- `a_window_that_was_created_and_then_failed_does_not_accuse_the_next_start`
 
 And in `src/diagnostics.rs`,
 `the_report_names_the_log_file_and_any_start_that_never_finished`.

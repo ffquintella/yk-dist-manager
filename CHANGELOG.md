@@ -16,6 +16,55 @@ Maintenance instructions (see AGENTS.md §5):
 * A database schema change also bumps store::SCHEMA_VERSION and ships a migration.
 -->
 
+## [0.20.1] - 2026-09-10
+
+### Changed
+
+- **Windows asks for Direct3D 12 first, rather than reaching it on the second launch**
+  (`features/renderer-fallback.md`). The ladder shipped in 0.20.0 started at wgpu's own
+  preference, which on Windows is the thing that faults: every report has been the same
+  four adapters, the Vulkan one chosen, the process gone inside `request_device`, and
+  `WGPU_BACKEND=dx12` starting the same binary on the same machine. Recovering on the
+  *next* start meant the operator still watched the application fail to open once. The
+  Windows ladder is now Direct3D 12 → OpenGL, with wgpu's preference off it entirely —
+  still reachable through `$YKDM_RENDERER=auto` and `$WGPU_BACKEND`, which is where a
+  deliberate probe belongs. Linux and macOS are unchanged.
+
+  A marker naming a backend that is not a rung of this platform's ladder — one from a
+  build with no ladder at all, which is what an un-upgraded workstation leaves behind —
+  now starts the ladder at the top instead of guessing where that backend would have sat.
+
+- **A window the platform *refused* now steps the ladder down as well as one that killed
+  the process.** Asking wgpu for a single backend means a workstation with no driver for
+  it gets an error from `run_native` rather than a dead process, which is a failure
+  Direct3D-12-first makes possible; for the purpose of choosing the next backend the two
+  are the same fact. The start-up marker is therefore left in place when `run_native`
+  returns an error, at the cost of one duplicate `app.start.previous_incomplete` line at
+  the next start.
+
+### Added
+
+- **Every session and every rotated generation of the log now opens with an `app.build`
+  line** naming the version, the commit, the build profile, the operating system, the
+  architecture, the process id and the compiled features (`features/logging.md` phase 7).
+  From a log collected in the field on 2026-09-10: three failed launches in one file, all
+  of them from 0.19.2 on a workstation everybody believed was running the release that
+  fixes exactly what it was failing at — and interleaved with them, line by line, the
+  card polling of a *fourth* process nobody knew was still open. Nothing in the file said
+  either thing. `version=` says which build, `pid=` says which process, and both are in
+  every generation, because the generations behind the current one are the ones that get
+  collected for a ticket.
+
+### Fixed
+
+- **The card library no longer fills the log with its own polling.** `yubikey` reports
+  `connected to reader` at `info` on every poll, once or twice a second for as long as a
+  key is in the slot: 3,500 lines of one sentence in the 976 KiB file above, which had
+  rotated away every generation that held the start-up lines it was collected for. The
+  default filter is now `info,yubikey=warn` — its warnings and errors are kept, and
+  `$YKDM_LOG` overrides it as before. `wgpu` and `eframe` stay at `info`: the adapter
+  list they print is what named the faulting backend in the first place.
+
 ## [0.20.0] - 2026-09-10
 
 ### Fixed

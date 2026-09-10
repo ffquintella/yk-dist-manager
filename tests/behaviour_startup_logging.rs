@@ -16,6 +16,7 @@ use std::path::Path;
 use yk_dist_manager::logbuf::LogBuffer;
 use yk_dist_manager::logfile::{self, LogFile, stage};
 use yk_dist_manager::logging::{FgvFormat, Sinks};
+use yk_dist_manager::renderer::{self, Reason, Renderer};
 
 fn temp() -> tempfile::TempDir {
     tempfile::tempdir().expect("a temporary directory")
@@ -60,6 +61,29 @@ fn launch(directory: &Path, dies_at: Option<&str>) {
         }
         logfile::finished_in(directory);
         tracing::info!(event = "app.ready");
+    });
+}
+
+/// The arm of `main` that runs when `eframe::run_native` returns an error: the
+/// windowing system refused a window rather than the process dying inside it.
+///
+/// The marker is deliberately left where it is, which is what lets the next
+/// start step down the renderer ladder (`features/renderer-fallback.md`).
+fn launch_refused(directory: &Path, renderer: Renderer) {
+    let file = LogFile::open(directory).expect("the log file opens");
+    let subscriber = tracing_subscriber::fmt()
+        .event_format(FgvFormat)
+        .with_writer(Sinks::new(Some(file), LogBuffer::new()))
+        .with_max_level(tracing::Level::TRACE)
+        .finish();
+
+    tracing::subscriber::with_default(subscriber, || {
+        logfile::note_stage_with_in(directory, stage::WINDOW, &[("renderer", renderer.slug())])
+            .expect("the marker is writable");
+        tracing::error!(
+            event = "app.window.failed",
+            detail = "no available graphics adapter"
+        );
     });
 }
 
@@ -185,4 +209,61 @@ fn the_diagnostic_report_names_a_start_that_never_finished() {
         described.contains("nothing written yet"),
         "a marker with no log beside it says so rather than inventing a size: {described}"
     );
+}
+
+#[test]
+fn a_window_the_platform_refused_leaves_the_marker_so_the_next_start_steps_down() {
+    // Given a Windows workstation asked for Direct3D 12 — the first rung there —
+    // on which the platform refused a window outright rather than dying: no
+    // driver for that backend, so wgpu found no adapter and `run_native`
+    // returned an error it could name.
+    let home = temp();
+    launch_refused(home.path(), Renderer::Dx12);
+
+    // Then the launch said why, in the log, as it always did
+    let body = log_body(home.path());
+    assert!(body.contains("app.window.failed"), "{body}");
+
+    // And the marker is still on disk, naming the backend that was refused —
+    // which it was not, before Direct3D 12 became the rung a Windows start asks
+    // for first. A refused window and a window that killed the process are the
+    // same fact when the question is which backend to try next.
+    let marker = logfile::previous_attempt_in(home.path()).expect("the marker was left");
+    assert_eq!(logfile::stage_of(&marker), Some(stage::WINDOW), "{marker}");
+    assert_eq!(
+        logfile::field_of(&marker, "renderer"),
+        Some("dx12"),
+        "{marker}"
+    );
+
+    // When the operator tries again on that workstation's ladder
+    let decision = renderer::decide_on(
+        &[Renderer::Dx12, Renderer::Gl],
+        None,
+        None,
+        Some(&marker),
+        Renderer::Automatic,
+    );
+
+    // Then this start asks for something else, rather than repeating a request
+    // the platform has already refused once
+    assert_eq!(decision.renderer, Renderer::Gl);
+    assert_eq!(decision.reason, Reason::SteppedDown);
+    assert!(decision.worth_a_warning());
+}
+
+#[test]
+fn a_window_that_was_created_and_then_failed_does_not_accuse_the_next_start() {
+    // The other half of leaving the marker: a session that got its window and
+    // fell over an hour later must not read as a start-up failure. Nothing has
+    // to be undone for that, because the marker was removed the moment the
+    // window existed — this is the assertion that it stays that way.
+    let home = temp();
+    launch(home.path(), None);
+    launch_refused(home.path(), Renderer::Gl); // a late failure writes no marker of its own
+    logfile::finished_in(home.path());
+
+    launch(home.path(), None);
+    let body = log_body(home.path());
+    assert!(!body.contains("previous_incomplete"), "{body}");
 }

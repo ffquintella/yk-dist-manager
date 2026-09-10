@@ -35,6 +35,107 @@ use crate::logfile::LogFile;
 /// Field names accepted as the `evento` slot of the log line.
 const EVENT_FIELDS: [&str; 3] = ["message", "event", "evento"];
 
+/// The filter a start uses when `$YKDM_LOG` says nothing.
+///
+/// `info` for this application, and `warn` for the [`yubikey`] crate, whose
+/// `connected to reader` line is emitted at `info` **on every poll of the card**
+/// — once or twice a second, for as long as a key is in the slot. A log file
+/// recovered from a workstation that had been open for an afternoon was 976 KiB
+/// of which 3,500 lines were that one sentence: it had rotated away every
+/// generation that held the start-up lines the file was collected for. Warnings
+/// and errors from the crate are kept, because those are about the key rather
+/// than about the polling.
+///
+/// `wgpu` and `eframe` are deliberately left at `info`: the adapter list they
+/// print is what named the faulting backend on the workstation
+/// `features/renderer-fallback.md` exists for.
+pub const DEFAULT_FILTER: &str = "info,yubikey=warn";
+
+/// Whether this is a release build, in the one word a ticket needs.
+fn build_profile() -> &'static str {
+    if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    }
+}
+
+/// What identifies this build and this process, for the head of every log file.
+///
+/// The whole point is that a log file arriving in a ticket answers "which build,
+/// on what, and which of the processes writing here" without anybody having to
+/// ask. Every field is one that has already cost a support conversation:
+///
+/// * `version`, `commit`, `build` — the file that prompted this had three starts
+///   in it, all from 0.19.2, on a workstation everyone believed had been
+///   upgraded to the release that fixes exactly what it was failing at.
+/// * `os`, `arch` — the same binary is installed on Windows, macOS and Linux.
+/// * `pid` — that file was **two** processes: an instance from the morning still
+///   polling its key, interleaved line by line with three launches that never
+///   got a window. Nothing in the file said so.
+/// * `features` — whether this build has `encrypted-db`, a camera or a native
+///   transport changes which failures are even possible.
+///
+/// Nothing here is personal data and nothing here is a secret (AGENTS.md §2):
+/// it is the build, the platform and a process id.
+pub fn metadata() -> Vec<(&'static str, String)> {
+    vec![
+        ("version", crate::VERSION.to_owned()),
+        ("commit", crate::COMMIT.to_owned()),
+        ("build", build_profile().to_owned()),
+        ("os", std::env::consts::OS.to_owned()),
+        ("arch", std::env::consts::ARCH.to_owned()),
+        ("pid", std::process::id().to_string()),
+        (
+            "features",
+            crate::diagnostics::compiled_features().join("+"),
+        ),
+    ]
+}
+
+/// [`metadata`] as one G-002 line, ready to write.
+///
+/// Built by hand rather than emitted through `tracing`, because the two places
+/// that need it are both outside a subscriber: the first line of a session,
+/// written before the subscriber is installed, and the first line of every
+/// rotated generation, written by [`crate::logfile::LogFile`] as it opens one.
+/// Same [`render_line`] as every other line, so the shape cannot drift.
+pub fn metadata_line() -> String {
+    let details: Vec<String> = metadata()
+        .into_iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect();
+    render_line(
+        chrono::Local::now(),
+        "app.build",
+        level_label(&Level::INFO),
+        &details.join(" "),
+    )
+}
+
+/// The G-002 layout itself, in one place: `[dd/mm/aaaa] hh:mm:ss ; evento ;
+/// detalhes`, newline included.
+///
+/// Every line this application writes goes through here — the subscriber's
+/// [`FgvFormat`] and the hand-written [`metadata_line`] alike — because a file
+/// whose first line has a different shape from the rest is a file no parser and
+/// no reader can trust.
+pub fn render_line(
+    now: chrono::DateTime<chrono::Local>,
+    event: &str,
+    nivel: &str,
+    details: &str,
+) -> String {
+    format!(
+        "[{}] {} ; {} ; nivel={} {}\n",
+        now.format("%d/%m/%Y"),
+        now.format("%H:%M:%S"),
+        event,
+        nivel,
+        details,
+    )
+}
+
 /// Install the global subscriber. Safe to call once; later calls are ignored.
 ///
 /// Three sinks, all fed the same G-002 line (see [`Sinks`]): the rotating file
@@ -60,13 +161,19 @@ pub fn init() {
             None
         }
     };
-    install(Sinks::new(file, crate::logbuf::shared()));
+    let file = file.map(|file| file.with_header(metadata_line));
+    let sinks = Sinks::new(file, crate::logbuf::shared());
+    // Before the subscriber, and to all three sinks: whoever reads this file,
+    // this panel or this terminal should not have to ask which build wrote it.
+    sinks.note(crate::logbuf::Level::Info, &metadata_line());
+    install(sinks);
 }
 
 /// Install a subscriber writing to `sinks`. Later calls are ignored, which is
 /// what makes a second `init()` in a test binary harmless.
 fn install(sinks: Sinks) {
-    let filter = EnvFilter::try_from_env("YKDM_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter =
+        EnvFilter::try_from_env("YKDM_LOG").unwrap_or_else(|_| EnvFilter::new(DEFAULT_FILTER));
     let _ = tracing_subscriber::fmt()
         .event_format(FgvFormat)
         .with_writer(sinks)
@@ -105,6 +212,17 @@ impl Sinks {
             buffer,
             file_failing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    /// Write one already-formatted line to every sink, outside the subscriber.
+    ///
+    /// For the line that has to be written *before* `tracing` exists — the
+    /// build metadata at the head of a session ([`metadata_line`]) — and for
+    /// nothing else. Everything that happens while the application is running
+    /// goes through `tracing::info!` and friends, so it is filtered, levelled
+    /// and timestamped like the rest.
+    pub fn note(&self, level: crate::logbuf::Level, line: &str) {
+        self.emit(level, line.as_bytes());
     }
 
     fn emit(&self, level: crate::logbuf::Level, line: &[u8]) {
@@ -332,15 +450,15 @@ where
         let mut captured = Captured::default();
         event.record(&mut captured);
 
-        let now = chrono::Local::now();
-        writeln!(
+        write!(
             writer,
-            "[{}] {} ; {} ; nivel={} {}",
-            now.format("%d/%m/%Y"),
-            now.format("%H:%M:%S"),
-            captured.event.as_deref().unwrap_or("(sem evento)"),
-            level_label(event.metadata().level()),
-            captured.details.join(" "),
+            "{}",
+            render_line(
+                chrono::Local::now(),
+                captured.event.as_deref().unwrap_or("(sem evento)"),
+                level_label(event.metadata().level()),
+                &captured.details.join(" "),
+            )
         )
     }
 }
@@ -355,6 +473,67 @@ mod tests {
         assert_eq!(level_label(&Level::WARN), "Aviso");
         assert_eq!(level_label(&Level::INFO), "Informacao");
         assert_eq!(level_label(&Level::DEBUG), "Informacao");
+    }
+
+    #[test]
+    fn the_metadata_line_names_the_build_the_platform_and_the_process() {
+        // The log that prompted this: three starts in one file, all of them from
+        // a version everybody believed had been replaced, interleaved with the
+        // lines of a fourth process nobody knew was still running.
+        let line = metadata_line();
+        for expected in [
+            "app.build",
+            "nivel=Informacao",
+            &format!("version={}", crate::VERSION),
+            &format!("commit={}", crate::COMMIT),
+            &format!("os={}", std::env::consts::OS),
+            &format!("arch={}", std::env::consts::ARCH),
+            &format!("pid={}", std::process::id()),
+            "build=",
+            "features=",
+        ] {
+            assert!(
+                line.contains(expected),
+                "{expected} is missing from: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_metadata_line_has_the_same_shape_as_every_other_line() {
+        // It is written by hand, before the subscriber exists, so this is the
+        // only thing keeping it from being the one line in the file that no
+        // reader of the file can parse.
+        let line = metadata_line();
+        assert!(line.ends_with('\n'), "{line:?}");
+        let body = line.trim_end();
+        let parts: Vec<&str> = body.split(" ; ").collect();
+        assert_eq!(parts.len(), 3, "expected the G-002 three fields: {body}");
+        assert!(parts[0].starts_with('['), "{body}");
+        assert_eq!(parts[1], "app.build");
+        // No field may carry a `;` or a newline into the middle of a line.
+        for (key, value) in metadata() {
+            assert!(
+                !value.contains(';') && !value.contains('\n'),
+                "{key}={value} would break the line format"
+            );
+        }
+    }
+
+    #[test]
+    fn the_default_filter_keeps_the_card_polling_out_of_the_log() {
+        // 3,500 lines of `connected to reader` in one collected log file, at one
+        // to two a second, which had rotated away every generation that held the
+        // start-up lines it was collected for.
+        assert!(DEFAULT_FILTER.starts_with("info"));
+        assert!(DEFAULT_FILTER.contains("yubikey=warn"));
+        assert!(
+            EnvFilter::try_new(DEFAULT_FILTER).is_ok(),
+            "an unparseable default would silently become `info` for everything"
+        );
+        // wgpu's adapter list is what named the faulting backend on the
+        // workstation `features/renderer-fallback.md` exists for: it stays.
+        assert!(!DEFAULT_FILTER.contains("wgpu"));
     }
 
     #[test]

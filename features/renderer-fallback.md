@@ -44,7 +44,8 @@ that starts with "it does nothing" costs more than the ladder does.
 
 ## Current state
 
-**Done, all six phases**, shipped in 0.20.0.
+**Done, all six phases**, shipped in 0.20.0, and **phase 7** — Direct3D 12 as the
+first rung on Windows rather than the second — pending release.
 [`src/renderer.rs`](../src/renderer.rs) decides, the start-up marker carries the
 attempt, `settings.json` remembers the answer, `--diagnose` and the About box
 print it, and **Settings → Graphics** shows it with a warning when a start died in
@@ -67,12 +68,12 @@ That marker named the stage. It now names the attempt as well —
 `stage=window renderer=automatic` — which is the single field this whole
 mechanism needs.
 
-| The marker left behind | The next start does |
+| The marker left behind | The next start does (Windows) |
 |---|---|
-| nothing | the remembered renderer, or the platform default |
-| `stage=window renderer=automatic` | step down — Direct3D 12 |
+| nothing | the remembered renderer, or the top of the ladder — Direct3D 12 |
 | `stage=window renderer=dx12` | step down — OpenGL |
 | `stage=window renderer=gl` | stay; the ladder is out of rungs, and says so |
+| `stage=window renderer=automatic`, or no `renderer=` at all | start the ladder at the top — Direct3D 12 |
 | any other stage | nothing — that start died of something else |
 
 The last two rows are the ones worth defending. **Staying** at the bottom rather
@@ -81,6 +82,38 @@ and cycling would give the operator a different failure every launch instead of 
 stable one to report. **Ignoring other stages**: a start that died building the
 application had its window, and stepping the renderer down would hide a register
 failure behind a graphics change.
+
+### Why Windows starts at Direct3D 12 (phase 7)
+
+The ladder as first shipped began at wgpu's own preference, on the reasonable
+principle that a machine where nothing has failed should be left alone. Applied to
+Windows, that principle is wrong, and the log that arrived on 2026-09-10 is why:
+the same workstation, three more launches, each one ending on the adapter list
+with the Vulkan adapter chosen, each one leaving a marker the *next* launch then
+acted on. Recovering on the next start is recovery, but what the operator sees is
+an application that fails to open, and then opens.
+
+wgpu's preference on Windows is Vulkan, and the Vulkan driver is the only thing
+that has ever faulted here. Direct3D 12 is the interface Microsoft ships and
+supports with the operating system, every driver on a supported Windows has one,
+and it is what fixed the reported machine outright. So the Windows ladder is now
+**Direct3D 12 → OpenGL**, and wgpu's preference is not a rung of it at all — it
+stays reachable through `$YKDM_RENDERER=auto` and `$WGPU_BACKEND`, which is where
+a deliberate probe belongs. Linux keeps the default → OpenGL, macOS keeps Metal
+and nothing else: neither has had a fault reported, and restricting the backends
+on a machine that works is a way to break one.
+
+Two consequences fell out of it, both in `next_after`:
+
+- An attempt that is **not a rung of this platform's ladder** has used up none of
+  it, so the untried rungs are all of them and the next one is the top. That is
+  what a marker with no `renderer=` field means — a build from before this
+  module, i.e. every un-upgraded workstation still leaving markers behind — and
+  the rung it wants is Direct3D 12, not "whatever follows wgpu's preference".
+- A **refused** window steps the ladder down like a fatal one. Asking for a single
+  backend means a machine with no driver for it gets an `Err` out of `run_native`
+  rather than dying, so `main` no longer clears the marker on that path
+  (`features/logging.md`, *What a failed start leaves behind*).
 
 ### Why the answer is remembered
 
@@ -97,7 +130,10 @@ when it changes — a start that confirms what was already known must not rewrit
 the file.
 
 `Automatic` is written like any other rung: a workstation that needed Direct3D 12
-and stops needing it should stop being told to use it.
+and stops needing it should stop being told to use it. It is also the value that
+means *nothing has been remembered yet* — a settings file written before this
+feature has it — and on Windows the ambiguity cannot bite, because `Automatic` is
+not a rung there and so is never what produced a window.
 
 ### The two environment variables
 
@@ -142,6 +178,7 @@ holds no decision — it reports the one it was given, hands the backends to
 | 3 | Remember what worked | 3 | **Done** | `settings.renderer`, written from the creator closure once a window exists |
 | 4 | Say so | 3 | **Done** | `app.renderer` (warn when it stepped down or ran out of rungs), `app.renderer.remembered`, and a `renderer:` line in `--diagnose` |
 | 5 | Operator override | 3 | **Done** | `$YKDM_RENDERER`, documented in `--help`; `$WGPU_BACKEND` takes precedence over everything and is left to wgpu |
+| 7 | Direct3D 12 first on Windows | 3 | **Done** | The ladder becomes `dx12 → gl`, wgpu's preference leaves it, an off-ladder attempt starts from the top, and a refused window steps down as well as a fatal one. From three more launches of the same workstation, on 2026-09-10 — recovering on the next start still shows the operator a failure |
 | 6 | A visible explanation on screen | 3 | **Done** | **Settings → Graphics**, beside the device transport, plus the renderer in the About box's report. Reports, deliberately without a picker — see *Why the card does not offer a choice* |
 
 ### Why the card does not offer a choice
@@ -187,10 +224,11 @@ support call reads it.
 
 ## Tests
 
-In-source in [`src/renderer.rs`](../src/renderer.rs) — all pure, and all against
-the three-rung Windows ladder passed in as an argument:
+In-source in [`src/renderer.rs`](../src/renderer.rs) — all pure, and all against a
+ladder passed in as an argument, so the Windows one is exercised by a macOS run:
 
-- `a_workstation_where_nothing_has_failed_gets_the_platform_default`
+- `a_workstation_where_nothing_has_failed_gets_the_top_of_its_ladder`
+- `windows_does_not_offer_wgpu_s_own_preference_as_a_rung`
 - `a_start_that_died_asking_for_a_window_steps_down_one_rung`
 - `the_ladder_is_walked_one_rung_at_a_time_not_jumped_to_the_bottom`
 - `the_bottom_rung_dying_stops_stepping_and_says_the_fault_is_elsewhere`
@@ -202,8 +240,8 @@ the three-rung Windows ladder passed in as an argument:
 - `an_explicit_choice_overrides_the_remembered_rung_and_is_not_remembered`
 - `an_unrecognised_choice_is_ignored_rather_than_failing_the_start`
 - `every_spelling_an_operator_would_try_names_a_rung`
-- `a_rung_this_platform_does_not_have_has_nothing_below_it`
-- `this_platform_s_ladder_starts_at_the_default_and_repeats_no_rung`
+- `a_rung_this_platform_does_not_have_starts_the_ladder_from_the_top`
+- `this_platform_s_ladder_starts_where_it_should_and_repeats_no_rung`
 - `every_rung_has_a_distinct_slug_and_reads_back_as_itself`
 - `every_reason_explains_itself_naming_the_renderer`
 - `only_a_start_that_died_in_the_driver_is_worth_a_warning`
@@ -222,6 +260,11 @@ In-source in [`src/logfile.rs`](../src/logfile.rs), for the marker field:
 
 `tests/unit_settings.rs` covers the round trip of the new field through a
 settings file written before it existed.
+
+In `tests/behaviour_startup_logging.rs`, for phase 7's marker change:
+
+- `a_window_the_platform_refused_leaves_the_marker_so_the_next_start_steps_down`
+- `a_window_that_was_created_and_then_failed_does_not_accuse_the_next_start`
 
 What is **not** tested, and cannot be: that Direct3D 12 works where Vulkan
 faults. That is one driver on one machine, it is the fault this exists for, and

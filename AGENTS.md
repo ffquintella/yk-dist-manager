@@ -336,7 +336,25 @@ make coverage-core     # THE GATE: cargo llvm-cov --all-features --fail-under-li
 make coverage-html     # browsable, when you need to find the gap
 ```
 
-Current: **86.70%** core line coverage (86.15% region), measured 2026-09-09 by
+Current: **86.76%** core line coverage (86.22% region), measured 2026-09-10 by
+`make coverage-core` on the full `--all-features` suite — the run that gated 0.20.1:
+Direct3D 12 as the first rung of the Windows renderer ladder, and the `app.build`
+line at the head of every session and every rotated generation of the log
+(`features/renderer-fallback.md` phase 7, `features/logging.md` phase 7).
+
+Up six hundredths of a point on ~200 lines of new code, which is what this section
+predicts for a change made of decisions. Both halves went where they are testable:
+`renderer::next_after` gained the rule that an attempt off this platform's ladder
+starts it from the top — pure, and the reason a macOS measurement exercises the
+Windows ladder at all — and the log metadata is `logging::metadata()` plus one
+`render_line` that `FgvFormat` now also formats through, so the hand-written first
+line of a file cannot drift from the rest of it. What is not covered is the part
+that cannot be: `main.rs` no longer clearing the start-up marker when
+`eframe::run_native` returns an error, which needs a windowing system that refuses
+a window. `tests/behaviour_startup_logging.rs` reproduces the sequence instead, as
+it does for the rest of that path.
+
+The 86.70% (86.15% region) this replaces was measured 2026-09-09 by
 `make coverage-core` on the full `--all-features` suite — the run that gated the
 automatic renderer fallback and its Settings card
 (`features/renderer-fallback.md`, all six phases).

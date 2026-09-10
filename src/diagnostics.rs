@@ -72,7 +72,9 @@ Environment:
   YKDM_DB                      Database file to open (overrides the remembered one)
   YKDM_SETTINGS                Settings file (recent databases, operator identity)
   YKDM_DATA_DIR                Per-user data directory
-  YKDM_LOG                     Log filter, e.g. `debug`
+  YKDM_LOG                     Log filter, e.g. `debug` (default `info,yubikey=warn`,
+                               which keeps the card library's per-poll line out of the
+                               file it would otherwise fill)
   YKDM_RENDERER                Graphics backend to ask for: `automatic`, `dx12` or
                                `gl`. A probe for a workstation that will not open a
                                window; it is not remembered, and $WGPU_BACKEND — which

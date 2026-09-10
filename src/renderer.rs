@@ -25,13 +25,33 @@
 //! That marker names the stage a dead start reached. Give it the renderer as
 //! well and it names the *attempt*, which is everything this module needs:
 //!
-//! | The marker left behind | This start does |
+//! | The marker left behind | This start does (on Windows) |
 //! |---|---|
-//! | nothing | the remembered renderer, or the platform default |
-//! | `stage=window renderer=automatic` | step down — try Direct3D 12 |
+//! | nothing | the remembered renderer, or the top of the ladder |
 //! | `stage=window renderer=dx12` | step down — try OpenGL |
 //! | `stage=window renderer=gl` | stay; the ladder is out of rungs and says so |
+//! | `stage=window` and no `renderer=` | a build with no ladder, which asked for
+//!   whatever wgpu preferred: start the ladder at the top |
 //! | any other stage | nothing; that start died of something else |
+//!
+//! ## Why Windows starts at Direct3D 12 rather than at wgpu's preference
+//!
+//! Because on Windows wgpu's preference is the thing that faults. Every report
+//! of this failure has been the same shape: four adapters offered, the Vulkan
+//! one chosen, the process gone inside `request_device` — and `WGPU_BACKEND=dx12`
+//! starting the same binary on the same machine. Direct3D 12 is the interface
+//! Microsoft ships and supports with the operating system, every GPU driver on
+//! a supported Windows has one, and it is the backend the fault has never been
+//! reported on.
+//!
+//! So asking for the platform default first buys nothing and costs a launch: the
+//! ladder recovers on the *next* start, which means the operator sees the
+//! application fail to open once before it works. Starting at Direct3D 12 makes
+//! the common Windows case the first thing tried rather than the second, and
+//! leaves OpenGL below it for a workstation whose D3D12 is the broken one.
+//! `Automatic` is therefore not a rung of the Windows ladder at all — it stays
+//! reachable through `$YKDM_RENDERER=auto` and `$WGPU_BACKEND`, which is where a
+//! deliberate probe belongs.
 //!
 //! ## Why the answer is remembered
 //!
@@ -60,8 +80,13 @@ use crate::settings::AppSettings;
 #[serde(rename_all = "kebab-case")]
 pub enum Renderer {
     /// Whatever wgpu prefers on this platform, which is what every start did
-    /// before this module existed. The top of every ladder, and the only rung on
-    /// a workstation where nothing has ever failed.
+    /// before this module existed. The top of the ladder everywhere except
+    /// Windows, where wgpu's preference is the thing that faults and this is not
+    /// a rung at all — see the module documentation.
+    ///
+    /// Also the value that means *nothing has been remembered yet*, which is why
+    /// it is the [`Default`]: a settings file with no renderer in it, and a
+    /// start-up marker from a build that had no ladder, both mean this.
     #[default]
     Automatic,
     /// Direct3D 12 only.
@@ -133,7 +158,7 @@ impl Renderer {
 /// exactly why the arms should not need it.
 pub fn ladder() -> &'static [Renderer] {
     if cfg!(windows) {
-        &[Renderer::Automatic, Renderer::Dx12, Renderer::Gl]
+        &[Renderer::Dx12, Renderer::Gl]
     } else if cfg!(target_os = "linux") {
         &[Renderer::Automatic, Renderer::Gl]
     } else {
@@ -141,14 +166,37 @@ pub fn ladder() -> &'static [Renderer] {
     }
 }
 
+/// The renderer a start asks for when nothing has ever failed on this
+/// workstation: the top of its ladder.
+///
+/// Not [`Renderer::Automatic`] any more, and that is the whole of the Windows
+/// change: there, the top of the ladder is Direct3D 12.
+pub fn first_rung(ladder: &[Renderer]) -> Renderer {
+    ladder.first().copied().unwrap_or_default()
+}
+
 /// The rung below `current` on `ladder`, if there is one.
 ///
-/// A `current` that is not on this platform's ladder — a settings file copied
-/// from a Windows workstation to a Mac — has no rung below it, which is the
-/// honest answer rather than a guess at where it would have sat.
+/// A `current` that is not on this platform's ladder has not used up any rung of
+/// it, so the untried rungs are all of them and the answer is the top. Two real
+/// cases, both of which want exactly that:
+///
+/// * a Windows start that died asking for the platform default — either a build
+///   from before this module, whose marker has no `renderer=` field at all, or a
+///   deliberate `$YKDM_RENDERER=auto` probe. `Automatic` is not a Windows rung,
+///   and the rung to try after wgpu's own preference killed the process is
+///   Direct3D 12, at the top;
+/// * a settings file carried from a Windows workstation to a Mac, remembering
+///   `dx12`. The Mac has Metal and nothing else, and starting its one-rung
+///   ladder at the top is the only move available.
+///
+/// The top of the ladder being `current` itself is `None`: there is nothing
+/// untried, which is what [`Reason::Exhausted`] is for.
 pub fn next_after(ladder: &[Renderer], current: Renderer) -> Option<Renderer> {
-    let at = ladder.iter().position(|rung| *rung == current)?;
-    ladder.get(at + 1).copied()
+    match ladder.iter().position(|rung| *rung == current) {
+        Some(at) => ladder.get(at + 1).copied(),
+        None => ladder.first().copied().filter(|top| *top != current),
+    }
 }
 
 /// Why a start is using the renderer it is using.
@@ -316,9 +364,14 @@ pub fn decide_on(
         };
     }
 
+    // `Automatic` in the settings file means nothing has been remembered, not
+    // that wgpu's preference was remembered: it is the value a settings file
+    // written before this module — or by a start that never had to choose — has
+    // in it. On Windows the distinction cannot arise the other way round, since
+    // `Automatic` is not a rung there and so is never what produced a window.
     if remembered == Renderer::Automatic {
         Decision {
-            renderer: Renderer::Automatic,
+            renderer: first_rung(ladder),
             reason: Reason::FirstTry,
             after: None,
         }
@@ -383,9 +436,21 @@ pub fn remember_in(settings: &mut AppSettings, renderer: Renderer) -> bool {
 mod tests {
     use super::*;
 
-    /// The Windows ladder, named here so every test below exercises all three
-    /// rungs whatever platform is running them.
-    const THREE: &[Renderer] = &[Renderer::Automatic, Renderer::Dx12, Renderer::Gl];
+    /// The Windows ladder, named here so the tests below exercise it whatever
+    /// platform is running them — which is why [`decide_on`] takes the ladder as
+    /// an argument at all.
+    const WINDOWS: &[Renderer] = &[Renderer::Dx12, Renderer::Gl];
+
+    /// The Linux ladder, where wgpu's own preference is still the first thing
+    /// asked for.
+    const LINUX: &[Renderer] = &[Renderer::Automatic, Renderer::Gl];
+
+    /// A ladder with a middle rung, so "one rung at a time" can be asserted at
+    /// all. No platform ships this one; the stepping is the same function.
+    const DEEP: &[Renderer] = &[Renderer::Automatic, Renderer::Dx12, Renderer::Gl];
+
+    /// Every renderer there is, for the properties that must hold of all of them.
+    const ALL: &[Renderer] = &[Renderer::Automatic, Renderer::Dx12, Renderer::Gl];
 
     fn marker(stage: &str, renderer: Option<&str>) -> String {
         match renderer {
@@ -395,11 +460,35 @@ mod tests {
     }
 
     #[test]
-    fn a_workstation_where_nothing_has_failed_gets_the_platform_default() {
-        let decision = decide_on(THREE, None, None, None, Renderer::Automatic);
-        assert_eq!(decision.renderer, Renderer::Automatic);
+    fn a_workstation_where_nothing_has_failed_gets_the_top_of_its_ladder() {
+        // Windows: Direct3D 12 on the first attempt, not on the second. Every
+        // report of this fault has been wgpu preferring a Vulkan driver that
+        // takes the process down, and a ladder that only recovers on the next
+        // start costs the operator a launch that does nothing.
+        let decision = decide_on(WINDOWS, None, None, None, Renderer::Automatic);
+        assert_eq!(decision.renderer, Renderer::Dx12);
         assert_eq!(decision.reason, Reason::FirstTry);
         assert!(decision.worth_remembering());
+
+        // Elsewhere the platform default is still the first thing asked for:
+        // nothing has been reported against it, and restricting the backends on
+        // a machine that works is a way to break one.
+        let elsewhere = decide_on(LINUX, None, None, None, Renderer::Automatic);
+        assert_eq!(elsewhere.renderer, Renderer::Automatic);
+        assert_eq!(elsewhere.reason, Reason::FirstTry);
+    }
+
+    #[test]
+    fn windows_does_not_offer_wgpu_s_own_preference_as_a_rung() {
+        // It is reachable through $YKDM_RENDERER and $WGPU_BACKEND — where a
+        // deliberate probe belongs — but a start never walks onto it, because
+        // it is what the reported failures were using when they died.
+        assert_eq!(WINDOWS.first(), Some(&Renderer::Dx12));
+        assert!(!WINDOWS.contains(&Renderer::Automatic));
+        assert_eq!(first_rung(WINDOWS), Renderer::Dx12);
+        // A ladder with no rungs at all cannot happen, and if it did the honest
+        // answer is to restrict nothing.
+        assert_eq!(first_rung(&[]), Renderer::Automatic);
     }
 
     #[test]
@@ -407,8 +496,9 @@ mod tests {
         // Given the fault this feature exists for: the default renderer took the
         // process down inside the driver
         let dead = marker(crate::logfile::stage::WINDOW, Some("automatic"));
-        // When the next start decides
-        let decision = decide_on(THREE, None, None, Some(&dead), Renderer::Automatic);
+        // When the next start decides — the attempt that died is not a rung of
+        // the Windows ladder, so nothing on it has been used up
+        let decision = decide_on(WINDOWS, None, None, Some(&dead), Renderer::Automatic);
         // Then it tries the next backend rather than the one that just died
         assert_eq!(decision.renderer, Renderer::Dx12);
         assert_eq!(decision.reason, Reason::SteppedDown);
@@ -417,8 +507,13 @@ mod tests {
 
     #[test]
     fn the_ladder_is_walked_one_rung_at_a_time_not_jumped_to_the_bottom() {
+        let dead = marker(crate::logfile::stage::WINDOW, Some("automatic"));
+        let decision = decide_on(DEEP, None, None, Some(&dead), Renderer::Automatic);
+        assert_eq!(decision.renderer, Renderer::Dx12);
+        assert_eq!(decision.reason, Reason::SteppedDown);
+
         let dead = marker(crate::logfile::stage::WINDOW, Some("dx12"));
-        let decision = decide_on(THREE, None, None, Some(&dead), Renderer::Automatic);
+        let decision = decide_on(DEEP, None, None, Some(&dead), Renderer::Automatic);
         assert_eq!(decision.renderer, Renderer::Gl);
         assert_eq!(decision.reason, Reason::SteppedDown);
     }
@@ -428,7 +523,7 @@ mod tests {
         // Given every backend tried and the process still dying
         let dead = marker(crate::logfile::stage::WINDOW, Some("gl"));
         // When the next start decides
-        let decision = decide_on(THREE, None, None, Some(&dead), Renderer::Automatic);
+        let decision = decide_on(WINDOWS, None, None, Some(&dead), Renderer::Automatic);
         // Then it stays where it is rather than starting the ladder again, and
         // the reason it reports is that the renderer is not the problem
         assert_eq!(decision.renderer, Renderer::Gl);
@@ -439,11 +534,20 @@ mod tests {
     #[test]
     fn a_marker_from_a_build_that_had_no_ladder_is_read_as_the_default_rung() {
         // The 0.19.2 marker: a stage and no renderer, because that build had no
-        // choice to record. What it did was the platform default.
+        // choice to record. What it did was the platform default — which is what
+        // the workstation this feature exists for is still leaving behind, one
+        // marker per launch, and the rung it wants is the top of the ladder.
         let dead = marker(crate::logfile::stage::WINDOW, None);
-        let decision = decide_on(THREE, None, None, Some(&dead), Renderer::Automatic);
+        let decision = decide_on(WINDOWS, None, None, Some(&dead), Renderer::Automatic);
         assert_eq!(decision.renderer, Renderer::Dx12);
+        assert_eq!(decision.reason, Reason::SteppedDown);
         assert_eq!(decision.after, Some(Renderer::Automatic));
+
+        // On a ladder that does have the platform default on it, the same
+        // marker steps off it in the ordinary way.
+        let elsewhere = decide_on(LINUX, None, None, Some(&dead), Renderer::Automatic);
+        assert_eq!(elsewhere.renderer, Renderer::Gl);
+        assert_eq!(elsewhere.after, Some(Renderer::Automatic));
     }
 
     #[test]
@@ -451,7 +555,7 @@ mod tests {
         // The register failing to open is not the graphics driver's fault, and
         // stepping down would hide the real failure behind a renderer change.
         let dead = marker(crate::logfile::stage::APP, Some("automatic"));
-        let decision = decide_on(THREE, None, None, Some(&dead), Renderer::Dx12);
+        let decision = decide_on(WINDOWS, None, None, Some(&dead), Renderer::Dx12);
         assert_eq!(decision.renderer, Renderer::Dx12);
         assert_eq!(decision.reason, Reason::Remembered);
     }
@@ -460,7 +564,7 @@ mod tests {
     fn the_rung_that_worked_is_used_again_rather_than_rediscovered() {
         // The point of remembering: the marker is gone once a window exists, so
         // without this the next start would go back to the rung that faulted.
-        let decision = decide_on(THREE, None, None, None, Renderer::Dx12);
+        let decision = decide_on(WINDOWS, None, None, None, Renderer::Dx12);
         assert_eq!(decision.renderer, Renderer::Dx12);
         assert_eq!(decision.reason, Reason::Remembered);
     }
@@ -470,7 +574,7 @@ mod tests {
         // Somebody is at the machine trying backends by hand; a fallback that
         // argued with them would be worse than none.
         let dead = marker(crate::logfile::stage::WINDOW, Some("automatic"));
-        let decision = decide_on(THREE, Some("dx12"), None, Some(&dead), Renderer::Gl);
+        let decision = decide_on(WINDOWS, Some("dx12"), None, Some(&dead), Renderer::Gl);
         assert_eq!(decision.reason, Reason::Environment);
         assert_eq!(decision.renderer, Renderer::Automatic);
         // And wgpu must be left to read it: restricting the backends here would
@@ -481,13 +585,13 @@ mod tests {
 
     #[test]
     fn an_empty_environment_variable_is_not_a_choice() {
-        let decision = decide_on(THREE, Some("  "), Some(""), None, Renderer::Automatic);
+        let decision = decide_on(WINDOWS, Some("  "), Some(""), None, Renderer::Automatic);
         assert_eq!(decision.reason, Reason::FirstTry);
     }
 
     #[test]
     fn an_explicit_choice_overrides_the_remembered_rung_and_is_not_remembered() {
-        let decision = decide_on(THREE, None, Some("opengl"), None, Renderer::Dx12);
+        let decision = decide_on(WINDOWS, None, Some("opengl"), None, Renderer::Dx12);
         assert_eq!(decision.renderer, Renderer::Gl);
         assert_eq!(decision.reason, Reason::Chosen);
         assert!(!decision.worth_remembering());
@@ -495,7 +599,7 @@ mod tests {
 
     #[test]
     fn an_unrecognised_choice_is_ignored_rather_than_failing_the_start() {
-        let decision = decide_on(THREE, None, Some("banana"), None, Renderer::Automatic);
+        let decision = decide_on(WINDOWS, None, Some("banana"), None, Renderer::Automatic);
         assert_eq!(decision.reason, Reason::FirstTry);
     }
 
@@ -518,15 +622,32 @@ mod tests {
     }
 
     #[test]
-    fn a_rung_this_platform_does_not_have_has_nothing_below_it() {
-        // A settings file carried from a Windows workstation to a Mac.
-        assert_eq!(next_after(&[Renderer::Automatic], Renderer::Dx12), None);
+    fn a_rung_this_platform_does_not_have_starts_the_ladder_from_the_top() {
+        // A settings file carried from a Windows workstation to a Mac: Direct3D
+        // 12 is not a rung there, so no rung of the Mac's ladder has been tried
+        // and the only move available is its first.
+        assert_eq!(
+            next_after(&[Renderer::Automatic], Renderer::Dx12),
+            Some(Renderer::Automatic)
+        );
+        // And the top of the ladder being the thing that died is the end of it,
+        // rather than a suggestion to try it again.
+        assert_eq!(
+            next_after(&[Renderer::Automatic], Renderer::Automatic),
+            None
+        );
+        assert_eq!(next_after(&[], Renderer::Dx12), None);
     }
 
     #[test]
-    fn this_platform_s_ladder_starts_at_the_default_and_repeats_no_rung() {
+    fn this_platform_s_ladder_starts_where_it_should_and_repeats_no_rung() {
         let rungs = ladder();
-        assert_eq!(rungs.first(), Some(&Renderer::Automatic));
+        let expected = if cfg!(windows) {
+            Renderer::Dx12
+        } else {
+            Renderer::Automatic
+        };
+        assert_eq!(rungs.first(), Some(&expected));
         for (at, rung) in rungs.iter().enumerate() {
             assert!(
                 !rungs[at + 1..].contains(rung),
@@ -538,7 +659,7 @@ mod tests {
 
     #[test]
     fn every_rung_has_a_distinct_slug_and_reads_back_as_itself() {
-        for rung in THREE {
+        for rung in ALL {
             assert_eq!(Renderer::from_name(rung.slug()), Some(*rung));
             assert!(!rung.label().is_empty());
         }
@@ -573,24 +694,24 @@ mod tests {
         let bottom = marker(crate::logfile::stage::WINDOW, Some("gl"));
         for (decision, expected) in [
             (
-                decide_on(THREE, None, None, Some(&dead), Renderer::Automatic),
+                decide_on(WINDOWS, None, None, Some(&dead), Renderer::Automatic),
                 true,
             ),
             (
-                decide_on(THREE, None, None, Some(&bottom), Renderer::Automatic),
+                decide_on(WINDOWS, None, None, Some(&bottom), Renderer::Automatic),
                 true,
             ),
             (
-                decide_on(THREE, None, None, None, Renderer::Automatic),
+                decide_on(WINDOWS, None, None, None, Renderer::Automatic),
                 false,
             ),
-            (decide_on(THREE, None, None, None, Renderer::Dx12), false),
+            (decide_on(WINDOWS, None, None, None, Renderer::Dx12), false),
             (
-                decide_on(THREE, Some("gl"), None, None, Renderer::Automatic),
+                decide_on(WINDOWS, Some("gl"), None, None, Renderer::Automatic),
                 false,
             ),
             (
-                decide_on(THREE, None, Some("gl"), None, Renderer::Automatic),
+                decide_on(WINDOWS, None, Some("gl"), None, Renderer::Automatic),
                 false,
             ),
         ] {
@@ -634,11 +755,11 @@ mod tests {
         // Both alerts are painted by a running application, so neither may read
         // as though the failure were happening now.
         let dead = marker(crate::logfile::stage::WINDOW, Some("automatic"));
-        let stepped = decide_on(THREE, None, None, Some(&dead), Renderer::Automatic);
+        let stepped = decide_on(WINDOWS, None, None, Some(&dead), Renderer::Automatic);
         assert!(stepped.alert().unwrap().contains("previous start"));
 
         let bottom = marker(crate::logfile::stage::WINDOW, Some("gl"));
-        let exhausted = decide_on(THREE, None, None, Some(&bottom), Renderer::Automatic);
+        let exhausted = decide_on(WINDOWS, None, None, Some(&bottom), Renderer::Automatic);
         assert!(exhausted.alert().unwrap().contains("This window exists"));
     }
 
