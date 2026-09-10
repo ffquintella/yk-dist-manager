@@ -277,3 +277,172 @@ fn the_status_line_severity_is_derived_from_the_text_not_from_the_caller() {
     assert_eq!(classify("AUDIT FAILURE: chain broken"), Severity::Alarm);
     assert_ne!(classify("backup written to /tmp/x"), Severity::Alarm);
 }
+
+/// No sentence an operator reads has a hole punched through the middle of it.
+///
+/// The defect this guards, found in seven shipped strings at once: a Rust string
+/// literal continued with a trailing `\` keeps the newline out *and* eats the
+/// next line's indentation, so
+///
+/// ```text
+/// "the register is on \
+///  the file server"
+/// ```
+///
+/// reads as one space. Any tool that rewrites the file without honouring that
+/// escape — a heredoc, a templating pass, a language whose own strings treat
+/// `\`-newline differently — turns it into `"the register is on
+/// the file server"` with eighteen spaces in the middle, which is what the
+/// operator then reads on screen.
+///
+/// It is invisible in review: the diff looks like a reflow, the code compiles,
+/// every test that asserts `contains("the file server")` still passes, and
+/// nothing but the rendered sentence is wrong. So it is checked at the source,
+/// which is the only place it exists.
+///
+/// Here rather than in its own binary because it is the same invariant as the
+/// rest of this file — text an operator depends on has to say what it means
+/// without help — and a forty-fourth test binary is not worth one function.
+#[test]
+fn no_operator_facing_sentence_has_a_collapsed_line_continuation() {
+    let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut offenders: Vec<String> = Vec::new();
+
+    fn walk(directory: &std::path::Path, offenders: &mut Vec<String>) {
+        for entry in std::fs::read_dir(directory).expect("the source tree is readable") {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, offenders);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("a source file is readable");
+            for (at, line) in source.lines().enumerate() {
+                if let Some(run) = collapsed_run(line) {
+                    offenders.push(format!(
+                        "{}:{} — {run}",
+                        path.file_name().unwrap().to_string_lossy(),
+                        at + 1
+                    ));
+                }
+            }
+        }
+    }
+
+    walk(&source_root, &mut offenders);
+    offenders.sort();
+
+    assert!(
+        offenders.is_empty(),
+        "these lines have a run of spaces in the middle of a sentence, which is what a \
+         collapsed `\\`-continuation looks like — rewrite the literal so each fragment ends \
+         in ` \\` and the next begins one column past the opening quote: {offenders:#?}"
+    );
+}
+
+/// The guard above can fail, and does not fire on what this repository does on
+/// purpose.
+///
+/// A source scan that only ever passes is indistinguishable from no scan, and the
+/// cost of a false positive is somebody deleting the test.
+///
+/// Every fixture here is **assembled rather than written out**, and that is not
+/// fussiness: the first draft of this test spelled them as ordinary continued
+/// literals, and the tool that wrote the file collapsed them exactly as it had
+/// collapsed the seven strings in `src/` — so the fixture for the *legitimate*
+/// case arrived containing the defect, and the guard caught its own test. A hole
+/// built out of `" ".repeat(n)` cannot be reflowed into or out of existence.
+#[test]
+fn the_collapsed_continuation_guard_knows_a_hole_from_an_indent() {
+    let hole = " ".repeat(18);
+    let quote = '"';
+
+    // `src/ui/database.rs` as the defect left it: one sentence, one crater.
+    let collapsed = format!(
+        "            {quote}The register itself is on the file server and is intact — this \
+         workstation simply{hole}cannot reach it. Nothing was written while it was gone.{quote},"
+    );
+    assert!(
+        collapsed_run(&collapsed).is_some(),
+        "the guard cannot see the defect it exists for"
+    );
+
+    // The same sentence, repaired: long, but every gap is one space.
+    let repaired = collapsed.replace(&hole, " ");
+    assert_eq!(
+        collapsed_run(&repaired),
+        None,
+        "a repaired sentence must not still be reported: {repaired}"
+    );
+
+    // The sealed-envelope slip. Over the limit, with a run of spaces, and
+    // correct — because the run is an indent after an explicit newline.
+    let slip = format!(
+        "            {quote}4. If the key is lost or you think somebody else has used it, report \
+         it,\\n   immediately, to {{}}.{quote},"
+    );
+    assert!(
+        slip.chars().count() > 100,
+        "the fixture must reach the check"
+    );
+    assert_eq!(
+        collapsed_run(&slip),
+        None,
+        "an indent after an explicit newline is the point of the indent: {slip}"
+    );
+
+    // The `--help` column alignment: a deliberate run, inside the line limit.
+    let aligned = "  YKDM_LOG                     Log filter, e.g. `debug`";
+    assert_eq!(
+        collapsed_run(aligned),
+        None,
+        "the --help alignment fits the line limit, which is why the limit is a condition"
+    );
+}
+
+/// The run of spaces that betrays a collapsed continuation, if the line has one.
+///
+/// Three conditions together, because each on its own has honest counter-examples
+/// in this repository:
+///
+/// * **Over the 100-column limit.** `rustfmt` cannot break a string literal, so a
+///   collapsed one is always long; every deliberate run of spaces here — the
+///   `--help` and `--diagnose` column alignment, the named-pipe diagram in
+///   `device::helper` — fits within the limit like the rest of the file.
+/// * **Not a comment.** A doc comment's hanging indents in a list are deliberate
+///   and `rustfmt` leaves them alone.
+/// * **Not preceded by `\n`.** [`crate`-side] the sealed-envelope slip indents a
+///   wrapped clause with `"…,\n   report it"`, which is the one legitimate run of
+///   spaces inside a long literal: it is *after* an explicit newline, where an
+///   indent is the point.
+fn collapsed_run(line: &str) -> Option<String> {
+    if line.trim_start().starts_with("//") || line.chars().count() <= 100 {
+        return None;
+    }
+    let bytes = line.as_bytes();
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] != b' ' {
+            at += 1;
+            continue;
+        }
+        let start = at;
+        while at < bytes.len() && bytes[at] == b' ' {
+            at += 1;
+        }
+        let long_enough = at - start >= 3;
+        let after_text = start >= 1 && {
+            let before = bytes[start - 1];
+            before.is_ascii_alphanumeric() || matches!(before, b',' | b'.' | b':' | b';' | b')')
+        };
+        let after_newline_escape = start >= 2 && &bytes[start - 2..start] == b"\\n";
+        let text_follows = at < bytes.len() && bytes[at].is_ascii_alphanumeric();
+        if long_enough && after_text && text_follows && !after_newline_escape {
+            let from = start.saturating_sub(24);
+            return Some(format!("…{}…", &line[from..(at + 12).min(line.len())]));
+        }
+    }
+    None
+}

@@ -16,6 +16,28 @@ Maintenance instructions (see AGENTS.md §5):
 * A database schema change also bumps store::SCHEMA_VERSION and ships a migration.
 -->
 
+## [Unreleased]
+
+### Fixed
+
+- **Seven sentences an operator reads had a hole punched through the middle of them.** A
+  Rust string continued with a trailing `\` keeps the newline out *and* eats the next
+  line's indentation; a tool that rewrote those files without honouring the escape left
+  eighteen spaces in the middle of the sentence instead. It was invisible in review — the
+  diff looks like a reflow, the code compiles, and every test asserting `contains(...)` on
+  a fragment still passes — so the only place it existed was the rendered text. Fixed in
+  the share-dropped callout and hint (`src/ui/database.rs`), the term-tracking hint and
+  the signature-threshold hint (`src/ui/settings.rs`), the consignment document
+  description (`src/ui/terms.rs`), the share-not-reachable error and the returned-without-a-term
+  status (`src/app.rs`).
+
+  Guarded from here on by `no_operator_facing_sentence_has_a_collapsed_line_continuation`
+  in `tests/unit_accessibility.rs`, which scans `src/` for the signature — a run of three
+  or more spaces mid-sentence on a line over the column limit — and is itself tested
+  against both a known hole and the two runs of spaces this repository has on purpose (the
+  `--help` column alignment, and the indent after an explicit `\n` on the
+  sealed-envelope slip).
+
 ## [0.19.2] - 2026-09-09
 
 ### Added

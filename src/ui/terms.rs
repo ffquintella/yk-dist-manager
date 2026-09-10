@@ -111,7 +111,8 @@ fn document_bar(app: &mut YkDistApp, ui: &mut egui::Ui) {
                             "the receipt that closes the custody loop when a key comes back"
                         }
                         term::CONSIGNMENT_ID => {
-                            "what the holder signs on receiving a key — the obligations the loss                              procedure rests on"
+                            "what the holder signs on receiving a key — the obligations the loss \
+                             procedure rests on"
                         }
                         _ => "a document type this unit added",
                     },

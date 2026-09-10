@@ -654,7 +654,10 @@ fn signature_tracking(app: &mut YkDistApp, ui: &mut egui::Ui) {
             ui.add_space(6.0);
             super::hint(
                 ui,
-                "Off: no hand-over is reported as missing a term, and the Distribution screen                  stops asking. A real case for an internal pilot or a batch of test keys — and                  worth turning back on before the first real hand-over, because the term is where                  the holder acknowledges the obligations the loss procedure depends on.",
+                "Off: no hand-over is reported as missing a term, and the Distribution screen \
+                 stops asking. A real case for an internal pilot or a batch of test keys — and \
+                 worth turning back on before the first real hand-over, because the term is where \
+                 the holder acknowledges the obligations the loss procedure depends on.",
             );
             return;
         }
@@ -679,7 +682,10 @@ fn signature_tracking(app: &mut YkDistApp, ui: &mut egui::Ui) {
         ui.add_space(6.0);
         super::hint(
             ui,
-            "One threshold, not one per delivery method: set it to what the slowest channel this              unit actually uses takes to come back signed. Two thresholds would mean working out              which one applies to the row in front of you, which is how a warning stops being              read.",
+            "One threshold, not one per delivery method: set it to what the slowest channel this \
+             unit actually uses takes to come back signed. Two thresholds would mean working out \
+             which one applies to the row in front of you, which is how a warning stops being \
+             read.",
         );
 
         if let Err(refusal) = policy.check() {

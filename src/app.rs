@@ -2728,7 +2728,8 @@ impl YkDistApp {
                         // register they never moved.
                         drop(connection);
                         self.open_error = Some(format!(
-                            "{} answered, but {} is not reachable on it yet. The register is on                              the file server and is intact — try again in a moment.",
+                            "{} answered, but {} is not reachable on it yet. The register is on \
+                             the file server and is intact — try again in a moment.",
                             lost.location,
                             path.display()
                         ));
@@ -8277,7 +8278,8 @@ impl YkDistApp {
             // record of who was responsible for it while it was out never arrived.
             // Not an error — nothing failed — but not silence either.
             self.status = format!(
-                "serial {serial} returned. Note: no signed term was ever filed for this                  hand-over, and that gap is now permanent"
+                "serial {serial} returned. Note: no signed term was ever filed for this hand-over, \
+                 and that gap is now permanent"
             );
         }
     }

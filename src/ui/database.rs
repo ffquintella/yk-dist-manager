@@ -110,14 +110,18 @@ fn dropped_share(app: &mut YkDistApp, ui: &mut egui::Ui) {
         super::notice(
             ui,
             CalloutTone::Warning,
-            "The register itself is on the file server and is intact — this workstation simply              cannot reach it. Nothing was written while it was gone, and nothing was lost: the              last thing you recorded was committed before the share dropped.",
+            "The register itself is on the file server and is intact — this workstation simply \
+             cannot reach it. Nothing was written while it was gone, and nothing was lost: the \
+             last thing you recorded was committed before the share dropped.",
         );
 
         if lost.access == Access::Named {
             ui.add_space(10.0);
             super::hint(
                 ui,
-                "This share was reached with a named account, so the password has to be typed                  again — it is used for one connection and never stored, which is why it cannot                  be reconnected for you.",
+                "This share was reached with a named account, so the password has to be typed \
+                 again — it is used for one connection and never stored, which is why it cannot be \
+                 reconnected for you.",
             );
             ui.add_space(8.0);
             super::capped_input(ui, &mut app.share_form.password, MAX_TEXT, |input| {
