@@ -46,6 +46,7 @@ Dependency direction is downward only: `ui` → `app` → {`bootstrap`, `templat
 | `vault` | `src/vault.rs` | The workstation's own credential store (Keychain / Credential Manager / Secret Service), for a database password the operator chose to save | — | in-source, `behaviour_app_saved_password` |
 | `settings` | `src/settings.rs` | Which database to open, and the recent ones | — | `unit_settings` |
 | `logging`, `logfile`, `logbuf`, `status` | `src/` | The one log entry point, the rotating file it writes to and the start-up marker beside it, the copyable panel, status severity | — | `unit_logging_format`, `unit_logfile`, `behaviour_startup_logging`, `unit_accessibility` |
+| `renderer` | `src/renderer.rs` | Which graphics backend to ask for, and the ladder a start walks down when the previous one died in the driver | `settings`, `logfile` | in-source (`cargo test --lib renderer::`), `unit_settings`, `unit_logfile` |
 | `incident`, `san`, `envelope`, `paths`, `versioning`, `browse`, `branding`, `diagnostics` | `src/*.rs` | Small headless helpers | — | `unit_accessibility`, `behaviour_key_lifecycle` |
 | `app` | `src/app.rs` (7 k lines) | State, cached views, **every mutation together with its audit entry** | all of the above | `behaviour_app_*` |
 | `ui` | `src/ui/` | Painting, and only painting | `app` | none — outside the coverage gate by contract (§4) |
@@ -335,9 +336,32 @@ make coverage-core     # THE GATE: cargo llvm-cov --all-features --fail-under-li
 make coverage-html     # browsable, when you need to find the gap
 ```
 
-Current: **86.52%** core line coverage (85.95% region), measured 2026-09-09 by
+Current: **86.70%** core line coverage (86.15% region), measured 2026-09-09 by
 `make coverage-core` on the full `--all-features` suite — the run that gated the
-log file and the start-up record (`features/logging.md` phase 2).
+automatic renderer fallback and its Settings card
+(`features/renderer-fallback.md`, all six phases).
+
+Up nearly two tenths of a point, on a change made entirely of decisions, which is
+the only kind that moves this number upwards. The fault was a Windows graphics
+driver killing the process inside `request_device`, and nothing about *that* is
+testable here — but almost nothing had to be written to touch it.
+[`renderer`](src/renderer.rs) is **98.69%**: the ladder, which rung follows which,
+what a marker with no `renderer=` field meant, which environment variable beats
+which, and what each outcome says to an operator are all pure, and `decide_on`
+takes the ladder as an argument precisely so the three-rung *Windows* ladder is
+exercised by a macOS measurement. What is left in `main.rs` is uncovered and
+should be: it reports the decision, hands the backends to `eframe` and writes the
+marker.
+
+Phase 6 — the Settings card and the About line — then moved the total by **one
+hundredth of a point**, which is the same argument made a second time. Every
+sentence the card can show is chosen by `Decision::alert`, in `renderer`, and
+asserted against `worth_a_warning` so the screen and the log cannot disagree about
+what counts as bad news; what went into `src/ui/settings.rs` is a card that paints
+whatever those two return.
+
+The 86.52% (85.95% region) this replaces was measured 2026-09-09 on the run that
+gated the log file and the start-up record (`features/logging.md` phase 2).
 
 Two hundredths of a point, which is the *point*: the change added ~330 lines and
 moved the number by nothing, because it was split the way this section asks for.

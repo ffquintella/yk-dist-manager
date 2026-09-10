@@ -25,6 +25,8 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
     ui.add_space(16.0);
     transport_card(app, ui);
     ui.add_space(16.0);
+    graphics_card(app, ui);
+    ui.add_space(16.0);
     maintenance(app, ui);
 
     ui.add_space(16.0);
@@ -789,6 +791,44 @@ fn transport_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
     if chosen != before {
         app.set_transport(chosen);
     }
+}
+
+/// Which graphics backend drew this window, and what chose it
+/// (`features/renderer-fallback.md` phase 6).
+///
+/// Beside the transport card on purpose: one says how this workstation reaches a
+/// key and this says how it reaches a screen, and a support call asks both in the
+/// same breath.
+///
+/// **No picker, unlike the transport.** The two look alike and are not: the
+/// transport is the operator's choice and takes effect immediately, while the
+/// backend is chosen before there is a window to put a control in, so anything
+/// selected here would do nothing until the next launch. Worse, a persisted
+/// preference would fight the mechanism this feature *is* — the fallback
+/// discovers what works on this machine, and the environment variable named below
+/// is deliberately a probe that is not remembered. So this card reports, and the
+/// escape hatch stays where it cannot be set by accident.
+fn graphics_card(app: &mut YkDistApp, ui: &mut egui::Ui) {
+    super::titled_card(ui, "Graphics", |ui| {
+        super::faint(ui, &format!("Now using: {}.", app.renderer.describe()));
+
+        // Only when there is something to say, and the decision about *when*
+        // that is belongs to `Decision::alert`, not to this screen.
+        if let Some(alert) = app.renderer.alert() {
+            ui.add_space(8.0);
+            super::notice(ui, CalloutTone::Warning, alert);
+        }
+
+        ui.add_space(8.0);
+        super::hint(
+            ui,
+            "A start that dies asking the graphics driver for a window is recovered from \
+             by itself: the next launch asks for a different backend, and whichever one \
+             produces a window is remembered for this workstation. To force one while \
+             diagnosing, set YKDM_RENDERER to automatic, dx12 or gl and start the application \
+             again — it is a probe and is not remembered, so it applies to that launch only.",
+        );
+    });
 }
 
 /// Whose signature this deployment accepts on a bootstrap template, and whether

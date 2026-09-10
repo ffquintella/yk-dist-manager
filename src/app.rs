@@ -1274,6 +1274,19 @@ pub struct YkDistApp {
     pub key_status_filter: Option<crate::domain::KeyStatus>,
     /// Show only hand-overs nobody has returned.
     pub outstanding_only: bool,
+    /// Which graphics backend this start asked for, and what chose it
+    /// (`features/renderer-fallback.md` phase 6).
+    ///
+    /// The counterpart of [`Self::transport`]: one says how this workstation
+    /// reaches a key, this says how it reaches a screen, and both are decisions
+    /// taken once at start-up that a support call needs to read back.
+    ///
+    /// Set here to what the settings file remembers, and **replaced by `main`**
+    /// with the decision that start actually made — which is the only place that
+    /// knows it, because the marker it was decided from is removed the moment a
+    /// window exists. A `YkDistApp` built by a test therefore reports what the
+    /// workstation remembers, which is true, rather than nothing.
+    pub renderer: crate::renderer::Decision,
     /// The About box's contents while it is open, and `None` while it is not
     /// (`features/application-icon.md` phase 7).
     ///
@@ -1340,6 +1353,13 @@ impl YkDistApp {
             crate::device::select::probe(settings.transport),
         );
         let backend = crate::device::select::backend_for(&transport);
+
+        // How this workstation reaches a *screen*, the counterpart of the
+        // transport above (`features/renderer-fallback.md` phase 6). Only what
+        // the settings file remembers is knowable from here; `main` replaces it
+        // with the decision this start actually made, which it alone knows.
+        let renderer = crate::renderer::decide(None, settings.renderer);
+
         tracing::info!(
             event = "device.transport.selected",
             transport = transport.transport.slug(),
@@ -1414,6 +1434,7 @@ impl YkDistApp {
             browse_distributions: Browse::default(),
             key_status_filter: None,
             outstanding_only: false,
+            renderer,
             about: None,
             log: crate::logbuf::shared(),
             log_panel_open: false,
@@ -9341,6 +9362,23 @@ impl YkDistApp {
     /// per frame would be sixty camera enumerations a second for a panel nobody is
     /// touching. A support report is a snapshot of the moment somebody asked for it
     /// anyway — reopening the box takes a fresh one.
+    /// The `--diagnose` report, with the one line this process knows better than
+    /// a fresh gather does.
+    ///
+    /// `Report::gather` re-derives the renderer from the settings file and the
+    /// start-up marker, which is right for `--diagnose` — it runs before any
+    /// start and has nothing else to go on. Inside a running window it is not:
+    /// the marker was removed the moment this window appeared, so a re-derivation
+    /// would report a *stepped-down* start as merely "remembered" and lose the
+    /// fact that something died in the driver an instant earlier. The report and
+    /// the Settings card must not drift, so both read the same decision
+    /// (`features/renderer-fallback.md` phase 6).
+    fn diagnostic_report(&self) -> String {
+        let mut report = crate::diagnostics::Report::gather();
+        report.renderer = self.renderer.describe();
+        report.render()
+    }
+
     fn about_box(&mut self, ui: &mut egui::Ui) {
         let Some(report) = self.about.clone() else {
             return;
@@ -9447,7 +9485,7 @@ impl YkDistApp {
                         // second place to look for the same answer.
                         //
                         // Gathered here, on the click, for the reason on the field.
-                        self.about = Some(crate::diagnostics::Report::gather().render());
+                        self.about = Some(self.diagnostic_report());
                     }
                 });
                 ui.add_space(6.0);

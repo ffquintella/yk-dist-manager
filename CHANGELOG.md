@@ -16,9 +16,36 @@ Maintenance instructions (see AGENTS.md §5):
 * A database schema change also bumps store::SCHEMA_VERSION and ships a migration.
 -->
 
-## [Unreleased]
+## [0.20.0] - 2026-09-10
 
 ### Fixed
+
+- **A workstation whose graphics driver faults now opens on the next backend instead of
+  not opening at all** (`features/renderer-fallback.md`). Reported against 0.19.2 from a
+  machine with an Intel HD Graphics 630 on driver 31.0.101.2111: the application showed
+  nothing — no window, no message, no crash dialog. The start-up record added in 0.19.2
+  answered it on its first use in the field. Both attempts end on the same log line,
+  `egui-wgpu` listing the four adapters it found, which it prints *after* choosing one and
+  immediately before `request_device`; and after it, no `app.panic`, no
+  `app.window.failed`, no `app.stopped`. The process was gone inside the driver. The
+  adapter chosen was the **Vulkan** one, because `egui-wgpu` defaults to
+  `Backends::PRIMARY | GL`, and `WGPU_BACKEND=dx12` started the same binary on the same
+  machine immediately — so four adapters were on offer and the application died having
+  tried exactly one.
+
+  A start now records **which backend** it is asking for in the start-up marker, and a
+  start that finds the previous one died at `stage=window` steps down a ladder instead of
+  repeating it: the platform default → Direct3D 12 → OpenGL on Windows, the default →
+  OpenGL on Linux, and nothing on macOS, where Metal is the only backend and a start that
+  dies has not run out of backends. The bottom rung dying stops the stepping and says so
+  rather than cycling, because three backends faulting is not a backend problem. A death
+  at any other stage moves nothing — a register that fails to open is not the driver's
+  fault, and hiding it behind a renderer change would be worse than the original bug.
+
+  The rung that produces a window is written to `settings.json`, beside the window
+  geometry. Without that the ladder would recover exactly once — the marker is removed as
+  soon as there is a window — and the application would work every second launch, which
+  is worse than never working because nobody believes the bug report.
 
 - **Seven sentences an operator reads had a hole punched through the middle of them.** A
   Rust string continued with a trailing `\` keeps the newline out *and* eats the next
@@ -37,6 +64,44 @@ Maintenance instructions (see AGENTS.md §5):
   against both a known hole and the two runs of spaces this repository has on purpose (the
   `--help` column alignment, and the indent after an explicit `\n` on the
   sealed-envelope slip).
+
+### Added
+
+- `$YKDM_RENDERER` (`automatic`, `dx12`, `gl`) to ask for a backend outright, and a
+  `renderer:` line in `--diagnose` naming the backend in use and what chose it. Neither
+  environment variable is remembered: a probe that silently became a permanent setting
+  would outlive whoever typed it. `$WGPU_BACKEND` — wgpu's own, which `egui-wgpu` already
+  reads — takes precedence over both the override and the ladder, and when it is set this
+  build applies no restriction of its own and reports that it did not: a fallback that
+  argued with the person standing at the machine trying backends by hand would be worse
+  than no fallback at all.
+
+- **Settings → Graphics**, and the renderer in the About box, so a workstation quietly
+  running on a fallback backend says so (`features/renderer-fallback.md` phase 6). The
+  ladder recovers in silence, which is right for a reception desk and wrong for a support
+  call: without this, the one machine in the building drawing through Direct3D 12 looked
+  identical to every other. The card sits beside the device transport — one says how this
+  workstation reaches a key, the other how it reaches a screen — and it carries a warning
+  only when a start actually died in the driver, because a screen that warns about a
+  healthy workstation teaches the operator to ignore it.
+
+  Deliberately **not** a picker, unlike the transport beside it. The backend is chosen
+  before there is a window to put a control in, so a selection would do nothing until the
+  next launch; and a persisted preference would fight the mechanism itself, which is the
+  machine discovering what works rather than somebody choosing. `$YKDM_RENDERER` stays the
+  escape hatch, and stays unremembered.
+
+### Changed
+
+- The start-up marker gained `key=value` fields after the stage
+  (`logfile::note_stage_with`, `logfile::field_of`). A marker written by 0.19.2 has no
+  `renderer=` field and is read as the platform default, which is what that build did.
+- The About box no longer re-derives the renderer for its report. `--diagnose` runs before
+  any start and has only the settings file and the marker to go on, which is right there;
+  inside a running window it is not, because the marker was removed the instant that
+  window appeared — so a re-derivation reported a start that had just stepped down as
+  merely "remembered", losing the fact that something died in the driver a moment earlier.
+  The report and the Settings card now read the same decision, so the two cannot drift.
 
 ## [0.19.2] - 2026-09-09
 

@@ -6,6 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
+use yk_dist_manager::renderer::{self, Renderer};
 use yk_dist_manager::settings::{AppSettings, MAX_RECENT};
 
 #[test]
@@ -40,6 +41,20 @@ fn the_settings_file_round_trips_and_survives_corruption() {
     assert_eq!(reloaded.operator, "felipe");
     assert_eq!(reloaded.org, "Example Organisation");
 
+    // The graphics backend that produced a window survives a restart
+    // (`features/renderer-fallback.md`). Without this the fallback ladder would
+    // recover once, lose the answer with the start-up marker, and rediscover the
+    // same driver fault on the very next launch.
+    let mut settings = reloaded;
+    assert_eq!(
+        settings.renderer,
+        Renderer::Automatic,
+        "a workstation where nothing has failed asks for nothing in particular"
+    );
+    assert!(renderer::remember_in(&mut settings, Renderer::Dx12));
+    settings.save().expect("saves");
+    assert_eq!(AppSettings::load().renderer, Renderer::Dx12);
+
     // A password must never end up here: the file sits next to the database, so
     // storing one would defeat encrypting it.
     let raw = std::fs::read_to_string(&path).unwrap();
@@ -65,6 +80,11 @@ fn the_settings_file_round_trips_and_survives_corruption() {
         vec![PathBuf::from("/a.sqlite3"), PathBuf::from("/b.sqlite3")]
     );
     assert!(!normalised.operator.trim().is_empty());
+    assert_eq!(
+        normalised.renderer,
+        Renderer::Automatic,
+        "a settings file written before the field existed reads as the default"
+    );
 
     unsafe { std::env::remove_var("YKDM_SETTINGS") };
 }

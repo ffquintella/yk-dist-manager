@@ -121,7 +121,8 @@ fn main() -> eframe::Result {
     // file — produces a usable window rather than one with no dimensions or one
     // whose close button is off-screen.
     logfile::note_stage(stage::SETTINGS);
-    let remembered = yk_dist_manager::settings::AppSettings::load().window;
+    let settings = yk_dist_manager::settings::AppSettings::load();
+    let remembered = settings.window;
     let (width, height) = remembered.size();
 
     let mut viewport = eframe::egui::ViewportBuilder::default()
@@ -140,22 +141,67 @@ fn main() -> eframe::Result {
         viewport = viewport.with_icon(icon);
     }
 
-    let options = eframe::NativeOptions {
+    let mut options = eframe::NativeOptions {
         viewport,
         ..Default::default()
     };
+
+    // Which graphics backend to ask for, and whether the last start died asking
+    // for one (`features/renderer-fallback.md`). The decision belongs to
+    // `renderer::decide`, which is pure and tested; this reports it and hands it
+    // to eframe. A driver that takes the process down inside `request_device`
+    // reaches neither the error path below nor the panic hook, so the only
+    // evidence is the marker the previous start left — and the only place to act
+    // on it is here, before the attempt.
+    let renderer = yk_dist_manager::renderer::decide(unfinished.as_deref(), settings.renderer);
+    // Two macros rather than a level variable: `tracing` takes the level at
+    // compile time. Which reasons are bad news is `worth_a_warning`'s to say.
+    if renderer.worth_a_warning() {
+        tracing::warn!(
+            event = "app.renderer",
+            renderer = renderer.renderer.slug(),
+            detail = renderer.describe()
+        );
+    } else {
+        tracing::info!(
+            event = "app.renderer",
+            renderer = renderer.renderer.slug(),
+            detail = renderer.describe()
+        );
+    }
+    yk_dist_manager::renderer::apply(&mut options.wgpu_options, renderer.renderer);
 
     // Everything from here is out of this process's hands — the windowing
     // system, the graphics driver, then the register — and it is where a launch
     // that produces no window dies. Each stage is on disk before it is entered,
     // so the next start can say which one it was.
-    logfile::note_stage(stage::WINDOW);
+    logfile::note_stage_with(stage::WINDOW, &[("renderer", renderer.renderer.slug())]);
     let started = eframe::run_native(
         "yk-dist-manager",
         options,
         Box::new(move |_cc| {
             logfile::note_stage(stage::APP);
-            let app = YkDistApp::new(explicit);
+            // There is a window, so this renderer works on this workstation.
+            // Written down before the application loads the settings, because
+            // the marker that got us here is about to be removed and would
+            // otherwise be the only record — leaving the next start to
+            // rediscover the fault from the top of the ladder.
+            if renderer.worth_remembering() {
+                let mut settings = yk_dist_manager::settings::AppSettings::load();
+                if yk_dist_manager::renderer::remember_in(&mut settings, renderer.renderer) {
+                    tracing::info!(
+                        event = "app.renderer.remembered",
+                        renderer = renderer.renderer.slug()
+                    );
+                    settings.save_quietly();
+                }
+            }
+            let mut app = YkDistApp::new(explicit);
+            // The constructor could only read what the settings file remembers.
+            // This is what *this* start actually did, and the only place that
+            // knows it: the marker it was decided from is removed two lines
+            // below (`features/renderer-fallback.md` phase 6).
+            app.renderer = renderer;
             // A window exists and the application behind it is built: this
             // start finished, whatever happens to the session now.
             logfile::finished();

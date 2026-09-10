@@ -73,6 +73,11 @@ Environment:
   YKDM_SETTINGS                Settings file (recent databases, operator identity)
   YKDM_DATA_DIR                Per-user data directory
   YKDM_LOG                     Log filter, e.g. `debug`
+  YKDM_RENDERER                Graphics backend to ask for: `automatic`, `dx12` or
+                               `gl`. A probe for a workstation that will not open a
+                               window; it is not remembered, and $WGPU_BACKEND — which
+                               wgpu reads itself — takes precedence over both it and
+                               the automatic fallback
   YKDM_LOG_DIR                 Directory for the rotating log file and the
                                start-up marker (default: `logs/` under the
                                per-user data directory)
@@ -211,6 +216,14 @@ pub struct Report {
     /// launched from the Dock or a Start Menu shortcut has no console where the
     /// operator could have seen any of it.
     pub log: String,
+    /// Which graphics backend this start asked for, and what chose it
+    /// (`features/renderer-fallback.md`).
+    ///
+    /// The line that turns "it does not open on that one machine" into something
+    /// answerable: a workstation reporting anything other than the platform
+    /// default has already had a start die in the graphics driver, and this says
+    /// which backend replaced it and whether the fallback has run out of rungs.
+    pub renderer: String,
     /// A previous start that never reached a window, if one is on record.
     ///
     /// The single most useful line in this report when the complaint is "it does
@@ -247,6 +260,12 @@ impl Report {
         let database = crate::store::Store::default_path();
         let settings = crate::settings::AppSettings::load();
         let effective = settings.last_database.clone().unwrap_or(database);
+        // Read before anything writes a marker of its own: `--diagnose` returns
+        // before `main` reaches the start-up path, so this is the same marker
+        // the next real start would decide against — which is the point, since
+        // the report has to be able to say what that decision will be.
+        let unfinished = crate::logfile::previous_attempt();
+        let renderer = crate::renderer::decide(unfinished.as_deref(), settings.renderer);
 
         Self {
             version: crate::VERSION,
@@ -294,7 +313,8 @@ impl Report {
             // Read-only, like everything else here: `describe` stats the file and
             // creates nothing, so asking where the log is cannot make one.
             log: crate::logfile::describe(),
-            unfinished_start: crate::logfile::previous_attempt(),
+            renderer: renderer.describe(),
+            unfinished_start: unfinished,
             // Probed, because the compiled feature list cannot answer this. Read-only:
             // enumerating readers opens a PC/SC context and writes nothing, which is
             // the same rule the hardware tests hold to.
@@ -389,6 +409,7 @@ impl Report {
             let _ = writeln!(out, "                   {share}");
         }
         let _ = writeln!(out, "settings:          {}", self.settings);
+        let _ = writeln!(out, "renderer:          {}", self.renderer);
         let _ = writeln!(out, "log file:          {}", self.log);
         if let Some(marker) = &self.unfinished_start {
             let stage = crate::logfile::stage_of(marker).unwrap_or("(unknown)");
@@ -499,6 +520,7 @@ mod tests {
             smb_shares: Vec::new(),
             settings: "/tmp/settings.json".into(),
             log: "/tmp/logs/yk-dist-manager.log (4 KiB, 0 rotated)".into(),
+            renderer: "the platform default (nothing has failed here)".into(),
             unfinished_start: None,
             transport: "native — a reader answered, and this build talks to it in process".into(),
             ykman: Some("/opt/homebrew/bin/ykman".into()),

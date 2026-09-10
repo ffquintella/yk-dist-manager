@@ -107,7 +107,11 @@ leave different amounts behind.
 | The process dies outright — driver fault, `abort`, the OS killing it | the start-up marker | the stage it never got past, read and reported by the *next* launch |
 
 The marker is a file in the log directory holding the last stage entered, the
-version and the commit. `main` writes it before each stage and removes it once
+version and the commit — and, where a stage needs it, the attempt as well: the
+`window` stage records **which graphics backend** was being asked for, which is
+what lets the next start ask for a different one
+(`features/renderer-fallback.md`, built on this phase and the first fault it
+diagnosed in the field). `main` writes it before each stage and removes it once
 there is a window with an application behind it, so finding one at the next start
 means that start never finished. The stages are
 `start` → `camera-preflight` → `settings` → `window` → `app-construction`, and
@@ -144,7 +148,7 @@ entry.
 | 3 | "Show log" panel in the GUI | 0 | **Done** | shipped as `features/gui-shell.md` phase 8: [`crate::logbuf`](../src/logbuf.rs) keeps the last N lines and a resizable bottom panel shows them with a level filter and *Copy all* (⌘/Ctrl + L). Recorded here because this spec is where somebody looks for it |
 | 4 | Structured (JSON) sink option | — | Todo | keep the same three fields; needs ESI agreement before diverging from the text format |
 | 5 | Correlation id per bootstrap run | 2 | Todo | one id threading every step's log lines and audit entries |
-| 6 | The start-up procedure records itself | 3 | **Done** | panic hook, `app.window.failed`, and the stage marker a launch leaves behind when it dies too abruptly to log. Added with phase 2 rather than specified ahead of it: the file sink is what made the question answerable, and the question — "it does not open and there is nothing to look at" — is the one that motivated the phase |
+| 6 | The start-up procedure records itself | 3 | **Done** | panic hook, `app.window.failed`, and the stage marker a launch leaves behind when it dies too abruptly to log. Its first use in the field found a Windows workstation whose Vulkan driver killed the process inside `request_device`, which is now recovered from automatically (`features/renderer-fallback.md`) — the marker carries the graphics backend as well as the stage. Added with phase 2 rather than specified ahead of it: the file sink is what made the question answerable, and the question — "it does not open and there is nothing to look at" — is the one that motivated the phase |
 
 Phase 2 mattered more than it looked, and the evidence is that finishing it
 uncovered two things nobody had noticed: the *Show log* panel had never been

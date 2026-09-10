@@ -1226,6 +1226,11 @@ yk-dist-manager --diagnose | grep "log file"
 `$YKDM_LOG_DIR` puts the log somewhere else (a deployment that collects logs centrally);
 `$YKDM_LOG=debug` raises the level.
 
+The marker beside the log — `startup-in-progress` — is written while a start is under way
+and removed once there is a window. Finding one means that start never finished, and it
+names the stage and the graphics backend that start was asking for, which is what lets the
+*next* launch try a different one (*"the application will not start"*, below).
+
 **The Windows FIDO2 helper service writes its own log, somewhere else.** It runs as
 `LocalSystem`, so its `%APPDATA%` is the system profile's, and its lines are in:
 
@@ -1287,5 +1292,32 @@ dies before painting a single pixel.
    it does not need a reinstall: set `$YKDM_DB` to a path that does exist, or move the
    settings file aside so the chooser comes up on a clean slate.
 
-5. Send the log file and the `--diagnose` output with the report. Between them they name
-   the build, the commit, every path involved and the stage that failed.
+5. **Stage `window` usually needs nothing from you.** The application steps down to the
+   next graphics backend by itself on the launch after — Direct3D 12, then OpenGL on
+   Windows — remembers whichever one produces a window, and says which it used:
+
+   ```bash
+   yk-dist-manager --diagnose | grep renderer
+   ```
+
+   So the first thing to try is **simply launching it again**. A line reading
+   `Direct3D 12 (remembered: it is what worked here)` means the fallback did its job and
+   this workstation is fine; one reading `ALARM: … no other backend to try` means every
+   backend faulted, and the fault is not the choice of renderer — look at the driver, the
+   session (a remote desktop with no GPU), or the display.
+
+   To force one by hand while diagnosing:
+
+   ```bash
+   set YKDM_RENDERER=dx12 && "C:\Program Files\YubiKey Distribution Manager\yk-dist-manager.exe"
+   ```
+
+   `gl` is the other value, `automatic` puts it back. This is a **probe and is not
+   remembered**, so it has to be set on every launch — which is deliberate: a variable
+   somebody set once during a support call and forgot would outlive the call. `$WGPU_BACKEND`
+   (wgpu's own variable, same values) takes precedence over both this and the automatic
+   fallback, and while it is set the application applies no backend choice of its own.
+
+6. Send the log file and the `--diagnose` output with the report. Between them they name
+   the build, the commit, every path involved, the stage that failed and the graphics
+   backend it failed on.

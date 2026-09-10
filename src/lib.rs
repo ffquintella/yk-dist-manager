@@ -57,6 +57,7 @@ pub mod password;
 pub mod paths;
 pub mod pdf;
 pub mod receipt;
+pub mod renderer;
 pub mod report;
 pub mod san;
 pub mod scan;

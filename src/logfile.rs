@@ -258,14 +258,41 @@ pub fn note_stage(stage: &str) {
     let _ = note_stage_in(&directory(), stage);
 }
 
+/// [`note_stage`] with extra `key=value` fields, for a stage whose cause depends
+/// on more than its name.
+///
+/// [`stage::WINDOW`] is the one that needs it: which graphics backend was being
+/// asked for is what the *next* start has to know to do something different
+/// (`features/renderer-fallback.md`).
+pub fn note_stage_with(stage: &str, fields: &[(&str, &str)]) {
+    let _ = note_stage_with_in(&directory(), stage, fields);
+}
+
 /// [`note_stage`] for a directory named outright, and reporting its failure.
 pub fn note_stage_in(directory: &Path, stage: &str) -> io::Result<()> {
+    note_stage_with_in(directory, stage, &[])
+}
+
+/// [`note_stage_with`] for a directory named outright, and reporting its failure.
+///
+/// `fields` go directly after `stage=` rather than at the end, because the
+/// timestamp is the one value with a space in it and must stay last for
+/// [`field_of`] to read anything after it.
+pub fn note_stage_with_in(
+    directory: &Path,
+    stage: &str,
+    fields: &[(&str, &str)],
+) -> io::Result<()> {
     std::fs::create_dir_all(directory)?;
     let now = chrono::Local::now();
+    let extra: String = fields
+        .iter()
+        .map(|(key, value)| format!("{key}={value} "))
+        .collect();
     std::fs::write(
         directory.join(MARKER_NAME),
         format!(
-            "stage={stage} version={} commit={} at=[{}] {}\n",
+            "stage={stage} {extra}version={} commit={} at=[{}] {}\n",
             crate::VERSION,
             crate::COMMIT,
             now.format("%d/%m/%Y"),
@@ -301,9 +328,19 @@ pub fn previous_attempt_in(directory: &Path) -> Option<String> {
 
 /// The `stage=` field of a marker, for the sentence [`explain`] then produces.
 pub fn stage_of(marker: &str) -> Option<&str> {
+    field_of(marker, "stage")
+}
+
+/// The value of one `key=value` field of a marker.
+///
+/// Absent rather than empty when the field is not there, which is how a marker
+/// written by an older build reads: it has a stage and no `renderer=`, and the
+/// caller decides what that silence meant.
+pub fn field_of<'a>(marker: &'a str, key: &str) -> Option<&'a str> {
+    let wanted = format!("{key}=");
     marker
         .split_whitespace()
-        .find_map(|field| field.strip_prefix("stage="))
+        .find_map(|field| field.strip_prefix(&wanted))
 }
 
 #[cfg(test)]
@@ -486,5 +523,47 @@ mod tests {
     fn a_marker_without_a_stage_is_read_as_having_none() {
         assert_eq!(stage_of("version=0.0.0"), None);
         assert_eq!(stage_of("stage=window version=0.0.0"), Some("window"));
+    }
+
+    #[test]
+    fn a_stage_can_carry_the_field_the_next_start_has_to_act_on() {
+        // Given a start about to ask the driver for a window with one backend
+        let home = temp();
+        note_stage_with_in(home.path(), stage::WINDOW, &[("renderer", "dx12")]).unwrap();
+        // When it dies there and the next start reads what it left
+        let found = previous_attempt_in(home.path()).expect("the marker survives");
+        // Then both the stage and the attempt are legible
+        assert_eq!(stage_of(&found), Some(stage::WINDOW));
+        assert_eq!(field_of(&found, "renderer"), Some("dx12"));
+        assert_eq!(field_of(&found, "version"), Some(crate::VERSION));
+    }
+
+    #[test]
+    fn extra_fields_go_before_the_timestamp_so_nothing_after_them_is_lost() {
+        // The timestamp is the one value with a space in it: a field appended
+        // after it would be read as part of the time, or not at all.
+        let home = temp();
+        note_stage_with_in(home.path(), stage::WINDOW, &[("renderer", "gl")]).unwrap();
+        let found = previous_attempt_in(home.path()).unwrap();
+        let renderer_at = found.find("renderer=").expect("the field is there");
+        let at_at = found.find("at=[").expect("the timestamp is there");
+        assert!(renderer_at < at_at, "{found}");
+    }
+
+    #[test]
+    fn a_marker_from_a_build_with_no_such_field_reads_as_absent_not_empty() {
+        // How the 0.19.2 marker reads to a build that knows about renderers: the
+        // caller has to be able to tell "not recorded" from "recorded as blank".
+        let home = temp();
+        note_stage_in(home.path(), stage::WINDOW).unwrap();
+        let found = previous_attempt_in(home.path()).unwrap();
+        assert_eq!(field_of(&found, "renderer"), None);
+        assert_eq!(stage_of(&found), Some(stage::WINDOW));
+    }
+
+    #[test]
+    fn a_field_is_not_matched_by_the_tail_of_another_ones_name() {
+        // `stage=` must not be found inside `substage=`.
+        assert_eq!(field_of("substage=window stage=app", "stage"), Some("app"));
     }
 }

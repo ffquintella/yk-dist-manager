@@ -303,6 +303,16 @@ pub struct AppSettings {
     /// Chosen palette, one of [`THEMES`]. Cosmetic only — nothing about the
     /// record depends on it.
     pub theme: String,
+    /// The graphics backend that last produced a window on this workstation
+    /// (`features/renderer-fallback.md`).
+    ///
+    /// Not a preference the operator sets: it is written by the start that
+    /// finally got a window after an earlier one died in the graphics driver, so
+    /// the next start does not have to rediscover it. `Automatic` — the default,
+    /// and what every healthy workstation keeps forever — means wgpu's own
+    /// order. Beside [`AppSettings::window`] because it is the same kind of
+    /// fact: how this machine comes up, not what the register contains.
+    pub renderer: crate::renderer::Renderer,
 }
 
 impl AppSettings {
@@ -359,6 +369,7 @@ impl AppSettings {
             templates_must_be_signed: false,
             report_incidents_to: String::new(),
             theme: DEFAULT_THEME.to_owned(),
+            renderer: crate::renderer::Renderer::default(),
         }
     }
 
