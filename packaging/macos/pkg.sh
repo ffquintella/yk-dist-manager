@@ -169,9 +169,16 @@ EOF
 echo "==> component package"
 COMPONENT_PLIST="$WORK/component.plist"
 pkgbuild --analyze --root "$ROOT" "$COMPONENT_PLIST" >/dev/null
-# A literal `false`, not free text, so PlistBuddy's re-parsing of its command
-# string cannot bite (the reason write-plist.sh avoids it for the copyright).
-/usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" "$COMPONENT_PLIST"
+# Delete then Add rather than Set: `pkgbuild --analyze` only emits
+# BundleIsRelocatable when it has decided the bundle *is* relocatable, and on
+# macOS 26 it stopped emitting it for this bundle at all — at which point `Set`
+# fails with "Entry, Does Not Exist" and takes the whole package build with it.
+# Add always writes the key; the Delete in front of it keeps that true on the
+# versions that do emit it. A literal `false`, not free text, so PlistBuddy's
+# re-parsing of its command string cannot bite (the reason write-plist.sh avoids
+# it for the copyright).
+/usr/libexec/PlistBuddy -c "Delete :0:BundleIsRelocatable" "$COMPONENT_PLIST" >/dev/null 2>&1 || true
+/usr/libexec/PlistBuddy -c "Add :0:BundleIsRelocatable bool false" "$COMPONENT_PLIST"
 
 pkgbuild --quiet \
 	--root "$ROOT" \

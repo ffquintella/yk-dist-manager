@@ -16,6 +16,21 @@ Maintenance instructions (see AGENTS.md §5):
 * A database schema change also bumps store::SCHEMA_VERSION and ships a migration.
 -->
 
+## [Unreleased]
+
+### Fixed
+
+- **`make pkg` builds again on macOS 26** (`packaging/macos/pkg.sh`). The component
+  package turns relocation off so an old copy of the bundle sitting in `~/Downloads`
+  cannot capture every upgrade, and it did that by editing the plist `pkgbuild
+  --analyze` writes. That plist no longer carries `BundleIsRelocatable` at all on this
+  release of macOS — `pkgbuild` now omits the key rather than writing `true` — and
+  `PlistBuddy -c "Set :0:BundleIsRelocatable false"` answers *Entry, Does Not Exist*
+  and fails, which took the whole package build down at the first step that touches it.
+  The key is now `Delete`d and `Add`ed instead of `Set`, which writes it whether or not
+  `pkgbuild` emitted one; the receipt reads `relocatable="false"` as before. No change
+  to the app, the bundle or the installed layout.
+
 ## [0.21.0] - 2026-09-10
 
 ### Added

@@ -38,6 +38,16 @@ Only the two signing certificates are outstanding now. The other guards stay whe
 as of v0.16.2 the authoring is linked on every commit rather than only on a tag, and as of
 v0.19.1 the way the scripts talk to the binary is checked as text.
 
+**The macOS `.pkg` stopped building on macOS 26** and was repaired in place. `pkg.sh` turns
+relocation off in the component plist — without that, the installer finds any copy of the
+same bundle identifier on the disk and upgrades *that* instead of `/Applications` — and it
+did so with `PlistBuddy -c "Set :0:BundleIsRelocatable false"` over the plist `pkgbuild
+--analyze` writes. That release of `pkgbuild` no longer emits the key, so `Set` answered
+*Entry, Does Not Exist* and failed the build before the package existed. It is now `Delete`
+then `Add`, which does not depend on what `--analyze` chose to write; `make verify-pkg`
+reads `relocatable="false"` off the receipt as before. The lesson is the same one the MSI
+taught twice: the authoring was never wrong, a tool underneath it changed.
+
 The last two are worth naming, because the cause was not in the authoring at all. 0.18.3
 linked the release binary into the **Windows subsystem** so that no console flashes before
 the egui window appears (`src/main.rs`), which is invisible to everything except PowerShell:
