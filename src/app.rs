@@ -8327,6 +8327,24 @@ impl YkDistApp {
             return;
         }
 
+        // A returned key may be handed on, but only once it carries nothing of its
+        // previous holder; asked here so the refusal lands before the record does.
+        match store.reissue_refusal(key.serial, current, KeyStatus::Distributed) {
+            Ok(None) => {}
+            Ok(Some(refusal)) => {
+                self.dist_form.error = Some(format!("{refusal} Nothing was recorded."));
+                tracing::warn!(
+                    event = "distribution.refused.not_sanitised",
+                    serial = key.serial
+                );
+                return;
+            }
+            Err(e) => {
+                self.dist_form.error = Some(e.to_string());
+                return;
+            }
+        }
+
         if let Err(e) = store.insert_distribution(&record) {
             self.dist_form.error = Some(e.to_string());
             return;

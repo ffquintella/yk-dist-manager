@@ -46,7 +46,7 @@ or asset-tag reconciliation, and the "already bootstrapped" detection.
 ### Lifecycle
 
 ```
-InStock ──► Bootstrapped ──► Distributed ──► Returned ──► InStock / Bootstrapped
+InStock ──► Bootstrapped ──► Distributed ──► Returned ──► InStock / Bootstrapped / Distributed
    │             │                │             │
    │             │                └──► Lost ────┘
    └─────────────┴──────────────────────────► Retired (terminal)
@@ -59,7 +59,7 @@ Legal transitions (`domain::key::KeyStatus::can_transition_to`):
 | `InStock` | `Bootstrapped`, `Retired`, `Lost` |
 | `Bootstrapped` | `Distributed`, `InStock`, `Retired`, `Lost` |
 | `Distributed` | `Returned`, `Lost`, `Retired` |
-| `Returned` | `InStock`, `Bootstrapped`, `Retired` |
+| `Returned` | `InStock`, `Bootstrapped`, `Distributed` (a reissue: needs sanitisation), `Retired` |
 | `Lost` | `Returned`, `Retired` |
 | `Retired` | — (terminal) |
 

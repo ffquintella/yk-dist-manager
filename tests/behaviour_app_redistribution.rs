@@ -113,7 +113,11 @@ fn scenario_a_returned_key_goes_to_another_holder_once_it_is_sanitised() {
         "{refusal}"
     );
     assert!(refusal.contains("Nothing was recorded"), "{refusal}");
-    assert_eq!(app.distributions.len(), 1, "no second hand-over was written");
+    assert_eq!(
+        app.distributions.len(),
+        1,
+        "no second hand-over was written"
+    );
     assert_eq!(status_of(&app, SERIAL), KeyStatus::Returned);
 
     // When the FIDO2 applet is reset and the operator records that

@@ -55,6 +55,8 @@ fn lifecycle_transitions_are_restricted() {
     assert!(KeyStatus::InStock.can_transition_to(KeyStatus::Bootstrapped));
     assert!(KeyStatus::Bootstrapped.can_transition_to(KeyStatus::Distributed));
     assert!(KeyStatus::Distributed.can_transition_to(KeyStatus::Returned));
+    // A returned key may be handed to somebody else (gated on sanitisation by the store).
+    assert!(KeyStatus::Returned.can_transition_to(KeyStatus::Distributed));
     assert!(KeyStatus::Distributed.can_transition_to(KeyStatus::Lost));
 
     // A key cannot be handed over before it is bootstrapped.

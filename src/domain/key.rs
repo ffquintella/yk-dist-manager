@@ -113,7 +113,7 @@ impl KeyStatus {
             (InStock, Bootstrapped | Retired | Lost) => true,
             (Bootstrapped, Distributed | InStock | Retired | Lost) => true,
             (Distributed, Returned | Lost | Retired) => true,
-            (Returned, InStock | Bootstrapped | Retired) => true,
+            (Returned, InStock | Bootstrapped | Distributed | Retired) => true,
             (Lost, Returned | Retired) => true,
             (Retired, _) => false,
             _ => false,

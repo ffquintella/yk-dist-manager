@@ -18,7 +18,17 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+## [0.21.1] - 2026-10-30
+
 ### Fixed
+
+- **A returned key can be handed to another person.** `Returned → Distributed` was
+  missing from the lifecycle table, so the Distribution screen refused a key that had
+  come back and the operator had to detour through *In stock* or *Bootstrapped*. The
+  move is allowed now and is treated as a reissue: it needs the same sanitisation as
+  every other way a key reaches a new holder, and a key still carrying the previous
+  holder's credentials is refused by name (applets and action) **before** the new
+  hand-over is written. Covered by `behaviour_app_redistribution`.
 
 - **`make pkg` builds again on macOS 26** (`packaging/macos/pkg.sh`). The component
   package turns relocation off so an old copy of the bundle sitting in `~/Downloads`

@@ -1518,11 +1518,16 @@ impl Store {
     ///   `Returned → Bootstrapped` is the one that exists — is a second procedure
     ///   on a key that has already been through one.
     ///
+    /// * **into `Distributed`, from `Returned`** — a returned key handed straight
+    ///   to somebody else. From `Bootstrapped` it is the ordinary hand-over and is
+    ///   not gated; from `Returned` the previous holder's credentials may still be
+    ///   on it.
+    ///
     /// Not covered: `Lost`, `Returned` and `Retired`. A key coming back, going
     /// missing or leaving service is not being handed to anybody, and refusing to
     /// record what has happened to a key would be the register declining to hold a
     /// fact — the opposite of the point.
-    fn reissue_refusal(
+    pub fn reissue_refusal(
         &self,
         serial: u32,
         current: KeyStatus,
@@ -1534,6 +1539,7 @@ impl Store {
         let is_reissue = match next {
             KeyStatus::InStock => true,
             KeyStatus::Bootstrapped => current != KeyStatus::InStock,
+            KeyStatus::Distributed => current == KeyStatus::Returned,
             _ => false,
         };
         if !is_reissue {
