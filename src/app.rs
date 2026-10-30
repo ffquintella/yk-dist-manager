@@ -8375,6 +8375,27 @@ impl YkDistApp {
         self.refresh();
     }
 
+    /// Move a key to `next` from the inventory screen, audited.
+    ///
+    /// The store refuses what the lifecycle table forbids and, for a move into
+    /// stock, a key that has not been sanitised; the refusal reaches the status
+    /// bar and nothing is written or audited.
+    pub fn change_key_status(&mut self, serial: u32, next: KeyStatus) {
+        let Some(store) = &self.store else { return };
+        match store.set_key_status(serial, next) {
+            Ok(()) => {
+                self.record(
+                    "key.status_changed",
+                    &format!("serial:{serial}"),
+                    &format!("to={}", crate::store::key_status_str(next)),
+                );
+                self.status = format!("serial {serial} is now {}", next.label());
+                self.refresh();
+            }
+            Err(e) => self.status = format!("refused: {e}"),
+        }
+    }
+
     /// Close an open distribution.
     pub fn return_key(&mut self, id: uuid::Uuid, serial: u32) {
         let Some(store) = &self.store else { return };

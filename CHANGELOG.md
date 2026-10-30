@@ -18,6 +18,17 @@ Maintenance instructions (see AGENTS.md §5):
 
 ## [Unreleased]
 
+## [0.21.2] - 2026-10-30
+
+### Added
+
+- **Return to stock.** A returned key now has a *return to stock* button in the
+  Inventory table, so it goes back on the shelf and can be handed out again by the
+  ordinary route. It is a reissue like every other move into stock: refused with the
+  reason (applets and action) until the key is sanitised, and audited as
+  `key.status_changed` when it goes through. The move itself is `YkDistApp::change_key_status`,
+  which the *mark bootstrapped* button now uses too. Test: `behaviour_app_return_to_stock`.
+
 ## [0.21.1] - 2026-10-30
 
 ### Fixed

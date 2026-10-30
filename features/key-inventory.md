@@ -59,7 +59,7 @@ Legal transitions (`domain::key::KeyStatus::can_transition_to`):
 | `InStock` | `Bootstrapped`, `Retired`, `Lost` |
 | `Bootstrapped` | `Distributed`, `InStock`, `Retired`, `Lost` |
 | `Distributed` | `Returned`, `Lost`, `Retired` |
-| `Returned` | `InStock`, `Bootstrapped`, `Distributed` (a reissue: needs sanitisation), `Retired` |
+| `Returned` | `InStock`, `Bootstrapped`, `Distributed` (a reissue: needs sanitisation), `Retired` | — *return to stock* on the Inventory row does the first, gated the same way
 | `Lost` | `Returned`, `Retired` |
 | `Retired` | — (terminal) |
 

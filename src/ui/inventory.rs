@@ -3,7 +3,6 @@
 use elegance::{Accent, Button, CalloutTone};
 
 use crate::app::YkDistApp;
-use crate::store::key_status_str;
 
 pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
     super::screen_header(
@@ -190,6 +189,13 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
                             status_change =
                                 Some((key.serial, crate::domain::KeyStatus::Bootstrapped));
                         }
+                        // A returned key back on the shelf, so it can be handed out
+                        // again. Refused, with the reason, until it is sanitised.
+                        if key.status == crate::domain::KeyStatus::Returned
+                            && super::row_button(ui, "return to stock").clicked()
+                        {
+                            status_change = Some((key.serial, crate::domain::KeyStatus::InStock));
+                        }
                         if super::row_button(ui, "observation…").clicked() {
                             note_requested = Some(key.serial);
                         }
@@ -239,19 +245,7 @@ pub fn show(app: &mut YkDistApp, ui: &mut egui::Ui) {
     }
 
     if let Some((serial, next)) = status_change {
-        let Some(store) = &app.store else { return };
-        match store.set_key_status(serial, next) {
-            Ok(()) => {
-                app.record(
-                    "key.status_changed",
-                    &format!("serial:{serial}"),
-                    &format!("to={}", key_status_str(next)),
-                );
-                app.status = format!("serial {serial} is now {}", next.label());
-                app.refresh();
-            }
-            Err(e) => app.status = format!("refused: {e}"),
-        }
+        app.change_key_status(serial, next);
     }
 }
 
